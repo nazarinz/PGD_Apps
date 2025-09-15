@@ -3,9 +3,9 @@ import streamlit as st
 from utils import set_page, header, footer
 from pathlib import Path
 
-set_page("PGD Apps — Home", "🧰")
+set_page("PGD Apps — Home", "🤖")
 
-header("🧰 PGD Apps — Home")
+header("🤖 PGD Apps — Home")
 col1, col2 = st.columns([1,3])
 with col1:
     logo = Path(__file__).resolve().parent / "assets" / "logo.png"
