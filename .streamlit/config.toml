@@ -1,0 +1,14 @@
+[client]
+toolbarMode = "viewer"
+
+[theme]
+base = "dark"
+primaryColor = "#3AA8F2"
+accent = "#22d3ee"
+[client]
+toolbarMode = "viewer"
+
+[theme]
+base="dark"
+primaryColor="#3AA8F2"
+accent="#22d3ee"
