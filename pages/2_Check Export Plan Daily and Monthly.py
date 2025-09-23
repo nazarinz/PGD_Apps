@@ -188,6 +188,7 @@ if run:
         st.error("Unggah dulu **Daily file**.")
         st.stop()
 
+    # ==== Baca base (header di baris ke-3 visual → index=2) ====
     base_sheets = read_any(base_file)
     base_sheet_name = None
     for sh in base_sheets.keys():
@@ -241,33 +242,51 @@ if run:
     base_df_out = base_df.copy()
     base_df_out["__SO_norm__"] = normalize_so_series(base_df_out[base_col])
 
+    # ==== Kumpulkan seluruh SO dari file referensi + simpan tabel referensi bernormalisasi ====
     all_ref_sos: Set[str] = set()
     so_to_files: Dict[str, Set[str]] = {}
     log_rows: List[Tuple[str, str, str]] = []
 
+    # NEW: simpan tabel referensi bernormalisasi agar bisa ditampilkan saat user pilih SO
+    ref_tables: List[Dict[str, object]] = []
+
     if ref_files:
         for f in ref_files:
             sheets = read_any(f)
-            file_sos: Set[str] = set()
             for sh, df in sheets.items():
                 df2 = df.copy()
                 if not df2.empty:
                     df2 = df2.dropna(how="all")
                     df2 = df2.dropna(axis=1, how="all")
+
                 col, reason = detect_so_column(df2)
                 log_rows.append((f.name, sh, reason))
                 if not col:
                     continue
-                sos = normalize_so_series(df2[col]).dropna()
+
+                df2["__SO_norm__"] = normalize_so_series(df2[col])
+                sos = df2["__SO_norm__"].dropna()
                 if sos.empty:
                     log_rows.append((f.name, sh, f"Kolom '{col}' terdeteksi tapi tidak ada nilai SO valid"))
                     continue
-                for so in sos.unique().tolist():
+
+                # kumpulkan indeks & peta file
+                unique_sos = sos.unique().tolist()
+                for so in unique_sos:
                     all_ref_sos.add(so)
                     so_to_files.setdefault(so, set()).add(f.name)
+
+                # simpan tabel referensi (untuk drill-down nanti)
+                ref_tables.append({
+                    "file": f.name,
+                    "sheet": sh,
+                    "so_col": col,
+                    "df": df2,  # sudah punya __SO_norm__
+                })
     else:
         st.info("Belum ada file referensi yang diunggah. Hasil cocok/tdk ditemukan akan kosong.")
 
+    # ==== Hasil utama: match / not found / empty ====
     out = base_df_out.copy()
     out["Found_in_reference"] = out["__SO_norm__"].apply(lambda x: (x in all_ref_sos) if pd.notna(x) else False)
     out["Source_Files"] = out["__SO_norm__"].apply(
@@ -290,6 +309,51 @@ if run:
         log_df = pd.DataFrame(log_rows, columns=["File", "Sheet", "Reason"])
         st.dataframe(log_df, use_container_width=True)
 
+    # ===== NEW: Drill-down SO yang match =====
+    st.markdown("---")
+    st.subheader("🔎 Detail SO yang Match (Drill-down)")
+
+    matched_so_list = sorted(matches["__SO_norm__"].dropna().astype(str).unique().tolist())
+    if matched_so_list:
+        sel_sos = st.multiselect(
+            "Pilih SO untuk ditampilkan detailnya:",
+            options=matched_so_list,
+            default=matched_so_list[:1],  # default tampilkan 1 pertama biar cepat
+        )
+
+        if sel_sos:
+            with st.expander("Tampilkan hanya SO terpilih pada tabel Matches (opsional)", expanded=False):
+                if st.checkbox("Filter Matches ke SO terpilih"):
+                    st.dataframe(matches[matches["__SO_norm__"].isin(sel_sos)], use_container_width=True)
+
+            for so in sel_sos:
+                st.markdown(f"### SO: **{so}**")
+
+                # 1) Baris di base
+                base_rows = base_df_out[base_df_out["__SO_norm__"] == so]
+                st.write("**Daily (base) — Rows**")
+                if base_rows.empty:
+                    st.info("Tidak ada baris di base untuk SO ini (aneh, seharusnya ada karena match).")
+                else:
+                    st.dataframe(base_rows, use_container_width=True)
+
+                # 2) Baris di setiap referensi
+                any_ref = False
+                for item in ref_tables:
+                    df_ref = item["df"]
+                    sub = df_ref[df_ref["__SO_norm__"] == so]
+                    if not sub.empty:
+                        any_ref = True
+                        st.write(f"**Reference — {item['file']} · {item['sheet']} (kolom SO: {item['so_col']})**")
+                        st.dataframe(sub, use_container_width=True)
+                if not any_ref:
+                    st.warning("SO ini tidak ditemukan pada tabel referensi yang tersimpan (mungkin karena sheet tanpa kolom SO terdeteksi).")
+        else:
+            st.info("Pilih minimal 1 SO untuk melihat detail.")
+    else:
+        st.info("Belum ada SO yang match, jadi detail tidak tersedia.")
+
+    # ==== Download Excel ====
     st.subheader("📥 Download Report (Excel)")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_name = f"SO_AutoDetect_Report_{ts}.xlsx"
