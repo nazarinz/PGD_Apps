@@ -1,6 +1,7 @@
 # pages/2_Check Export Plan Daily and Monthly.py
-# Adapted from user's Check Export Plan Daily and Monthly
+# PGD Apps — Check Export Plan Daily and Monthly (SO Auto-Detect) + Drill-down Matches (cached)
 import io, re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Set
 
@@ -10,12 +11,16 @@ import streamlit as st
 st.set_page_config(page_title="PGD Apps — Check Export Plan Daily and Monthly", page_icon="🔎", layout="wide")
 st.title("🔎 SO Auto-Detect — Export Plan Daily and Monthly")
 
+# =========================
+# Utils: Baca file & deteksi kolom SO
+# =========================
 def _read_excel_or_ods(file_bytes: bytes, suffix: str) -> Dict[str, pd.DataFrame]:
     b = io.BytesIO(file_bytes)
     sfx = suffix.lower()
     if sfx in (".xlsx", ".xlsm"):
         return pd.read_excel(b, engine="openpyxl", sheet_name=None)
     elif sfx == ".xls":
+        # xlrd old .xls; jika gagal, coba openpyxl
         try:
             return pd.read_excel(io.BytesIO(file_bytes), engine="xlrd", sheet_name=None)
         except Exception:
@@ -94,9 +99,11 @@ def detect_so_column(df: pd.DataFrame):
     df_n, mapping = normalize_columns(df)
     cols_norm = list(df_n.columns)
 
+    # 1) kandidat eksak
     for cand in CANDIDATES:
         if cand in cols_norm:
             return mapping[cand], f"Exact candidate match: {cand}"
+    # 2) heuristik
     for cn in cols_norm:
         if ("sap" in cn) and ("odr" in cn or "order" in cn):
             return mapping[cn], f"Heuristic: contains 'sap' and 'odr/order' → {cn}"
@@ -107,6 +114,7 @@ def detect_so_column(df: pd.DataFrame):
         if cn in {"order","so"}:
             return mapping[cn], f"Fallback exact short name: {cn}"
 
+    # 3) sniff header di beberapa baris awal
     tokens = ["sap odr no", "sap order", "sales order", "so", "so no", "so number"]
     max_scan = min(len(df), 10)
     for r in range(max_scan):
@@ -175,20 +183,29 @@ def normalize_so_series(s: pd.Series) -> pd.Series:
     s2 = s2.replace({"nan": pd.NA, "none": pd.NA, "": pd.NA})
     return s2
 
-col1, col2 = st.columns(2)
-with col1:
-    base_file = st.file_uploader("Daily file (CSV/XLSX/XLS/ODS/XLSB/XLSM)", type=["csv","xlsx","xls","ods","xlsb","xlsm"], accept_multiple_files=False)
-with col2:
-    ref_files = st.file_uploader("Reference files (bisa banyak)", type=["csv","xlsx","xls","ods","xlsb","xlsm"], accept_multiple_files=True)
+# =========================
+# Struktur hasil (untuk cache)
+# =========================
+@dataclass
+class SOResult:
+    base_file_name: str
+    base_sheet_name: str
+    base_col: str
+    base_reason: str
+    ref_count: int
+    matches: pd.DataFrame
+    not_found: pd.DataFrame
+    empty_so: pd.DataFrame
+    base_df_out: pd.DataFrame        # punya kolom __SO_norm__
+    ref_tables: list                 # list of dict: {file, sheet, so_col, df}
+    log_df: pd.DataFrame
+    matched_so_list: list
 
-run = st.button("▶️ Proses")
-
-if run:
-    if not base_file:
-        st.error("Unggah dulu **Daily file**.")
-        st.stop()
-
-    # ==== Baca base (header di baris ke-3 visual → index=2) ====
+# =========================
+# Proses utama (sekali klik)
+# =========================
+def process_files(base_file, ref_files) -> SOResult:
+    # Cari sheet base (prefer "Loading Plan")
     base_sheets = read_any(base_file)
     base_sheet_name = None
     for sh in base_sheets.keys():
@@ -198,6 +215,7 @@ if run:
     if base_sheet_name is None:
         base_sheet_name = next(iter(base_sheets.keys()))
 
+    # Baca ulang tanpa header untuk reheader baris ke-3
     if hasattr(base_file, "getvalue"):
         raw_bytes = base_file.getvalue()
     else:
@@ -223,31 +241,23 @@ if run:
     _base_df_raw = book_headerless[base_sheet_name]
     base_df = reheader_with_row(_base_df_raw, header_row_index=2)
 
+    # Deteksi kolom SO
     base_col = pick_column(base_df, "SAP_ODR_NO")
     base_reason = "Forced: SAP_ODR_NO | header=baris 3"
     if not base_col:
         base_col, base_reason = detect_so_column(base_df)
         base_reason = f"{base_reason} | header=baris 3"
 
-    st.subheader("📄 Daily file (base)")
-    st.write(f"**File:** {base_file.name} — **Sheet:** {base_sheet_name}")
-    if base_col:
-        st.success(f"Kolom SO terdeteksi: **{base_col}** ({base_reason})")
-    else:
-        st.warning("Tidak menemukan kolom SO pada file harian. Pilih kolom manual di bawah.")
-        base_col = st.selectbox("Pilih kolom SO secara manual:", options=list(base_df.columns))
-        base_reason = "Manual selection | header=baris 3"
-        st.info(f"Dipakai kolom: {base_col}")
-
     base_df_out = base_df.copy()
+    if base_col is None:
+        base_col = base_df_out.columns[0]
+        base_reason = f"Fallback: pakai kolom pertama ({base_col})"
     base_df_out["__SO_norm__"] = normalize_so_series(base_df_out[base_col])
 
-    # ==== Kumpulkan seluruh SO dari file referensi + simpan tabel referensi bernormalisasi ====
+    # Kumpulkan SO referensi + simpan tabel referensi
     all_ref_sos: Set[str] = set()
     so_to_files: Dict[str, Set[str]] = {}
     log_rows: List[Tuple[str, str, str]] = []
-
-    # NEW: simpan tabel referensi bernormalisasi agar bisa ditampilkan saat user pilih SO
     ref_tables: List[Dict[str, object]] = []
 
     if ref_files:
@@ -270,76 +280,135 @@ if run:
                     log_rows.append((f.name, sh, f"Kolom '{col}' terdeteksi tapi tidak ada nilai SO valid"))
                     continue
 
-                # kumpulkan indeks & peta file
-                unique_sos = sos.unique().tolist()
-                for so in unique_sos:
+                for so in sos.unique().tolist():
                     all_ref_sos.add(so)
                     so_to_files.setdefault(so, set()).add(f.name)
 
-                # simpan tabel referensi (untuk drill-down nanti)
                 ref_tables.append({
                     "file": f.name,
                     "sheet": sh,
                     "so_col": col,
-                    "df": df2,  # sudah punya __SO_norm__
+                    "df": df2,  # sudah ada __SO_norm__
                 })
-    else:
-        st.info("Belum ada file referensi yang diunggah. Hasil cocok/tdk ditemukan akan kosong.")
 
-    # ==== Hasil utama: match / not found / empty ====
+    # Hasil utama
     out = base_df_out.copy()
     out["Found_in_reference"] = out["__SO_norm__"].apply(lambda x: (x in all_ref_sos) if pd.notna(x) else False)
     out["Source_Files"] = out["__SO_norm__"].apply(
         lambda x: ", ".join(sorted(so_to_files.get(x, []))) if pd.notna(x) and x in so_to_files else ""
     )
-
     matches   = out[out["Found_in_reference"] == True].copy()
     not_found = out[(out["__SO_norm__"].notna()) & (out["Found_in_reference"] == False)].copy()
     empty_so  = out[out["__SO_norm__"].isna()].copy()
+    matched_so_list = sorted(matches["__SO_norm__"].dropna().astype(str).unique().tolist())
+
+    log_df = pd.DataFrame(log_rows, columns=["File", "Sheet", "Reason"]) if log_rows else pd.DataFrame(columns=["File","Sheet","Reason"])
+
+    return SOResult(
+        base_file_name = base_file.name,
+        base_sheet_name = base_sheet_name,
+        base_col = base_col,
+        base_reason = base_reason,
+        ref_count = len(ref_files or []),
+        matches = matches,
+        not_found = not_found,
+        empty_so = empty_so,
+        base_df_out = base_df_out,
+        ref_tables = ref_tables,
+        log_df = log_df,
+        matched_so_list = matched_so_list
+    )
+
+# =========================
+# UI Upload
+# =========================
+col1, col2 = st.columns(2)
+with col1:
+    base_file = st.file_uploader(
+        "Daily file (CSV/XLSX/XLS/ODS/XLSB/XLSM)",
+        type=["csv","xlsx","xls","ods","xlsb","xlsm"],
+        accept_multiple_files=False
+    )
+with col2:
+    ref_files = st.file_uploader(
+        "Reference files (bisa banyak)",
+        type=["csv","xlsx","xls","ods","xlsb","xlsm"],
+        accept_multiple_files=True
+    )
+
+# Tombol
+colA, colB = st.columns([1,1])
+with colA:
+    do_process = st.button("▶️ Proses", type="primary")
+with colB:
+    do_reset = st.button("♻️ Reset hasil")
+
+if do_reset:
+    st.session_state.pop("so_detect_result", None)
+    st.success("Hasil dipulihkan. Silakan klik Proses lagi setelah pilih file.")
+
+# Jalankan proses hanya saat klik Proses
+if do_process:
+    if not base_file:
+        st.error("Unggah dulu **Daily file**.")
+        st.stop()
+    st.session_state["so_detect_result"] = process_files(base_file, ref_files)
+
+# =========================
+# Render dari cache (tanpa proses ulang)
+# =========================
+if "so_detect_result" in st.session_state:
+    res: SOResult = st.session_state["so_detect_result"]
+
+    st.subheader("📄 Daily file (base)")
+    st.write(f"**File:** {res.base_file_name} — **Sheet:** {res.base_sheet_name}")
+    st.success(f"Kolom SO terdeteksi: **{res.base_col}** ({res.base_reason})")
 
     st.subheader("✅ Matches")
-    st.dataframe(matches.head(1000), use_container_width=True)
+    st.dataframe(res.matches.head(1000), use_container_width=True)
     st.subheader("❌ Not Found")
-    st.dataframe(not_found.head(1000), use_container_width=True)
+    st.dataframe(res.not_found.head(1000), use_container_width=True)
     st.subheader("⚠️ Empty SO")
-    st.dataframe(empty_so.head(1000), use_container_width=True)
+    st.dataframe(res.empty_so.head(1000), use_container_width=True)
 
-    if log_rows:
+    if not res.log_df.empty:
         st.subheader("🧾 Deteksi Kolom (Log)")
-        log_df = pd.DataFrame(log_rows, columns=["File", "Sheet", "Reason"])
-        st.dataframe(log_df, use_container_width=True)
+        st.dataframe(res.log_df, use_container_width=True)
 
-    # ===== NEW: Drill-down SO yang match =====
+    # ===== Drill-down: DEFAULT tampilkan SEMUA SO match =====
     st.markdown("---")
     st.subheader("🔎 Detail SO yang Match (Drill-down)")
 
-    matched_so_list = sorted(matches["__SO_norm__"].dropna().astype(str).unique().tolist())
-    if matched_so_list:
-        sel_sos = st.multiselect(
-            "Pilih SO untuk ditampilkan detailnya:",
-            options=matched_so_list,
-            default=matched_so_list[:1],  # default tampilkan 1 pertama biar cepat
-        )
+    if res.matched_so_list:
+        show_all = st.checkbox("Tampilkan semua SO match (default)", value=True)
+        if show_all:
+            selected_sos = res.matched_so_list
+        else:
+            selected_sos = st.multiselect(
+                "Pilih SO untuk ditampilkan detailnya:",
+                options=res.matched_so_list,
+                default=res.matched_so_list[:1]
+            )
 
-        if sel_sos:
-            with st.expander("Tampilkan hanya SO terpilih pada tabel Matches (opsional)", expanded=False):
-                if st.checkbox("Filter Matches ke SO terpilih"):
-                    st.dataframe(matches[matches["__SO_norm__"].isin(sel_sos)], use_container_width=True)
+        if selected_sos:
+            with st.expander("Filter tabel Matches ke SO terpilih (opsional)", expanded=False):
+                if st.checkbox("Aktifkan filter Matches"):
+                    st.dataframe(res.matches[res.matches["__SO_norm__"].isin(selected_sos)], use_container_width=True)
 
-            for so in sel_sos:
+            for so in selected_sos:
                 st.markdown(f"### SO: **{so}**")
 
                 # 1) Baris di base
-                base_rows = base_df_out[base_df_out["__SO_norm__"] == so]
+                base_rows = res.base_df_out[res.base_df_out["__SO_norm__"] == so]
                 st.write("**Daily (base) — Rows**")
                 if base_rows.empty:
-                    st.info("Tidak ada baris di base untuk SO ini (aneh, seharusnya ada karena match).")
+                    st.info("Tidak ada baris di base untuk SO ini.")
                 else:
                     st.dataframe(base_rows, use_container_width=True)
 
                 # 2) Baris di setiap referensi
                 any_ref = False
-                for item in ref_tables:
+                for item in res.ref_tables:
                     df_ref = item["df"]
                     sub = df_ref[df_ref["__SO_norm__"] == so]
                     if not sub.empty:
@@ -347,9 +416,9 @@ if run:
                         st.write(f"**Reference — {item['file']} · {item['sheet']} (kolom SO: {item['so_col']})**")
                         st.dataframe(sub, use_container_width=True)
                 if not any_ref:
-                    st.warning("SO ini tidak ditemukan pada tabel referensi yang tersimpan (mungkin karena sheet tanpa kolom SO terdeteksi).")
+                    st.warning("SO ini tidak ditemukan pada tabel referensi yang tersimpan.")
         else:
-            st.info("Pilih minimal 1 SO untuk melihat detail.")
+            st.info("Tidak ada SO terpilih untuk ditampilkan.")
     else:
         st.info("Belum ada SO yang match, jadi detail tidak tersedia.")
 
@@ -359,12 +428,12 @@ if run:
     file_name = f"SO_AutoDetect_Report_{ts}.xlsx"
     output_buffer = io.BytesIO()
     with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
-        matches.to_excel(writer, index=False, sheet_name="Matches")
-        not_found.to_excel(writer, index=False, sheet_name="Not_Found")
-        empty_so.to_excel(writer, index=False, sheet_name="Empty_SO")
+        res.matches.to_excel(writer, index=False, sheet_name="Matches")
+        res.not_found.to_excel(writer, index=False, sheet_name="Not_Found")
+        res.empty_so.to_excel(writer, index=False, sheet_name="Empty_SO")
         meta = pd.DataFrame({
             "Key": ["Base file", "Base sheet", "SO column (base)", "Reason", "Ref files count", "Generated at"],
-            "Value": [base_file.name, base_sheet_name, base_col or "(manual)", base_reason, len(ref_files or []), ts],
+            "Value": [res.base_file_name, res.base_sheet_name, res.base_col or "(manual)", res.base_reason, res.ref_count, ts],
         })
         meta.to_excel(writer, index=False, sheet_name="Meta")
     output_buffer.seek(0)
@@ -374,3 +443,6 @@ if run:
         file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+else:
+    st.info("Unggah file & klik **Proses**. Setelah itu, pemilihan SO tidak akan memproses ulang—hanya menampilkan data dari hasil yang sudah disimpan.")
