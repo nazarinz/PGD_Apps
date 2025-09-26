@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo  # Python 3.9+
 
 def set_page(title: str, icon: str = "🤖"):
     # Try to use custom PGD logo if available
@@ -23,5 +24,6 @@ def footer(note: str = "PGD Apps • Made by Nazarudin Zaini :D"):
     with left:
         st.caption(note)
     with right:
-        st.caption(datetime.now().strftime("%Y-%m-%d %H:%M"))
-
+        # Waktu WIB (Jakarta) lengkap dengan detik
+        now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
+        st.caption(now_wib.strftime("%Y-%m-%d %H:%M:%S WIB"))
