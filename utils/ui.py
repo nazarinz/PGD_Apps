@@ -26,4 +26,4 @@ def footer(note: str = "PGD Apps • Made by Nazarudin Zaini :D"):
     with right:
         # Waktu WIB (Jakarta) lengkap dengan detik
         now_wib = datetime.now(ZoneInfo("Asia/Jakarta"))
-        st.caption(now_wib.strftime("%Y-%m-%d %H:%M:%S WIB"))
+        st.caption(now_wib.strftime("%Y-%m-%d"))
