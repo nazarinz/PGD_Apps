@@ -118,7 +118,7 @@ def format_no_pivot(df: pd.DataFrame, ticket_date: str, factory_subject: str) ->
             df[col] = pd.NA
 
     # Siapkan kolom turunan
-    df["Ticket Date"] = ticket_date
+    df["Ticket Date"] = pd.to_datetime(ticket_date) 
     df["Factory E-mail Subject"] = factory_subject
     df["Size"] = ""  # sesuai permintaan, kosongkan saja
 
@@ -271,7 +271,7 @@ elif choice == "Pending Cancel — Formatter (No Pivot)":
     for sheet_name, df in xls.items():
         final_df = format_no_pivot(
             df,
-            ticket_date.strftime("%Y-%m-%d"),
+            ticket_date,
             factory_subject
         )
         out_frames[sheet_name] = final_df
