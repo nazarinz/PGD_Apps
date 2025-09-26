@@ -522,20 +522,37 @@ FINAL_ORDER = [
     "Qty","Reduce Qty","Increase Qty","New Qty","LPD","PODD","Change Type","Cost Type","Claim Cost"
 ]
 
-def add_fixed_fields_and_select(df_out: pd.DataFrame, ticket_date_str: str, subject_str: str) -> pd.DataFrame:
-    df_out = df_out.copy()
-    dt = pd.to_datetime(ticket_date_str, errors="coerce")
-    df_out["Ticket Date"] = dt.dt.strftime("%m/%d/%Y") if dt.notna().all() else ticket_date_str
-    df_out["Factory E-mail Subject"] = str(subject_str or "").strip()
+# ====== FIX: helper & revised function ======
+def _format_ticket_date_any(val) -> str:
+    """Terima string/date/datetime/Timestamp -> 'MM/DD/YYYY' atau '' jika invalid."""
+    if val is None or val == "":
+        return ""
+    try:
+        d = pd.to_datetime(val, errors="coerce")
+    except Exception:
+        return ""
+    return d.strftime("%m/%d/%Y") if pd.notna(d) else ""
 
-    qty = pd.to_numeric(df_out.get("Qty"), errors="coerce")
+def add_fixed_fields_and_select(df_out: pd.DataFrame, ticket_date_val, subject_str: str) -> pd.DataFrame:
+    df_out = df_out.copy()
+
+    # 1) Ticket Date: format sekali lalu broadcast
+    df_out["Ticket Date"] = _format_ticket_date_any(ticket_date_val)
+
+    # 2) Subject
+    df_out["Factory E-mail Subject"] = (subject_str or "").strip()
+
+    # 3) Increase Qty (jika New Qty > Qty)
+    qty  = pd.to_numeric(df_out.get("Qty"), errors="coerce")
     newq = pd.to_numeric(df_out.get("New Qty"), errors="coerce")
     inc = np.where((~pd.isna(qty)) & (~pd.isna(newq)) & (newq > qty), newq - qty, np.nan)
     df_out["Increase Qty"] = inc
 
+    # 4) Susun kolom final (hanya yang tersedia)
     have_cols = [c for c in FINAL_ORDER if c in df_out.columns]
     df_out = df_out[have_cols].copy()
 
+    # 5) Format angka
     for col in ["Qty","Reduce Qty","Increase Qty","New Qty"]:
         if col in df_out.columns:
             as_float = pd.to_numeric(df_out[col], errors="coerce")
@@ -572,8 +589,9 @@ with tab2:
                 df_in = normalize_input_columns(df_in)
                 hasil_std = reshape_po(df_in)
                 hasil_lbl = rename_output_columns(hasil_std)
-                tdate_str = tdate.strftime("%Y-%m-%d")
-                hasil_final = add_fixed_fields_and_select(hasil_lbl, tdate_str, subj)
+
+                # PASS langsung objek tdate (date) — tidak perlu diubah string
+                hasil_final = add_fixed_fields_and_select(hasil_lbl, tdate, subj)
 
                 st.success(f"Sukses! {len(hasil_final):,} baris dihasilkan.")
                 st.dataframe(hasil_final, use_container_width=True)
