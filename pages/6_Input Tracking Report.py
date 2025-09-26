@@ -1,5 +1,5 @@
 # ============================
-# PGD Apps — Input Tracking Report (Reroute + Pending Cancel + Pivot Size)
+# PGD Apps — Input Tracking Report (Reroute + Pending Cancel + No-Pivot Formatter)
 # ============================
 
 import re
@@ -25,23 +25,21 @@ TARGET_ORDER = [
     "CRD","PD","LPD","PODD","Ship-To Search Term","Ship-To Name"
 ]
 
-# --- (Baru) Urutan kolom akhir hasil PIVOT (Pending Cancel Format) ---
-FINAL_ORDER = [
+# --- (Baru) Urutan kolom akhir hasil NO-PIVOT (Pending Cancel Format) ---
+FINAL_ORDER_NOPIVOT = [
     "Ticket Date","Work Center","Document Date","Sales Order","Customer Contract ID",
     "Sold-To PO No.","BTP Ticket","Factory E-mail Subject","Model Name","Cust Article No.",
-    "Article","Ship-To Search Term","Ship-To Country","Size","Qty",
+    "Article","Ship-To Search Term","Ship-To Country","Size","Order Quantity",
     "Reduce Qty","Increase Qty","New Qty","LPD","PODD","Status","Cost Category","Claim Cost"
 ]
 
-# --- (Baru) Tabel panduan kolom INPUT untuk Pivot (sesuai contohmu) ---
-PIVOT_INPUT_EXPECTED = [
+# --- (Opsional) Tabel panduan kolom INPUT yang umum dipakai untuk No-Pivot ---
+NOPIVOT_INPUT_EXPECTED = [
     "Work Center","Order Type","Requirement Segment","Site","Sales Order","BTP Ticket",
     "Customer Contract ID","Sold-To PO No.","Status","Cost Category","Claim Cost",
     "Ship-To Party PO No.","Article","Cust Article No.","Article Lead Time","Model Name",
     "CRD","PD","PODD","LPD","Ship-To No.","Ship-To Search Term","Ship-To Name",
-    "Ship-To Country","Document Date","Remark","Order Quantity",
-    # contoh size (boleh lebih banyak, pola: UK_*)
-    "UK_7-","UK_8","UK_8-","UK_9","UK_9-","UK_10","UK_10-","UK_11","UK_11-","UK_12-"
+    "Ship-To Country","Document Date","Remark","Order Quantity"
 ]
 
 # =========================
@@ -71,7 +69,7 @@ def _df_from_list(cols: list, title_col: str = "Kolom Wajib/Urutan"):
     return pd.DataFrame({title_col: cols}, index=range(1, len(cols) + 1))
 
 # =========================
-# Util khusus PIVOT UK_* → long
+# Util normalisasi ringan
 # =========================
 def _normalize_header(name: str) -> str:
     base = re.sub(r"\s+", " ", str(name).strip())
@@ -83,6 +81,7 @@ def _normalize_header(name: str) -> str:
         "Ship-To Search Term": "Ship-To Search Term",
         "Ship-To Country": "Ship-To Country",
         "Document Date": "Document Date",
+        "Order Quantity": "Order Quantity",
     }
     return alias_map.get(base, base)
 
@@ -91,35 +90,52 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [_normalize_header(c) for c in df.columns]
     return df
 
-def _detect_size_cols(df: pd.DataFrame, prefix: str = "UK_") -> list[str]:
-    return [c for c in df.columns if str(c).strip().upper().startswith(prefix)]
+def _to_numeric_series(s: pd.Series) -> pd.Series:
+    """Bersihkan angka dari string (e.g. '1,200' / '$3,432.39' / '24 pcs') → numerik."""
+    if not isinstance(s, pd.Series):
+        s = pd.Series(s)
+    cleaned = s.astype(str).str.replace(r"[^0-9\.\-]", "", regex=True).replace({"": None})
+    return pd.to_numeric(cleaned, errors="coerce")
 
-def pivot_one_sheet(df: pd.DataFrame) -> pd.DataFrame:
-    """Wide (kolom UK_*) -> Long (Size, Qty). Buang Qty NaN/0."""
-    df = _normalize_columns(df)
-    size_cols = _detect_size_cols(df, "UK_")
-    if not size_cols:
-        return pd.DataFrame()  # kembalikan kosong (akan diisi header FINAL_ORDER belakangan)
+# =========================
+# Formatter NO-PIVOT
+# =========================
+def format_no_pivot(df: pd.DataFrame, ticket_date: str, factory_subject: str) -> pd.DataFrame:
+    """
+    Tidak mem-pivot size. Output:
+      - Size dikosongkan
+      - Order Quantity diambil dari input
+      - Reduce Qty = Order Quantity; Increase Qty = 0; New Qty = 0
+      - Kolom ditata sesuai FINAL_ORDER_NOPIVOT
+    """
+    df = _normalize_columns(df).copy()
 
-    id_vars = [c for c in df.columns if c not in size_cols]
-    out = df.melt(id_vars=id_vars, value_vars=size_cols, var_name="Size", value_name="Qty")
-    out["Qty"] = pd.to_numeric(out["Qty"], errors="coerce")
-    out = out[out["Qty"].notna() & (out["Qty"] != 0)]
-    return out
-
-def finalize_columns(df_long: pd.DataFrame, ticket_date: str, factory_subject: str) -> pd.DataFrame:
-    """Tambah kolom input user & kolom turunan, lalu urutkan sesuai FINAL_ORDER."""
-    df = df_long.copy()
-    df["Ticket Date"] = ticket_date
-    df["Factory E-mail Subject"] = factory_subject
-    df["Reduce Qty"] = df["Qty"]
-    df["Increase Qty"] = 0
-    df["New Qty"] = 0
-    # Pastikan semua kolom target ada
-    for col in FINAL_ORDER:
+    # Pastikan kolom-kolom target ada (kalau hilang -> NA)
+    for col in FINAL_ORDER_NOPIVOT:
+        if col in ("Ticket Date","Factory E-mail Subject","Size","Reduce Qty","Increase Qty","New Qty"):
+            continue  # akan dibuat di bawah
         if col not in df.columns:
             df[col] = pd.NA
-    return df[FINAL_ORDER]
+
+    # Siapkan kolom turunan
+    df["Ticket Date"] = ticket_date
+    df["Factory E-mail Subject"] = factory_subject
+    df["Size"] = ""  # sesuai permintaan, kosongkan saja
+
+    # Order Quantity → numerik (jika tidak ada, isi 0)
+    if "Order Quantity" not in df.columns:
+        df["Order Quantity"] = 0
+    qty_num = _to_numeric_series(df["Order Quantity"]).fillna(0)
+
+    df["Reduce Qty"] = qty_num
+    df["Increase Qty"] = 0
+    df["New Qty"] = 0
+
+    # Reorder & return
+    for col in FINAL_ORDER_NOPIVOT:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[FINAL_ORDER_NOPIVOT]
 
 # --- Streamlit Page ---
 set_page("PGD Apps — Input Tracking Report", "📝")
@@ -130,24 +146,24 @@ header("📝 Input Tracking Report")
 # ==============
 with st.expander("❓ Cara pakai (singkat) — klik untuk lihat"):
     st.markdown("""
-**Tujuan:** menyiapkan file Excel untuk *tracking reroute*, *tracking PO Pending Cancel (filter+reorder)*, dan **pivot size UK_*** menjadi format Pending Cancel (Size, Qty).
+**Tujuan:** menyiapkan file Excel untuk *tracking reroute*, *tracking PO Pending Cancel (filter+reorder)*,
+dan **formatter Pending Cancel (tanpa pivot size)** yang menata kolom dan nilai Qty.
 
 **Format file:**
 - Terima **.xlsx** / **.xls** (bisa multi-sheet).
-- Nama kolom sebaiknya mengikuti tabel panduan di tiap sub-tools. Kolom yang hilang akan dibuat **NA** agar urutan tetap rapi.
-- Data kolom lain tidak dihapus, kecuali pada mode **Pivot** hasil akhirnya disederhanakan ke kolom target.
+- Nama kolom sebaiknya mengikuti tabel panduan di tiap sub-tools. Kolom hilang akan dibuat **NA** agar urutan tetap rapi.
 
 **Langkah cepat:**
 1) Pilih sub-tools.  
 2) Upload Excel.  
-3) (Khusus Pivot) isi **Ticket Date** & **Factory E-mail Subject**.  
+3) (Khusus Formatter No-Pivot) isi **Ticket Date** & **Factory E-mail Subject**.  
 4) Cek **Report/preview**, lalu **Download** hasil.
 """)
 
 choice = st.selectbox("Pilih sub-tools", [
     "Buat masukin trackingan PO Reroute",
     "Buat masukin tracking PO Pending Cancel",
-    "Pivot Size → Pending Cancel Format (Size, Qty)"   # <— fitur baru
+    "Pending Cancel — Formatter (No Pivot)"   # <— fitur baru (tanpa pivot size)
 ])
 
 # =========================
@@ -225,29 +241,26 @@ elif choice == "Buat masukin tracking PO Pending Cancel":
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # =========================
-# 3) (Baru) Pivot Size → Pending Cancel Format
+# 3) Pending Cancel — Formatter (No Pivot)
 # =========================
-elif choice == "Pivot Size → Pending Cancel Format (Size, Qty)":
-    st.subheader("🧮 Pivot kolom UK_* → baris (Size, Qty) + Reorder ke Format Pending Cancel")
-    st.caption("Tool ini mengubah kolom size `UK_*` menjadi baris `Size, Qty`, menambahkan kolom **Ticket Date** & **Factory E-mail Subject**, dan mengurutkan output sesuai format target.")
+elif choice == "Pending Cancel — Formatter (No Pivot)":
+    st.subheader("🧾 Formatter Pending Cancel (Tanpa Pivot Size)")
+    st.caption("Output akan menata kolom dan nilai Qty.\n- **Size** dikosongkan\n- **Order Quantity** diambil dari input\n- **Reduce Qty = Order Quantity**, **Increase Qty = 0**, **New Qty = 0**")
 
     with st.expander("📥 Kolom input yang direkomendasikan (contoh)"):
-        st.dataframe(_df_from_list(PIVOT_INPUT_EXPECTED, "Kolom Input (contoh)"), use_container_width=True)
+        st.dataframe(_df_from_list(NOPIVOT_INPUT_EXPECTED, "Kolom Input (contoh)"), use_container_width=True)
 
     with st.expander("📤 Kolom output & urutan akhir"):
-        st.dataframe(_df_from_list(FINAL_ORDER, "Urutan Kolom Output"), use_container_width=True)
+        st.dataframe(_df_from_list(FINAL_ORDER_NOPIVOT, "Urutan Kolom Output"), use_container_width=True)
 
-    # Input parameter global (untuk 1x proses semua sheet)
-    c1, c2, c3 = st.columns([1,1,2])
+    c1, c2, _ = st.columns([1,2,1])
     with c1:
-        ticket_date = st.date_input("Ticket Date", help="Tanggal tiket untuk semua baris output")
+        ticket_date = st.date_input("Ticket Date")
     with c2:
         factory_subject = st.text_input("Factory E-mail Subject", value="Pending Cancel – Summary")
-    with c3:
-        st.markdown("")
 
     st.markdown("---")
-    up3 = st.file_uploader("Upload Excel (.xlsx/.xls)", type=["xlsx","xls"], accept_multiple_files=False, key="itr_pivot")
+    up3 = st.file_uploader("Upload Excel (.xlsx/.xls)", type=["xlsx","xls"], accept_multiple_files=False, key="itr_nopivot")
     if not up3:
         st.stop()
 
@@ -256,44 +269,30 @@ elif choice == "Pivot Size → Pending Cancel Format (Size, Qty)":
     report_rows = []
 
     for sheet_name, df in xls.items():
-        # 1) Pivot
-        df_long = pivot_one_sheet(df)
-
-        # 2) Jika tidak ada kolom UK_*, buat kosong dengan header final agar konsisten
-        if df_long.empty or "Size" not in df_long.columns or "Qty" not in df_long.columns:
-            empty_df = pd.DataFrame(columns=FINAL_ORDER)
-            out_frames[sheet_name] = empty_df
-            report_rows.append({
-                "Sheet": sheet_name, "Status": "No UK_* columns", "Rows": 0,
-                "Distinct Size": 0, "Total Qty": 0
-            })
-            continue
-
-        # 3) Finalize (tambah kolom input + kolom turunan + reorder)
-        final_df = finalize_columns(
-            df_long,
+        final_df = format_no_pivot(
+            df,
             ticket_date.strftime("%Y-%m-%d"),
             factory_subject
         )
         out_frames[sheet_name] = final_df
 
-        # 4) Report
+        total_order_qty = pd.to_numeric(final_df["Order Quantity"], errors="coerce").fillna(0).sum()
+        total_reduce_qty = pd.to_numeric(final_df["Reduce Qty"], errors="coerce").fillna(0).sum()
+
         report_rows.append({
             "Sheet": sheet_name,
-            "Status": "OK",
             "Rows": len(final_df),
-            "Distinct Size": final_df["Size"].nunique(dropna=True),
-            "Total Qty": pd.to_numeric(final_df["Qty"], errors="coerce").fillna(0).sum()
+            "Total Order Qty": total_order_qty,
+            "Total Reduce Qty": total_reduce_qty
         })
 
     report_df = pd.DataFrame(report_rows).sort_values("Sheet")
-    st.success("✅ Pivot selesai. Berikut ringkasannya:")
+    st.success("✅ Formatter selesai. Berikut ringkasannya:")
     st.dataframe(report_df, use_container_width=True)
 
-    # Download
     payload = write_excel_autofit({**out_frames, "Report": report_df})
-    st.download_button("⬇️ Download Hasil Pivot (Pending Cancel Format)", data=payload,
-                       file_name="pivoted_output.xlsx",
+    st.download_button("⬇️ Download Hasil Formatter (No Pivot)", data=payload,
+                       file_name="pending_cancel_no_pivot.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 footer()
