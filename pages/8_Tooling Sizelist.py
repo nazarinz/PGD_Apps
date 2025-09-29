@@ -134,7 +134,6 @@ if "CRD" in df_sizelist.columns:
     Day_CRD = df_sizelist["CRD"].dt.day
     BucketB = pd.Series(bucket_base_from_day(Day_CRD), index=df_sizelist.index, dtype="object")
 
-    # Bangun suffix per (YM, BucketBase) -> 'new' jika ada Remark New, else 'cfm'
     tmp = pd.DataFrame({"YM": YM_CRD, "BucketBase": BucketB, "Remark": df_sizelist["Remark"]})
     suffix_map = {}
     for (ym, bb), grp in tmp.groupby(["YM", "BucketBase"], dropna=False):
@@ -143,7 +142,6 @@ if "CRD" in df_sizelist.columns:
         has_new = grp["Remark"].astype(str).str.lower().eq("new").any()
         suffix_map[(ym, bb)] = "new" if has_new else "cfm"
 
-    # Bentuk Class_CRD final dari peta suffix
     final_class_crd = []
     for ym, bb in zip(YM_CRD, BucketB):
         if pd.isna(ym) or pd.isna(bb):
@@ -227,6 +225,28 @@ with c2:
 st.subheader("📑 CRDPD_Mth_Sizes (Subtotal Only)")
 st.dataframe(crdpd_df.head(20), use_container_width=True)
 
+# ================= Sanity Check Totals =================
+st.subheader("🔍 Sanity Check Totals")
+totals = {
+    "Data (detail)": pd.to_numeric(df_sizelist["Order Quantity"], errors="coerce").sum(skipna=True),
+    "Sizes (subtotal)": pd.to_numeric(
+        sizes_df.loc[sizes_df["Document Date"].eq("Grand Total"), "Order Quantity"], errors="coerce"
+    ).sum(skipna=True),
+    "CRD_Mth_Sizes (subtotal)": pd.to_numeric(
+        crd_df.loc[crd_df["CRD_Mth"].eq("Grand Total"), "Order Quantity"], errors="coerce"
+    ).sum(skipna=True),
+    "CRDPD_Mth_Sizes (subtotal)": pd.to_numeric(
+        crdpd_df.loc[crdpd_df["CRDPD_month"].eq("Grand Total"), "Order Quantity"], errors="coerce"
+    ).sum(skipna=True),
+}
+check_df = pd.DataFrame(list(totals.items()), columns=["Sheet", "Grand Total Order Qty"])
+st.table(check_df)
+
+if len({round(v or 0, 6) for v in totals.values()}) == 1:
+    st.success("✅ Semua Grand Total konsisten di semua sheet.")
+else:
+    st.error("⚠️ Grand Total tidak konsisten! Cek kembali logika subtotal.")
+
 # ================= Export Excel (HARD-CODE RED) =================
 def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df) -> bytes:
     output = BytesIO()
@@ -245,7 +265,7 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df) -> bytes:
 
         def autofit(ws, df, skip_cols=[]):
             for j, col in enumerate(df.columns):
-                if j in skip_cols: 
+                if j in skip_cols:
                     continue
                 maxlen = max(len(str(col)), df[col].astype(str).map(len).max() if len(df)>0 else 0)
                 ws.set_column(j, j, max(8, min(60, maxlen + 2)))
@@ -371,7 +391,9 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df) -> bytes:
     return output.getvalue()
 
 excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df)
-st.download_button("⬇️ Download Excel (match Colab, hard-coded red)",
-                   data=excel_bytes,
-                   file_name="df_sizelist_ready.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.download_button(
+    "⬇️ Download Excel (match Colab, hard-coded red)",
+    data=excel_bytes,
+    file_name="df_sizelist_ready.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
