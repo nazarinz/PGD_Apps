@@ -246,7 +246,7 @@ if tool == "Merge Reroute: Old vs New (size compare)":
                             only_diff: pd.DataFrame,
                             only_equal: pd.DataFrame) -> bytes:
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="mm-dd-yyyy") as writer:
+        with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yy") as writer:
             # --- write main sheet ---
             main_df.to_excel(writer, index=False, sheet_name="Sheet1")
             wb  = writer.book
@@ -256,7 +256,7 @@ if tool == "Merge Reroute: Old vs New (size compare)":
             hdr_gray   = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "bg_color": "#D9D9D9", "border": 1})
             hdr_yellow = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "bg_color": "#FFF2CC", "border": 1})
             txt_fmt    = wb.add_format({"num_format": "@"})
-            date_fmt   = wb.add_format({"num_format": "mm-dd-yyyy"})
+            date_fmt   = wb.add_format({"num_format": "m/d/yy"})
             red_font   = wb.add_format({"font_color": "#FF0000"})
 
             # Header coloring (row 0)
