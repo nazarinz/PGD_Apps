@@ -237,17 +237,82 @@ if tool == "Merge Reroute: Old vs New (size compare)":
         only_diff  = compare_df[~compare_df['All_Sizes_Equal']].reset_index(drop=True)
         only_equal = compare_df[ compare_df['All_Sizes_Equal']].reset_index(drop=True)
 
-    # ======= Download =======
+    # ======= Download (header formatting + old rows red) =======
     st.subheader("📥 Download Hasil")
-    if compare_df.empty:
-        payload = write_excel_autofit({"Sheet1": export_df}, date_cols=date_cols)
-    else:
-        payload = write_excel_autofit({
-            "Sheet1": export_df,
-            "Size_Compare": compare_df,
-            "Only_Different": only_diff,
-            "Only_Equal": only_equal,
-        }, date_cols=date_cols)
+
+    def _export_with_format(main_df: pd.DataFrame,
+                            date_cols: list[str],
+                            compare_df: pd.DataFrame,
+                            only_diff: pd.DataFrame,
+                            only_equal: pd.DataFrame) -> bytes:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="yyyy-mm-dd") as writer:
+            # --- write main sheet ---
+            main_df.to_excel(writer, index=False, sheet_name="Sheet1")
+            wb  = writer.book
+            ws  = writer.sheets["Sheet1"]
+
+            # Formats
+            hdr_gray   = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "bg_color": "#D9D9D9", "border": 1})
+            hdr_yellow = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "bg_color": "#FFF2CC", "border": 1})
+            txt_fmt    = wb.add_format({"num_format": "@"})
+            date_fmt   = wb.add_format({"num_format": "mm-dd-yyyy"})
+            red_font   = wb.add_format({"font_color": "#FF0000"})
+
+            # Header coloring (row 0)
+            for c_idx, col_name in enumerate(main_df.columns):
+                fmt = hdr_yellow if col_name == "Remark" else hdr_gray
+                ws.write(0, c_idx, col_name, fmt)
+
+            # Set text format for CC ID to avoid .0/scientific
+            if 'Customer Contract ID' in main_df.columns:
+                i_cc = main_df.columns.get_loc('Customer Contract ID')
+                ws.set_column(i_cc, i_cc, 18, txt_fmt)
+
+            # Date columns width + format
+            for dc in date_cols:
+                if dc in main_df.columns:
+                    i = main_df.columns.get_loc(dc)
+                    ws.set_column(i, i, 12, date_fmt)
+
+            # Simple autofit & usability
+            ws.autofilter(0, 0, len(main_df), len(main_df.columns)-1)
+            ws.freeze_panes(1, 0)
+            for col_idx, col_name in enumerate(main_df.columns):
+                maxlen = max([len(str(col_name))] + [len(str(x)) for x in main_df[col_name].head(1000).fillna("").astype(str)])
+                ws.set_column(col_idx, col_idx, min(45, max(10, maxlen + 2)))
+
+            # Conditional font red for rows with Remark == 'Old PO - Canceled'
+            if 'Remark' in main_df.columns:
+                i_remark = main_df.columns.get_loc('Remark')
+                last_row = len(main_df) + 1
+                last_col = len(main_df.columns)
+                # Build A1-style range for full table excluding header
+                def col_letter(n):
+                    s = ""
+                    while n >= 0:
+                        s = chr(n % 26 + 65) + s
+                        n = n // 26 - 1
+                    return s
+                rng = f"A2:{col_letter(last_col-1)}{last_row}"
+                # Use formula anchored to Remark column
+                first_data_row = 2
+                # Example formula uses the column letter for Remark
+                rem_col_letter = col_letter(i_remark)
+                ws.conditional_format(rng, {
+                    'type': 'formula',
+                    'criteria': f'=${rem_col_letter}{first_data_row}="Old PO - Canceled"',
+                    'format': red_font
+                })
+
+            # --- optional compare sheets ---
+            if not compare_df.empty:
+                compare_df.to_excel(writer, index=False, sheet_name="Size_Compare")
+                only_diff.to_excel(writer, index=False, sheet_name="Only_Different")
+                only_equal.to_excel(writer, index=False, sheet_name="Only_Equal")
+        return output.getvalue()
+
+    payload = _export_with_format(export_df, date_cols, compare_df, only_diff, only_equal)
     st.success("Selesai diproses.")
     st.download_button(
         label="⬇️ Download Excel",
