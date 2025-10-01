@@ -22,8 +22,9 @@ DESIRED_ORDER = [
 TARGET_ORDER = [
     "Sales Order","Remark","Sold-To PO No.","Ship-To Party PO No.",
     "Model Name","Cust Article No.","Article","Order Quantity",
-    "CRD","PD","LPD","PODD","Ship-To Search Term","Ship-To Name"
+    "CRD","PD","LPD","PODD","Ship-To Search Term","Ship-To Country"
 ]
+
 
 # --- (Baru) Urutan kolom akhir hasil NO-PIVOT (Pending Cancel Format) ---
 FINAL_ORDER_NOPIVOT = [
