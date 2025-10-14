@@ -1,4 +1,4 @@
-# app.py — PGD Subtotal Generator (FINAL v4 — cancel inheritance on subtotal)
+# app.py — PGD Subtotal Generator (FINAL v5 — fix NaN write + inherit cancel color)
 # Author: Nazarudin Zaini
 
 import re
@@ -173,45 +173,53 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
         wb = writer.book
-        fmt_base  = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
-        fmt_date  = wb.add_format({"num_format":"m/d/yyyy","font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
-        fmt_header= wb.add_format({"bold":True,"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
-        fmt_num   = wb.add_format({"num_format":"0","font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
-        fmt_red_d = wb.add_format({"font_color":"#FF0000"})
-        fmt_pur_d = wb.add_format({"font_color":"#800080"})
+        fmt_header = wb.add_format({"bold": True, "align": "center", "valign": "vcenter", "font_name": "Calibri", "font_size": 9})
+
+        def get_fmt(color=None):
+            base = {"align": "center", "valign": "vcenter", "font_name": "Calibri", "font_size": 9}
+            if color:
+                base["font_color"] = color
+            return wb.add_format(base)
+
+        fmt_black = get_fmt()
+        fmt_red = get_fmt("#FF0000")
+        fmt_purple = get_fmt("#800080")
 
         def autofit(ws, df):
             for j, c in enumerate(df.columns):
-                maxlen = max(len(str(c)), df[c].astype(str).map(len).max() if len(df)>0 else 0)
+                maxlen = max(len(str(c)), df[c].astype(str).map(len).max() if len(df) > 0 else 0)
                 ws.set_column(j, j, max(8, min(60, maxlen + 2)))
-
-        def get_color(remark):
-            if str(remark).lower() == "new": return "#FF0000"
-            if str(remark).lower() == "cancel": return "#800080"
-            return None
 
         def write_colored(ws, df):
             for i in range(len(df)):
-                color = get_color(df.iloc[i].get("Remark", ""))
-                if not color:
-                    continue
-                fmt = wb.add_format({"font_color": color})
+                remark = str(df.iloc[i].get("Remark", "")).lower()
+                if remark == "new":
+                    fmt = fmt_red
+                elif remark == "cancel":
+                    fmt = fmt_purple
+                else:
+                    fmt = fmt_black
                 for j, val in enumerate(df.iloc[i]):
-                    ws.write(i+1, j, val, fmt)
+                    if pd.isna(val):
+                        ws.write_blank(i + 1, j, None, fmt)
+                    else:
+                        ws.write(i + 1, j, val, fmt)
 
+        # tulis semua sheet
         for name, df in [("Data", df_sizelist), ("Sizes", sizes_df), ("CRD_Mth_Sizes", crd_df), ("CRDPD_Mth_Sizes", crdpd_df)]:
             df.to_excel(writer, sheet_name=name, index=False)
             ws = writer.sheets[name]
             ws.set_row(0, None, fmt_header)
-            autofit(ws, df)
             write_colored(ws, df)
-            ws.freeze_panes(1,0)
+            autofit(ws, df)
+            ws.freeze_panes(1, 0)
+
     return output.getvalue()
 
 excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos)
-st.download_button("⬇️ Download Excel (warna permanen, subtotal mewarisi cancel)",
+st.download_button("⬇️ Download Excel (warna permanen, subtotal ikut cancel)",
                    data=excel_bytes,
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("🔴 Merah = New Order (Document Date ≥ NEW_ORDER_DATE & LPD kosong & Working Status=10) • 🟣 Ungu = Sales Order termasuk daftar Cancel (indikasi visual, Remark tetap 'cfm')")
+st.caption("🔴 Merah = New • 🟣 Ungu = Cancel (warna ikut turun ke subtotal)")
