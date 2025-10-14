@@ -1,4 +1,4 @@
-# app.py — PGD Subtotal Generator (FINAL HARD-COLOR VERSION)
+# app.py — PGD Subtotal Generator (FINAL v2 — Execute Button Mode)
 # Author: Nazarudin Zaini
 
 import re
@@ -7,58 +7,65 @@ import numpy as np
 import streamlit as st
 from io import BytesIO
 
-# =============== Streamlit Config ===============
+# ====================== Streamlit Config ======================
 st.set_page_config(page_title="PGD Apps — Subtotal Generator", page_icon="📊", layout="wide")
 st.title("📊 Subtotal Generator — Sizes, CRD_Mth, CRDPD_Mth")
 
-# =============== Upload Excel ===============
-uploaded = st.file_uploader("Upload file Excel", type=["xlsx", "xls"])
+# ====================== Upload Excel ======================
+uploaded = st.file_uploader("📂 Upload file Excel", type=["xlsx", "xls"])
 if uploaded is None:
     st.info("⬆️ Silakan upload file Excel terlebih dahulu")
     st.stop()
 
-# =============== Panduan User Awam ===============
+# Panduan
 st.markdown("""
-### 📑 Format File Excel yang Diharapkan
-Pastikan file Excel memiliki kolom berikut (minimal):
+### 📑 Format File Excel
+Pastikan file memiliki kolom berikut:
 
-| Kolom Wajib | Keterangan |
-|--------------|-------------|
-| **Sales Order** | Nomor Sales Order |
+| Kolom | Keterangan |
+|-------|-------------|
+| **Sales Order** | Nomor SO |
 | **Document Date** | Tanggal dokumen order |
-| **Article** | Kode artikel (hanya FG/HS, HL & HU dihapus) |
+| **Article** | Hanya FG/HS (HL, HU dihapus) |
 | **Order Quantity** | Jumlah pesanan |
-| **Working Status** | Status produksi (gunakan `10` untuk order baru) |
+| **Working Status** | Status produksi (gunakan '10' untuk new order) |
 | **CRD**, **PD**, **LPD** | Tanggal penting |
 | **UK_*** | Kolom ukuran (size breakdown) |
-
 """)
 
-# =============== Baca Data ===============
 df_sizelist = pd.read_excel(uploaded)
 
-# Filter: hanya Article FG/HS
+# Filter hanya FG/HS
 if "Article" in df_sizelist.columns:
     df_sizelist = df_sizelist[~df_sizelist["Article"].astype(str).str.startswith(("HL", "HU"))]
 
-# =============== Input wajib ===============
-new_order_date = st.date_input("📅 Pilih tanggal New Order terakhir (WAJIB)")
-if not new_order_date:
-    st.warning("❗ Harap pilih tanggal New Order terlebih dahulu.")
+# ====================== Input Parameter ======================
+with st.expander("⚙️ Pengaturan Data"):
+    new_order_date = st.date_input("📅 Tanggal New Order terakhir (WAJIB)")
+    cancel_so_text = st.text_area("🗑️ Masukkan daftar Sales Order yang Cancel (pisahkan dengan koma atau enter):")
+    cancel_sos = re.split(r"[,\s]+", cancel_so_text.strip()) if cancel_so_text else []
+    cancel_sos = [s.strip() for s in cancel_sos if s.strip()]
+
+execute_btn = st.button("🚀 Execute Process", type="primary")
+
+# Stop sampai tombol diklik
+if not execute_btn:
+    st.warning("⚠️ Silakan isi parameter lalu klik **Execute Process** untuk memproses data.")
     st.stop()
 
-cancel_so_text = st.text_area("Masukkan daftar Sales Order yang **Cancel** (pisahkan dengan koma atau enter):")
-cancel_sos = re.split(r"[,\s]+", cancel_so_text.strip()) if cancel_so_text else []
-cancel_sos = [s.strip() for s in cancel_sos if s.strip()]
+# Validasi input
+if not new_order_date:
+    st.error("❗ Harap isi tanggal New Order terlebih dahulu.")
+    st.stop()
 
 NEW_ORDER_DATE = pd.to_datetime(new_order_date)
 
-# =============== Normalisasi tanggal ===============
+# ====================== Normalisasi tanggal ======================
 for col in ["Document Date", "LPD", "CRD", "PD"]:
     if col in df_sizelist.columns:
         df_sizelist[col] = pd.to_datetime(df_sizelist[col], errors="coerce")
 
-# =============== Remark logic ===============
+# ====================== Remark Logic ======================
 if "Remark" in df_sizelist.columns:
     df_sizelist.drop(columns=["Remark"], inplace=True)
 
@@ -74,12 +81,12 @@ remark = np.select(
 insert_pos = df_sizelist.columns.get_loc("Document Date") + 1
 df_sizelist.insert(insert_pos, "Remark", remark)
 
-# =============== Isi LPD kosong ===============
+# ====================== Isi LPD kosong ======================
 if {"CRD","PD","LPD"}.issubset(df_sizelist.columns):
     row_min = pd.concat([df_sizelist["CRD"], df_sizelist["PD"]], axis=1).min(axis=1, skipna=True)
     df_sizelist.loc[df_sizelist["LPD"].isna(), "LPD"] = row_min[df_sizelist["LPD"].isna()]
 
-# =============== Helper functions ===============
+# ====================== Helper ======================
 def insert_after(df, after_col, new_col, values):
     pos = df.columns.get_loc(after_col) + 1
     df.insert(pos, new_col, values)
@@ -94,7 +101,7 @@ def fmt_mdy(dt):
     dt = pd.to_datetime(dt)
     return f"{dt.month}/{dt.day}/{dt.year}"
 
-# =============== CRD_Mth & CRDPD_Mth ===============
+# ====================== CRD_Mth & CRDPD_Mth ======================
 if "CRD" in df_sizelist.columns:
     YM_CRD   = df_sizelist["CRD"].dt.strftime("%Y%m")
     Day_CRD  = df_sizelist["CRD"].dt.day
@@ -117,7 +124,7 @@ if "LPD" in df_sizelist.columns:
     insert_after(df_sizelist, "Day_CRDPD", "Class_CRDPD", BucketB2)
     insert_after(df_sizelist, "Class_CRDPD", "CRDPD_Mth", CRDPD_Mth)
 
-# =============== Subtotal builder ===============
+# ====================== Subtotal builder ======================
 size_cols = [c for c in df_sizelist.columns if re.match(r'(?i)^UK_', str(c))]
 order_cols = ["Order Quantity"] + size_cols
 
@@ -147,11 +154,12 @@ crd_df    = make_subtotal_only(df_sizelist, "CRD_Mth", order_cols, label_fmt=lam
 crdpd_df  = make_subtotal_only(df_sizelist, "CRDPD_Mth", order_cols, label_fmt=lambda k: str(k))
 crdpd_df  = crdpd_df.rename(columns={"CRDPD_Mth": "CRDPD_month"})
 
-# =============== Preview ===============
-st.subheader("📑 Data Preview")
+# ====================== Preview ======================
+st.success("✅ Data berhasil diproses!")
+st.subheader("📑 Preview Data")
 st.dataframe(df_sizelist.head(20), use_container_width=True)
 
-# =============== Export to Excel (Hard-Color) ===============
+# ====================== Export Excel ======================
 def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
@@ -169,36 +177,32 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos) -> by
                 ws.set_column(j, j, max(8, min(60, maxlen + 2)))
 
         def color_rows(ws, df):
-            # Hard coloring per row (Remark & Cancel SO)
             for i in range(len(df)):
-                row_fmt = fmt_base
                 remark_val = str(df.iloc[i].get("Remark", "")).lower()
                 so_val = str(df.iloc[i].get("Sales Order", ""))
+                fmt_row = fmt_base
                 if remark_val == "new":
-                    row_fmt = fmt_red
+                    fmt_row = fmt_red
                 elif so_val in cancel_sos:
-                    row_fmt = fmt_purple
-                ws.set_row(i+1, None, row_fmt)
+                    fmt_row = fmt_purple
+                ws.set_row(i + 1, None, fmt_row)
 
-        # === Sheet Data ===
+        # Sheet utama
         df_sizelist.to_excel(writer, sheet_name="Data", index=False)
         ws = writer.sheets["Data"]
         nrow, ncol = df_sizelist.shape
         ws.set_row(0, None, fmt_header)
         ws.set_column(0, ncol-1, None, fmt_base)
-        # numeric & date format
         for c in df_sizelist.columns:
             if np.issubdtype(df_sizelist[c].dtype, np.datetime64):
-                idx = df_sizelist.columns.get_loc(c)
-                ws.set_column(idx, idx, 12, fmt_date)
+                ws.set_column(df_sizelist.columns.get_loc(c), df_sizelist.columns.get_loc(c), 12, fmt_date)
             elif c == "Order Quantity" or re.match(r'(?i)^UK_', c):
-                idx = df_sizelist.columns.get_loc(c)
-                ws.set_column(idx, idx, None, fmt_num)
+                ws.set_column(df_sizelist.columns.get_loc(c), df_sizelist.columns.get_loc(c), None, fmt_num)
         color_rows(ws, df_sizelist)
         autofit(ws, df_sizelist)
         ws.freeze_panes(1,0)
 
-        # === Subtotal sheets ===
+        # Subtotal sheets
         for name, df in [("Sizes", sizes_df), ("CRD_Mth_Sizes", crd_df), ("CRDPD_Mth_Sizes", crdpd_df)]:
             df.to_excel(writer, sheet_name=name, index=False)
             wsx = writer.sheets[name]
@@ -210,7 +214,7 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos) -> by
     return output.getvalue()
 
 excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos)
-st.download_button("⬇️ Download Excel (warna fix, copy-paste tetap berwarna)",
+st.download_button("⬇️ Download Excel (warna permanen)",
                    data=excel_bytes,
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
