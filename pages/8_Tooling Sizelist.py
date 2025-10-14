@@ -1,4 +1,4 @@
-# app.py — PGD Subtotal Generator (FINAL v5 — fix NaN write + inherit cancel color)
+# app.py — PGD Subtotal Generator (FINAL v6 — warna Data fix + drop Remark/SO di subtotal)
 # Author: Nazarudin Zaini
 
 import re
@@ -164,6 +164,12 @@ crd_df    = make_subtotal_only(df_sizelist, "CRD_Mth", order_cols, str, cancel_s
 crdpd_df  = make_subtotal_only(df_sizelist, "CRDPD_Mth", order_cols, str, cancel_sos)
 crdpd_df  = crdpd_df.rename(columns={"CRDPD_Mth": "CRDPD_month"})
 
+# Drop kolom remark & sales order dari subtotal sheets
+for df in [sizes_df, crd_df, crdpd_df]:
+    for col in ["Remark", "Sales Order"]:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
+
 # ====================== Preview ======================
 st.success("✅ Data berhasil diproses!")
 st.dataframe(df_sizelist.head(20), use_container_width=True)
@@ -190,11 +196,14 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos):
                 maxlen = max(len(str(c)), df[c].astype(str).map(len).max() if len(df) > 0 else 0)
                 ws.set_column(j, j, max(8, min(60, maxlen + 2)))
 
-        def write_colored(ws, df):
+        def write_colored(ws, df, is_data=False):
             for i in range(len(df)):
-                remark = str(df.iloc[i].get("Remark", "")).lower()
+                remark = str(df.iloc[i].get("Remark", "")).lower() if "Remark" in df.columns else ""
+                so = str(df.iloc[i].get("Sales Order", "")) if "Sales Order" in df.columns else ""
                 if remark == "new":
                     fmt = fmt_red
+                elif is_data and so in cancel_sos:
+                    fmt = fmt_purple
                 elif remark == "cancel":
                     fmt = fmt_purple
                 else:
@@ -210,16 +219,16 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos):
             df.to_excel(writer, sheet_name=name, index=False)
             ws = writer.sheets[name]
             ws.set_row(0, None, fmt_header)
-            write_colored(ws, df)
+            write_colored(ws, df, is_data=(name == "Data"))
             autofit(ws, df)
             ws.freeze_panes(1, 0)
 
     return output.getvalue()
 
 excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos)
-st.download_button("⬇️ Download Excel (warna permanen, subtotal ikut cancel)",
+st.download_button("⬇️ Download Excel (warna permanen + bersih)",
                    data=excel_bytes,
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("🔴 Merah = New • 🟣 Ungu = Cancel (warna ikut turun ke subtotal)")
+st.caption("🔴 Merah = New • 🟣 Ungu = Cancel (juga di subtotal, kolom remark/SO disembunyikan di sheet subtotal)")
