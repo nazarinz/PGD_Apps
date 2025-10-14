@@ -1,4 +1,4 @@
-# app.py — PGD Subtotal Generator (FINAL VERSION)
+# app.py — PGD Subtotal Generator (FINAL-STABLE)
 # Author: Nazarudin Zaini
 
 import re
@@ -17,7 +17,7 @@ if uploaded is None:
     st.info("⬆️ Silakan upload file Excel terlebih dahulu")
     st.stop()
 
-# =============== Panduan untuk User Awam ===============
+# =============== Panduan User Awam ===============
 st.markdown("""
 ### 📑 Format File Excel yang Diharapkan
 Pastikan file Excel memiliki kolom berikut (minimal):
@@ -61,18 +61,17 @@ for col in ["Document Date", "LPD", "CRD", "PD"]:
     if col in df_sizelist.columns:
         df_sizelist[col] = pd.to_datetime(df_sizelist[col], errors="coerce")
 
-# =============== Logic Remark (3 kondisi) ===============
+# =============== Logic Remark (2 kondisi utama) ===============
 if "Remark" in df_sizelist.columns:
     df_sizelist.drop(columns=["Remark"], inplace=True)
 
 remark = np.select(
     [
-        df_sizelist["Sales Order"].astype(str).isin(cancel_sos),
         (df_sizelist["Document Date"] >= NEW_ORDER_DATE)
         & (df_sizelist["LPD"].isna())
         & (df_sizelist["Working Status"].astype(str).str.strip() == "10"),
     ],
-    ["Cancel", "New"],
+    ["New"],
     default="cfm"
 )
 
@@ -106,7 +105,6 @@ if "CRD" in df_sizelist.columns:
     BucketB  = pd.Series(bucket_base_from_day(Day_CRD), index=df_sizelist.index, dtype="object")
     Remark   = df_sizelist["Remark"].str.lower().fillna("cfm")
     CRD_Mth  = YM_CRD.fillna("") + BucketB.fillna("") + "_" + Remark
-
     insert_after(df_sizelist, "CRD", "YM_CRD", YM_CRD)
     insert_after(df_sizelist, "YM_CRD", "Day_CRD", Day_CRD)
     insert_after(df_sizelist, "Day_CRD", "Class_CRD", BucketB)
@@ -118,7 +116,6 @@ if "LPD" in df_sizelist.columns:
     BucketB2  = pd.Series(bucket_base_from_day(Day_CRDPD), index=df_sizelist.index, dtype="object")
     Remark2   = df_sizelist["Remark"].str.lower().fillna("cfm")
     CRDPD_Mth = YM_CRDPD.fillna("") + BucketB2.fillna("") + "_" + Remark2
-
     insert_after(df_sizelist, "LPD", "YM_CRDPD", YM_CRDPD)
     insert_after(df_sizelist, "YM_CRDPD", "Day_CRDPD", Day_CRDPD)
     insert_after(df_sizelist, "Day_CRDPD", "Class_CRDPD", BucketB2)
@@ -138,8 +135,7 @@ def make_subtotal_only(df_source, group_col, order_cols, label_fmt):
         subtotal = {col:"" for col in df_work.columns}
         label = "(blank)" if pd.isna(key) else label_fmt(key)
         has_new = (grp["Remark"].astype(str).str.lower()=="new").any()
-        has_cancel = (grp["Remark"].astype(str).str.lower()=="cancel").any()
-        subtotal["Remark"] = "Cancel" if has_cancel else ("New" if has_new else "cfm")
+        subtotal["Remark"] = "New" if has_new else "cfm"
         subtotal[group_col] = label
         for col in order_cols: subtotal[col] = grp[col].sum(skipna=True)
         pieces.append(pd.DataFrame([subtotal], columns=df_work.columns))
@@ -172,7 +168,7 @@ st.subheader("📊 CRDPD_Mth_Sizes (Subtotal Only)")
 st.dataframe(crdpd_df.head(20), use_container_width=True)
 
 # =============== Export to Excel ===============
-def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df) -> bytes:
+def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
         wb = writer.book
@@ -199,18 +195,18 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df) -> bytes:
             ws.set_row(0, None, header)
             if hide_first: ws.set_column(0, 0, 0)
             last = excel_col(ncol-1)
+            # warna merah utk New
             ws.conditional_format(f"A2:{last}{nrow+1}", {"type":"formula","criteria":'=INDIRECT("$A"&ROW())="New"',"format":red})
-            ws.conditional_format(f"A2:{last}{nrow+1}", {"type":"formula","criteria":'=INDIRECT("$A"&ROW())="Cancel"',"format":purple})
             ws.freeze_panes(1,1)
             ws.autofilter(0,1 if hide_first else 0,nrow,ncol-1)
             autofit(ws, df, skip_cols=[0] if hide_first else [])
 
-        # Sheet Data
+        # === Sheet Data ===
         df_sizelist.to_excel(writer, sheet_name="Data", index=False)
         ws1 = writer.sheets["Data"]
         nrow1, ncol1 = df_sizelist.shape
-        ws1.set_column(0, ncol1-1, None, base)
         ws1.set_row(0, None, header)
+        ws1.set_column(0, ncol1-1, None, base)
         dt_cols = [c for c in df_sizelist.columns if np.issubdtype(df_sizelist[c].dtype, np.datetime64)]
         for c in dt_cols:
             idx = df_sizelist.columns.get_loc(c)
@@ -218,23 +214,33 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df) -> bytes:
         num_cols = [df_sizelist.columns.get_loc(c) for c in df_sizelist.columns if c == "Order Quantity" or re.match(r'(?i)^UK_', c)]
         for idx in sorted(set(num_cols)): ws1.set_column(idx, idx, None, num0)
         apply_formats(ws1, df_sizelist)
+        # warna ungu utk SO Cancel
+        if "Sales Order" in df_sizelist.columns and cancel_sos:
+            so_idx = df_sizelist.columns.get_loc("Sales Order")
+            so_col = excel_col(so_idx)
+            last = excel_col(ncol1-1)
+            for so in cancel_sos:
+                ws1.conditional_format(
+                    f"A2:{last}{nrow1+1}",
+                    {"type":"formula","criteria":f'=INDIRECT("${so_col}"&ROW())="{so}"',"format":purple}
+                )
 
-        # Sheet Sizes
+        # === Sheet Sizes ===
         sizes_df.to_excel(writer, sheet_name="Sizes", index=False)
         apply_formats(writer.sheets["Sizes"], sizes_df, hide_first=True)
 
-        # Sheet CRD_Mth_Sizes
+        # === Sheet CRD_Mth_Sizes ===
         crd_df.to_excel(writer, sheet_name="CRD_Mth_Sizes", index=False)
         apply_formats(writer.sheets["CRD_Mth_Sizes"], crd_df, hide_first=True)
 
-        # Sheet CRDPD_Mth_Sizes
+        # === Sheet CRDPD_Mth_Sizes ===
         crdpd_df.to_excel(writer, sheet_name="CRDPD_Mth_Sizes", index=False)
         apply_formats(writer.sheets["CRDPD_Mth_Sizes"], crdpd_df, hide_first=True)
 
     return output.getvalue()
 
 # =============== Download Button ===============
-excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df)
+excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos)
 st.download_button("⬇️ Download Excel (match manual Excel)", data=excel_bytes,
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
