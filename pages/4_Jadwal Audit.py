@@ -1,5 +1,5 @@
 # pages/4_Jadwal Audit Mingguan/Bulanan.py
-# Adapted from user's Jadwal Audit Mingguan/Bulanan
+# Adapted from user's Jadwal Audit Mingguan/Bulanan — revised randomization & seed control
 import io, os
 from datetime import date, datetime, timedelta
 from typing import List, Dict
@@ -40,8 +40,6 @@ SLOT_TEMPLATE = [
 HARI_ID  = ["Senin","Selasa","Rabu","Kamis","Jumat","Sabtu","Minggu"]
 BULAN_ID = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"]
 
-ID_HOLIDAYS = holidays.country_holidays("ID")
-
 def fmt_tanggal_id(d: date) -> str:
     return f"{HARI_ID[d.weekday()]}, {d.day} {BULAN_ID[d.month-1]} {d.year}"
 
@@ -51,10 +49,12 @@ def monday_near_future(today: date | None = None) -> date:
     return today + relativedelta(weekday=MO(+1))
 
 def workdays_in_week(monday_date: date) -> List[date]:
+    # Kerja Senin–Jumat, skip hari libur nasional ID
+    hol = holidays.country_holidays("ID", years=[monday_date.year, (monday_date + timedelta(days=6)).year])
     days = []
     for i in range(5):
         d = monday_date + timedelta(days=i)
-        if d not in ID_HOLIDAYS:
+        if d not in hol:
             days.append(d)
     return days
 
@@ -62,10 +62,11 @@ def schedule_one_week(df_people: pd.DataFrame, monday_date: date,
                       orang_per_hari: int, max_per_minggu: int,
                       larang_berturut: bool, seed: int | None = None) -> pd.DataFrame:
     work_days = workdays_in_week(monday_date)
-    names = df_people["Nama"].tolist()
-
-    total_slot = len(work_days) * orang_per_hari
     rng = np.random.default_rng(seed)
+
+    # Penting: acak urutan nama supaya prioritas tidak bias
+    names = df_people["Nama"].tolist()
+    names = list(rng.permutation(names))
 
     quota: Dict[str, int] = {n: 0 for n in names}
     last_day: Dict[str, date | None] = {n: None for n in names}
@@ -81,6 +82,8 @@ def schedule_one_week(df_people: pd.DataFrame, monday_date: date,
     for d in work_days:
         picks: List[str] = []
         remaining = orang_per_hari
+
+        # Round-robin by current quota: 0 -> 1 -> ... -> max_per_minggu-1
         for target_q in range(max_per_minggu):
             if remaining == 0:
                 break
@@ -89,15 +92,19 @@ def schedule_one_week(df_people: pd.DataFrame, monday_date: date,
             take = min(len(group), remaining)
             picks += group[:take]
             remaining -= take
+
+        # Relax rule berturut (jika masih kurang), tetap hormati cap mingguan
         if remaining > 0:
             group_relax = [n for n in names if quota[n] < max_per_minggu and n not in picks]
             rng.shuffle(group_relax)
             take = min(len(group_relax), remaining)
             picks += group_relax[:take]
             remaining -= take
-        if remaining > 0:
-            raise RuntimeError(f"Tidak cukup kandidat untuk {fmt_tanggal_id(d)}.")
 
+        if remaining > 0:
+            raise RuntimeError(f"Tidak cukup kandidat untuk {fmt_tanggal_id(d)} (kurang {remaining}). Tambah personel atau naikkan cap mingguan.")
+
+        # Susun baris hari-itu
         day_df = pd.DataFrame({
             "No": range(1, orang_per_hari+1),
             "Nama": picks[:orang_per_hari],
@@ -106,12 +113,13 @@ def schedule_one_week(df_people: pd.DataFrame, monday_date: date,
         day_df["Tanggal"] = d
         rows.append(day_df)
 
+        # Update kuota & last_day
         for nm in picks[:orang_per_hari]:
             quota[nm] += 1
             last_day[nm] = d
 
     week_df = pd.concat(rows, ignore_index=True)
-    assert (week_df.groupby("Nama").size() <= max_per_minggu).all(), "Ada orang > cap mingguan"
+    assert (week_df.groupby("Nama").size() <= max_per_minggu).all(), "Ada orang melebihi cap mingguan."
     return week_df
 
 def write_week_sheet(xw, sheet_name: str, week_df: pd.DataFrame, monday: date, reset_number_per_group: bool = True):
@@ -124,6 +132,7 @@ def write_week_sheet(xw, sheet_name: str, week_df: pd.DataFrame, monday: date, r
     fmt_no    = wb.add_format({"align":"center","valign":"vcenter","border":1})
     fmt_cell  = wb.add_format({"align":"left","valign":"vcenter","border":1})
 
+    # Lebar kolom per 1 hari (5 kolom)
     for i in range(5):
         base = i*5
         ws.set_column(base+0, base+0, 5)
@@ -152,7 +161,12 @@ def write_week_sheet(xw, sheet_name: str, week_df: pd.DataFrame, monday: date, r
             block = day_df[day_df["Prefix"]==grp][["Nama","Team","Gedung"]].reset_index(drop=True)
             if block.empty:
                 continue
-            nums = list(range(1, len(block)+1)) if reset_number_per_group else list(range(row_ptr-1, row_ptr-1+len(block)))
+            # nomor ulang per blok atau lanjut
+            if reset_number_per_group:
+                nums = list(range(1, len(block)+1))
+            else:
+                nums = list(range(row_ptr-1, row_ptr-1+len(block)))
+
             for r in range(len(block)):
                 ws.write(row_ptr+r, base_col+0, nums[r], fmt_no)
                 ws.write(row_ptr+r, base_col+1, block.loc[r,"Nama"], fmt_cell)
@@ -160,6 +174,7 @@ def write_week_sheet(xw, sheet_name: str, week_df: pd.DataFrame, monday: date, r
                 ws.write(row_ptr+r, base_col+3, block.loc[r,"Gedung"], fmt_cell)
             row_ptr += len(block) + 1
 
+# ================= UI =================
 st.title(APP_TITLE)
 st.caption("Upload daftar personel (Nama, Team) lalu generate jadwal. Gedung tetap sesuai template.")
 
@@ -173,6 +188,15 @@ with st.sidebar:
     start_date_choice = st.date_input("Mulai dari Senin", value=monday_near_future())
     if start_date_choice.weekday() != 0:
         st.error("Tanggal mulai harus hari Senin.")
+
+    st.markdown("---")
+    mode_acak = st.radio("Mode pengacakan", ["Acak tiap generate", "Tetap (pakai seed)"], index=0)
+    if mode_acak == "Tetap (pakai seed)":
+        seed_user = st.number_input("Seed (integer)", value=42, step=1)
+        seed_base = int(seed_user)
+    else:
+        # seed dari entropi waktu agar beda setiap klik
+        seed_base = int(datetime.now().timestamp() * 1e6) & 0xFFFFFFFF
 
 up = st.file_uploader("Upload CSV/XLSX dengan kolom: Nama, Team", type=["csv","xlsx","xls"])
 with st.expander("Lihat/Unduh Template (Nama, Team)"):
@@ -193,6 +217,7 @@ else:
         except Exception:
             df_people = pd.read_csv(up)
 
+    # Normalisasi kolom
     cols = {c.lower(): c for c in df_people.columns}
     need = ["nama","team"]
     miss = [c for c in need if c not in cols]
@@ -202,17 +227,24 @@ else:
         df_people = df_people.rename(columns={cols["nama"]:"Nama", cols["team"]:"Team"})
         df_people["Nama"] = df_people["Nama"].astype(str).str.strip()
         df_people["Team"] = df_people["Team"].astype(str).str.strip()
+
         if df_people["Nama"].duplicated().any():
             st.error("Ada duplikat Nama. Harus unik per orang.")
         elif len(SLOT_TEMPLATE) != orang_per_hari:
             st.error(f"Jumlah slot template ({len(SLOT_TEMPLATE)}) ≠ orang per hari ({orang_per_hari}). Sesuaikan dulu.")
         else:
             st.success(f"Data personel: {len(df_people)} orang. Siap generate {jumlah_minggu} minggu.")
+
             if st.button("🚀 Generate Jadwal"):
                 all_weeks = {}
                 for wk in range(1, jumlah_minggu+1):
                     monday = start_date_choice + timedelta(days=(wk-1)*7)
-                    week_df = schedule_one_week(df_people, monday, orang_per_hari, max_per_minggu, larang_berturut, seed=42+wk)
+                    # gunakan seed yang berubah per minggu, berbasis seed_base (acak atau fixed)
+                    week_df = schedule_one_week(
+                        df_people, monday,
+                        orang_per_hari, max_per_minggu, larang_berturut,
+                        seed=seed_base + wk
+                    )
                     all_weeks[wk] = week_df
 
                 st.subheader("Pratinjau Mingguan")
@@ -221,19 +253,29 @@ else:
                     for d in sorted(wdf["Tanggal"].unique()):
                         st.markdown(f"**{fmt_tanggal_id(pd.to_datetime(d).date())}**")
                         show = wdf[wdf["Tanggal"]==d][["No","Nama","Team","Gedung"]].copy()
+
                         def pref(g):
                             g=str(g).strip(); return g[0].upper() if g else ""
                         show["Prefix"] = show["Gedung"].map(pref)
+
                         for grp in ["A","B","C","D"]:
                             block = show[show["Prefix"]==grp][["Nama","Team","Gedung"]].reset_index(drop=True)
-                            if block.empty: continue
+                            if block.empty: 
+                                continue
+                            # numbering 1..n per grup untuk pratinjau (selaras reset_number=True di Excel)
                             block.insert(0, "No", range(1, len(block)+1))
                             st.dataframe(block, use_container_width=True)
 
+                # Export Excel
                 output = io.BytesIO()
                 fname = f"Jadwal_Piket_{jumlah_minggu}Minggu_mulai_{start_date_choice.strftime('%Y%m%d')}.xlsx"
                 with pd.ExcelWriter(output, engine="xlsxwriter", date_format="yyyy-mm-dd") as xw:
                     for wk, week_df in all_weeks.items():
                         sheet_name = f"Minggu_{wk}"
                         write_week_sheet(xw, sheet_name, week_df, start_date_choice + timedelta(days=(wk-1)*7), reset_number)
-                st.download_button("📥 Download Excel Jadwal", data=output.getvalue(), file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                st.download_button(
+                    "📥 Download Excel Jadwal",
+                    data=output.getvalue(),
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
