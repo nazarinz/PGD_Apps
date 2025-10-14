@@ -1,5 +1,5 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v8 stable)
+# 8_Tooling Sizelist.py — PGD Apps (v9 stable)
 # ==========================================
 import re
 import pandas as pd
@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final v8)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final v9)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -88,10 +88,6 @@ if st.button("🚀 Execute Generate"):
                np.where(day >= 8, "15",
                np.where(day >= 1, "07", None))))
 
-    def fmt_mdy(dt):
-        dt = pd.to_datetime(dt)
-        return f"{dt.month}/{dt.day}/{dt.year}"
-
     # ================= CRD_Mth & CRDPD_Mth =================
     if "CRD" in df_sizelist.columns:
         YM_CRD = df_sizelist["CRD"].dt.strftime("%Y%m")
@@ -122,16 +118,17 @@ if st.button("🚀 Execute Generate"):
     def make_subtotal(df, group_col):
         pieces = []
         for key, grp in df.groupby(group_col, dropna=False):
-            subtotal = {col: "" for col in ["Remark", group_col] + order_cols}
+            subtotal = {col: "" for col in ["Remark", "Sales Order", group_col] + order_cols}
             subtotal["Remark"] = (
-                "New" if (grp["Remark"].str.lower() == "new").any()
-                else "cfm"
+                "New" if (grp["Remark"].str.lower() == "new").any() else "cfm"
             )
             subtotal[group_col] = key
             for col in order_cols:
                 subtotal[col] = grp[col].sum(skipna=True)
             pieces.append(subtotal)
-        return pd.DataFrame(pieces)
+        out = pd.DataFrame(pieces)
+        # Hapus kolom Sales Order & Remark dari hasil subtotal
+        return out.drop(columns=["Sales Order", "Remark"], errors="ignore")
 
     sizes_df = make_subtotal(df_sizelist, "Document Date")
     crd_df = make_subtotal(df_sizelist, "CRD_Mth")
@@ -141,10 +138,11 @@ if st.button("🚀 Execute Generate"):
     def colorize(df):
         colors = []
         for _, row in df.iterrows():
-            if str(row.get("Remark", "")).lower() == "new":
-                colors.append("red")
-            elif str(row.get("Sales Order", "")) in cancel_sos:
+            so = str(row.get("Sales Order", ""))
+            if so in cancel_sos:
                 colors.append("purple")
+            elif str(row.get("Remark", "")).lower() == "new":
+                colors.append("red")
             else:
                 colors.append("black")
         return colors
@@ -163,35 +161,55 @@ if st.button("🚀 Execute Generate"):
         output = BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
             wb = writer.book
-            fmt = lambda color=None: wb.add_format({
+
+            # Format helper
+            fmt_text = lambda color=None: wb.add_format({
                 "font_name": "Calibri", "font_size": 9,
                 "align": "center", "valign": "vcenter",
-                "font_color": color or "black", "num_format": "m/d/yyyy"
+                "font_color": color or "black"
+            })
+            fmt_date = lambda color=None: wb.add_format({
+                "font_name": "Calibri", "font_size": 9,
+                "align": "center", "valign": "vcenter",
+                "font_color": color or "black",
+                "num_format": "m/d/yyyy"
+            })
+            fmt_num = lambda color=None: wb.add_format({
+                "font_name": "Calibri", "font_size": 9,
+                "align": "center", "valign": "vcenter",
+                "font_color": color or "black",
+                "num_format": "0"
             })
 
             def write(ws, df, colors):
                 for j, col in enumerate(df.columns):
-                    ws.write(0, j, col, fmt("black").set_bold())
+                    ws.write(0, j, col, fmt_text("black"))
                 for i, (_, row) in enumerate(df.iterrows()):
                     for j, val in enumerate(row):
-                        ws.write(i + 1, j, val, fmt(colors[i]))
+                        color = colors[i]
+                        if pd.isna(val):
+                            ws.write(i + 1, j, "", fmt_text(color))
+                        elif isinstance(val, (pd.Timestamp, np.datetime64)):
+                            ws.write_datetime(i + 1, j, pd.to_datetime(val), fmt_date(color))
+                        elif isinstance(val, (int, float, np.number)) and not isinstance(val, bool):
+                            ws.write_number(i + 1, j, float(val), fmt_num(color))
+                        else:
+                            ws.write(i + 1, j, str(val), fmt_text(color))
                 ws.freeze_panes(1, 0)
+                ws.autofilter(0, 0, len(df), len(df.columns) - 1)
 
+            # Write all sheets
             df_sizelist.to_excel(writer, sheet_name="Data", index=False)
-            ws1 = writer.sheets["Data"]
-            write(ws1, df_sizelist, color_main)
+            write(writer.sheets["Data"], df_sizelist, color_main)
 
             sizes_df.to_excel(writer, sheet_name="Sizes", index=False)
-            ws2 = writer.sheets["Sizes"]
-            write(ws2, sizes_df, color_sizes)
+            write(writer.sheets["Sizes"], sizes_df, color_sizes)
 
             crd_df.to_excel(writer, sheet_name="CRD_Mth_Sizes", index=False)
-            ws3 = writer.sheets["CRD_Mth_Sizes"]
-            write(ws3, crd_df, color_crd)
+            write(writer.sheets["CRD_Mth_Sizes"], crd_df, color_crd)
 
             crdpd_df.to_excel(writer, sheet_name="CRDPD_Mth_Sizes", index=False)
-            ws4 = writer.sheets["CRDPD_Mth_Sizes"]
-            write(ws4, crdpd_df, color_crdpd)
+            write(writer.sheets["CRDPD_Mth_Sizes"], crdpd_df, color_crdpd)
 
             # Summary sheet
             total_so = df_sizelist["Sales Order"].nunique() if "Sales Order" in df_sizelist else 0
@@ -202,10 +220,13 @@ if st.button("🚀 Execute Generate"):
                 "Value": [total_so, total_new, total_cancel]
             })
             summary.to_excel(writer, sheet_name="Summary", index=False)
+            ws5 = writer.sheets["Summary"]
+            for j in range(2):
+                ws5.set_column(j, j, 18)
 
         return output.getvalue()
 
     excel_bytes = build_excel()
     st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v8.xlsx",
+                       file_name="Tooling_Sizelist_v9.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
