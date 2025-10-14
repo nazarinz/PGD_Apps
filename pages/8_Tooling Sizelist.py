@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 # ====================== Streamlit Config ======================
-st.set_page_config(page_title="PGD Apps — Subtotal Generator", page_icon="📊", layout="wide")
+st.set_page_config(page_title="PGD Apps — Sizelist untuk Tooling", page_icon="📊", layout="wide")
 st.title("📊 Subtotal Generator — Sizes, CRD_Mth, CRDPD_Mth")
 
 # ====================== Upload Excel ======================
@@ -246,4 +246,4 @@ st.download_button("⬇️ Download Excel (warna aktif & bersih)",
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("🔴 Merah = New • 🟣 Ungu = Cancel (warna tetap aktif meski kolom remark disembunyikan)")
+st.caption("🔴 Merah = New • 🟣 Ungu = Cancel")
