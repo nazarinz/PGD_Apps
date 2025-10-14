@@ -1,4 +1,4 @@
-# app.py — PGD Subtotal Generator (FINAL-STABLE)
+# app.py — PGD Subtotal Generator (FINAL HARD-COLOR VERSION)
 # Author: Nazarudin Zaini
 
 import re
@@ -22,29 +22,26 @@ st.markdown("""
 ### 📑 Format File Excel yang Diharapkan
 Pastikan file Excel memiliki kolom berikut (minimal):
 
-| Kolom Wajib        | Keterangan |
-|--------------------|------------|
-| **Sales Order**      | Nomor Sales Order (unik per order) |
-| **Document Date**    | Tanggal dokumen order |
-| **Article**          | Kode artikel (hanya FG / HS digunakan, HL & HU dihapus) |
-| **Order Quantity**   | Jumlah pesanan |
-| **Working Status**   | Status produksi (gunakan untuk filter `10` pada order baru) |
-| **CRD**              | Customer Request Date |
-| **PD**               | Planned Date |
-| **LPD**              | Latest Planned Date |
-| **UK_***             | Kolom ukuran (size breakdown) |
+| Kolom Wajib | Keterangan |
+|--------------|-------------|
+| **Sales Order** | Nomor Sales Order |
+| **Document Date** | Tanggal dokumen order |
+| **Article** | Kode artikel (hanya FG/HS, HL & HU dihapus) |
+| **Order Quantity** | Jumlah pesanan |
+| **Working Status** | Status produksi (gunakan `10` untuk order baru) |
+| **CRD**, **PD**, **LPD** | Tanggal penting |
+| **UK_*** | Kolom ukuran (size breakdown) |
 
-Kolom lain boleh ada, tapi yang di atas wajib untuk kalkulasi subtotal.
 """)
 
 # =============== Baca Data ===============
 df_sizelist = pd.read_excel(uploaded)
 
-# Filter: hanya Article yang diawali FG/HS
+# Filter: hanya Article FG/HS
 if "Article" in df_sizelist.columns:
     df_sizelist = df_sizelist[~df_sizelist["Article"].astype(str).str.startswith(("HL", "HU"))]
 
-# =============== Input Wajib ===============
+# =============== Input wajib ===============
 new_order_date = st.date_input("📅 Pilih tanggal New Order terakhir (WAJIB)")
 if not new_order_date:
     st.warning("❗ Harap pilih tanggal New Order terlebih dahulu.")
@@ -61,7 +58,7 @@ for col in ["Document Date", "LPD", "CRD", "PD"]:
     if col in df_sizelist.columns:
         df_sizelist[col] = pd.to_datetime(df_sizelist[col], errors="coerce")
 
-# =============== Logic Remark (2 kondisi utama) ===============
+# =============== Remark logic ===============
 if "Remark" in df_sizelist.columns:
     df_sizelist.drop(columns=["Remark"], inplace=True)
 
@@ -74,16 +71,15 @@ remark = np.select(
     ["New"],
     default="cfm"
 )
-
 insert_pos = df_sizelist.columns.get_loc("Document Date") + 1
 df_sizelist.insert(insert_pos, "Remark", remark)
 
-# =============== Isi LPD kosong (min dari CRD & PD) ===============
+# =============== Isi LPD kosong ===============
 if {"CRD","PD","LPD"}.issubset(df_sizelist.columns):
     row_min = pd.concat([df_sizelist["CRD"], df_sizelist["PD"]], axis=1).min(axis=1, skipna=True)
     df_sizelist.loc[df_sizelist["LPD"].isna(), "LPD"] = row_min[df_sizelist["LPD"].isna()]
 
-# =============== Helpers ===============
+# =============== Helper functions ===============
 def insert_after(df, after_col, new_col, values):
     pos = df.columns.get_loc(after_col) + 1
     df.insert(pos, new_col, values)
@@ -121,7 +117,7 @@ if "LPD" in df_sizelist.columns:
     insert_after(df_sizelist, "Day_CRDPD", "Class_CRDPD", BucketB2)
     insert_after(df_sizelist, "Class_CRDPD", "CRDPD_Mth", CRDPD_Mth)
 
-# =============== Subtotal Builder ===============
+# =============== Subtotal builder ===============
 size_cols = [c for c in df_sizelist.columns if re.match(r'(?i)^UK_', str(c))]
 order_cols = ["Order Quantity"] + size_cols
 
@@ -129,7 +125,6 @@ def make_subtotal_only(df_source, group_col, order_cols, label_fmt):
     df_vis = df_source[[group_col] + order_cols].copy().sort_values(group_col, ascending=True, na_position="last")
     df_work = pd.concat([df_source.loc[df_vis.index, ["Remark"]].reset_index(drop=True),
                          df_vis.reset_index(drop=True)], axis=1)
-
     pieces = []
     for key, grp in df_work.groupby(df_work[group_col], dropna=False, sort=True):
         subtotal = {col:"" for col in df_work.columns}
@@ -139,7 +134,6 @@ def make_subtotal_only(df_source, group_col, order_cols, label_fmt):
         subtotal[group_col] = label
         for col in order_cols: subtotal[col] = grp[col].sum(skipna=True)
         pieces.append(pd.DataFrame([subtotal], columns=df_work.columns))
-
     out = pd.concat(pieces, ignore_index=True)
     grand_vals = df_vis.drop(columns=[group_col]).sum(numeric_only=True)
     grand = {col:"" for col in out.columns}
@@ -154,93 +148,71 @@ crdpd_df  = make_subtotal_only(df_sizelist, "CRDPD_Mth", order_cols, label_fmt=l
 crdpd_df  = crdpd_df.rename(columns={"CRDPD_Mth": "CRDPD_month"})
 
 # =============== Preview ===============
-st.subheader("📑 Data (Preview)")
+st.subheader("📑 Data Preview")
 st.dataframe(df_sizelist.head(20), use_container_width=True)
 
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("📊 Sizes (Subtotal Only)")
-    st.dataframe(sizes_df.head(20), use_container_width=True)
-with c2:
-    st.subheader("📊 CRD_Mth_Sizes (Subtotal Only)")
-    st.dataframe(crd_df.head(20), use_container_width=True)
-st.subheader("📊 CRDPD_Mth_Sizes (Subtotal Only)")
-st.dataframe(crdpd_df.head(20), use_container_width=True)
-
-# =============== Export to Excel ===============
+# =============== Export to Excel (Hard-Color) ===============
 def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
         wb = writer.book
-        base   = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
-        datef  = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter","num_format":"m/d/yyyy"})
-        header = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter","bold":True})
-        red    = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter","font_color":"#FF0000"})
-        purple = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter","font_color":"#800080"})
-        num0   = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter","num_format":"0"})
+        fmt_base  = wb.add_format({"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
+        fmt_date  = wb.add_format({"num_format":"m/d/yyyy","font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
+        fmt_header= wb.add_format({"bold":True,"font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
+        fmt_red   = wb.add_format({"font_color":"#FF0000","font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
+        fmt_purple= wb.add_format({"font_color":"#800080","font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
+        fmt_num   = wb.add_format({"num_format":"0","font_name":"Calibri","font_size":9,"align":"center","valign":"vcenter"})
 
-        def excel_col(i):
-            s=""; n=i+1
-            while n: n, r = divmod(n-1, 26); s = chr(65+r)+s
-            return s
-
-        def autofit(ws, df, skip_cols=[]):
-            for j, col in enumerate(df.columns):
-                if j in skip_cols: continue
-                maxlen = max(len(str(col)), df[col].astype(str).map(len).max() if len(df)>0 else 0)
+        def autofit(ws, df):
+            for j, c in enumerate(df.columns):
+                maxlen = max(len(str(c)), df[c].astype(str).map(len).max() if len(df)>0 else 0)
                 ws.set_column(j, j, max(8, min(60, maxlen + 2)))
 
-        def apply_formats(ws, df, hide_first=False):
-            nrow, ncol = df.shape
-            ws.set_row(0, None, header)
-            if hide_first: ws.set_column(0, 0, 0)
-            last = excel_col(ncol-1)
-            # warna merah utk New
-            ws.conditional_format(f"A2:{last}{nrow+1}", {"type":"formula","criteria":'=INDIRECT("$A"&ROW())="New"',"format":red})
-            ws.freeze_panes(1,1)
-            ws.autofilter(0,1 if hide_first else 0,nrow,ncol-1)
-            autofit(ws, df, skip_cols=[0] if hide_first else [])
+        def color_rows(ws, df):
+            # Hard coloring per row (Remark & Cancel SO)
+            for i in range(len(df)):
+                row_fmt = fmt_base
+                remark_val = str(df.iloc[i].get("Remark", "")).lower()
+                so_val = str(df.iloc[i].get("Sales Order", ""))
+                if remark_val == "new":
+                    row_fmt = fmt_red
+                elif so_val in cancel_sos:
+                    row_fmt = fmt_purple
+                ws.set_row(i+1, None, row_fmt)
 
         # === Sheet Data ===
         df_sizelist.to_excel(writer, sheet_name="Data", index=False)
-        ws1 = writer.sheets["Data"]
-        nrow1, ncol1 = df_sizelist.shape
-        ws1.set_row(0, None, header)
-        ws1.set_column(0, ncol1-1, None, base)
-        dt_cols = [c for c in df_sizelist.columns if np.issubdtype(df_sizelist[c].dtype, np.datetime64)]
-        for c in dt_cols:
-            idx = df_sizelist.columns.get_loc(c)
-            ws1.set_column(idx, idx, 12, datef)
-        num_cols = [df_sizelist.columns.get_loc(c) for c in df_sizelist.columns if c == "Order Quantity" or re.match(r'(?i)^UK_', c)]
-        for idx in sorted(set(num_cols)): ws1.set_column(idx, idx, None, num0)
-        apply_formats(ws1, df_sizelist)
-        # warna ungu utk SO Cancel
-        if "Sales Order" in df_sizelist.columns and cancel_sos:
-            so_idx = df_sizelist.columns.get_loc("Sales Order")
-            so_col = excel_col(so_idx)
-            last = excel_col(ncol1-1)
-            for so in cancel_sos:
-                ws1.conditional_format(
-                    f"A2:{last}{nrow1+1}",
-                    {"type":"formula","criteria":f'=INDIRECT("${so_col}"&ROW())="{so}"',"format":purple}
-                )
+        ws = writer.sheets["Data"]
+        nrow, ncol = df_sizelist.shape
+        ws.set_row(0, None, fmt_header)
+        ws.set_column(0, ncol-1, None, fmt_base)
+        # numeric & date format
+        for c in df_sizelist.columns:
+            if np.issubdtype(df_sizelist[c].dtype, np.datetime64):
+                idx = df_sizelist.columns.get_loc(c)
+                ws.set_column(idx, idx, 12, fmt_date)
+            elif c == "Order Quantity" or re.match(r'(?i)^UK_', c):
+                idx = df_sizelist.columns.get_loc(c)
+                ws.set_column(idx, idx, None, fmt_num)
+        color_rows(ws, df_sizelist)
+        autofit(ws, df_sizelist)
+        ws.freeze_panes(1,0)
 
-        # === Sheet Sizes ===
-        sizes_df.to_excel(writer, sheet_name="Sizes", index=False)
-        apply_formats(writer.sheets["Sizes"], sizes_df, hide_first=True)
-
-        # === Sheet CRD_Mth_Sizes ===
-        crd_df.to_excel(writer, sheet_name="CRD_Mth_Sizes", index=False)
-        apply_formats(writer.sheets["CRD_Mth_Sizes"], crd_df, hide_first=True)
-
-        # === Sheet CRDPD_Mth_Sizes ===
-        crdpd_df.to_excel(writer, sheet_name="CRDPD_Mth_Sizes", index=False)
-        apply_formats(writer.sheets["CRDPD_Mth_Sizes"], crdpd_df, hide_first=True)
+        # === Subtotal sheets ===
+        for name, df in [("Sizes", sizes_df), ("CRD_Mth_Sizes", crd_df), ("CRDPD_Mth_Sizes", crdpd_df)]:
+            df.to_excel(writer, sheet_name=name, index=False)
+            wsx = writer.sheets[name]
+            wsx.set_row(0, None, fmt_header)
+            color_rows(wsx, df)
+            autofit(wsx, df)
+            wsx.freeze_panes(1,0)
 
     return output.getvalue()
 
-# =============== Download Button ===============
 excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos)
-st.download_button("⬇️ Download Excel (match manual Excel)", data=excel_bytes,
+st.download_button("⬇️ Download Excel (warna fix, copy-paste tetap berwarna)",
+                   data=excel_bytes,
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+st.caption("🔴 Merah = New Order  •  🟣 Ungu = Cancel SO (indikasi visual, remark tetap 'cfm')")
