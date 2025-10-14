@@ -1,4 +1,4 @@
-# app.py — PGD Subtotal Generator (FINAL v6 — warna Data fix + drop Remark/SO di subtotal)
+# app.py — PGD Subtotal Generator (FINAL v7 — fix warna hilang setelah drop kolom)
 # Author: Nazarudin Zaini
 
 import re
@@ -164,7 +164,12 @@ crd_df    = make_subtotal_only(df_sizelist, "CRD_Mth", order_cols, str, cancel_s
 crdpd_df  = make_subtotal_only(df_sizelist, "CRDPD_Mth", order_cols, str, cancel_sos)
 crdpd_df  = crdpd_df.rename(columns={"CRDPD_Mth": "CRDPD_month"})
 
-# Drop kolom remark & sales order dari subtotal sheets
+# Simpan versi untuk warna (dengan Remark)
+sizes_df_color = sizes_df.copy()
+crd_df_color = crd_df.copy()
+crdpd_df_color = crdpd_df.copy()
+
+# Drop kolom remark & sales order dari versi final (untuk Excel)
 for df in [sizes_df, crd_df, crdpd_df]:
     for col in ["Remark", "Sales Order"]:
         if col in df.columns:
@@ -175,7 +180,7 @@ st.success("✅ Data berhasil diproses!")
 st.dataframe(df_sizelist.head(20), use_container_width=True)
 
 # ====================== Excel Export ======================
-def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos):
+def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, sizes_df_color, crd_df_color, crdpd_df_color, cancel_sos):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
         wb = writer.book
@@ -196,10 +201,10 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos):
                 maxlen = max(len(str(c)), df[c].astype(str).map(len).max() if len(df) > 0 else 0)
                 ws.set_column(j, j, max(8, min(60, maxlen + 2)))
 
-        def write_colored(ws, df, is_data=False):
+        def write_colored(ws, df, color_ref, is_data=False):
             for i in range(len(df)):
-                remark = str(df.iloc[i].get("Remark", "")).lower() if "Remark" in df.columns else ""
-                so = str(df.iloc[i].get("Sales Order", "")) if "Sales Order" in df.columns else ""
+                remark = str(color_ref.iloc[i].get("Remark", "")).lower() if "Remark" in color_ref.columns else ""
+                so = str(color_ref.iloc[i].get("Sales Order", "")) if "Sales Order" in color_ref.columns else ""
                 if remark == "new":
                     fmt = fmt_red
                 elif is_data and so in cancel_sos:
@@ -215,20 +220,30 @@ def build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos):
                         ws.write(i + 1, j, val, fmt)
 
         # tulis semua sheet
-        for name, df in [("Data", df_sizelist), ("Sizes", sizes_df), ("CRD_Mth_Sizes", crd_df), ("CRDPD_Mth_Sizes", crdpd_df)]:
+        sheets = [
+            ("Data", df_sizelist, df_sizelist, True),
+            ("Sizes", sizes_df, sizes_df_color, False),
+            ("CRD_Mth_Sizes", crd_df, crd_df_color, False),
+            ("CRDPD_Mth_Sizes", crdpd_df, crdpd_df_color, False)
+        ]
+        for name, df, df_color, is_data in sheets:
             df.to_excel(writer, sheet_name=name, index=False)
             ws = writer.sheets[name]
             ws.set_row(0, None, fmt_header)
-            write_colored(ws, df, is_data=(name == "Data"))
+            write_colored(ws, df, df_color, is_data=is_data)
             autofit(ws, df)
             ws.freeze_panes(1, 0)
 
     return output.getvalue()
 
-excel_bytes = build_excel_bytes(df_sizelist, sizes_df, crd_df, crdpd_df, cancel_sos)
-st.download_button("⬇️ Download Excel (warna permanen + bersih)",
+excel_bytes = build_excel_bytes(
+    df_sizelist, sizes_df, crd_df, crdpd_df,
+    sizes_df_color, crd_df_color, crdpd_df_color, cancel_sos
+)
+
+st.download_button("⬇️ Download Excel (warna aktif & bersih)",
                    data=excel_bytes,
                    file_name="df_sizelist_ready.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("🔴 Merah = New • 🟣 Ungu = Cancel (juga di subtotal, kolom remark/SO disembunyikan di sheet subtotal)")
+st.caption("🔴 Merah = New • 🟣 Ungu = Cancel (warna tetap aktif meski kolom remark disembunyikan)")
