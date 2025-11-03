@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final v10)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final vvv10)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
