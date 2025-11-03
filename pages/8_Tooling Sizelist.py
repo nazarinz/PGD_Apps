@@ -1,5 +1,5 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v10.2 hardcolor full-fix)
+# 8_Tooling Sizelist.py — PGD Apps (v11.0 all-color hardcoded)
 # ==========================================
 import re
 import pandas as pd
@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v10.2 Final)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v11.0 All Color Hardcoded)")
 
 # ================= Upload =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -74,10 +74,6 @@ if st.button("🚀 Execute Generate"):
         df_sizelist.loc[df_sizelist["LPD"].isna(), "LPD"] = row_min[df_sizelist["LPD"].isna()]
 
     # ================= CRD & CRDPD Mth =================
-    def insert_after(df, after_col, new_col, values):
-        pos = df.columns.get_loc(after_col) + 1
-        df.insert(pos, new_col, values)
-
     def bucket_day(day):
         return np.where(day >= 24, "30",
                np.where(day >= 16, "23",
@@ -89,14 +85,14 @@ if st.button("🚀 Execute Generate"):
         Day = df_sizelist["CRD"].dt.day
         base = pd.Series(bucket_day(Day))
         CRD_Mth = YM.fillna("") + base.fillna("") + "_" + df_sizelist["Remark"].str.lower()
-        insert_after(df_sizelist, "CRD", "CRD_Mth", CRD_Mth)
+        df_sizelist["CRD_Mth"] = CRD_Mth
 
     if "LPD" in df_sizelist.columns:
         YM = df_sizelist["LPD"].dt.strftime("%Y%m")
         Day = df_sizelist["LPD"].dt.day
         base2 = pd.Series(bucket_day(Day))
         CRDPD_Mth = YM.fillna("") + base2.fillna("") + "_" + df_sizelist["Remark"].str.lower()
-        insert_after(df_sizelist, "LPD", "CRDPD_Mth", CRDPD_Mth)
+        df_sizelist["CRDPD_Mth"] = CRDPD_Mth
 
     # ================= Subtotal =================
     size_cols = [c for c in df_sizelist.columns if re.match(r'(?i)^UK_', str(c))]
@@ -135,50 +131,42 @@ if st.button("🚀 Execute Generate"):
 
     color_main = colorize(df_sizelist)
 
-    # ================= Excel Export =================
+    # ================= Excel Export (FULL COLOR WRITE) =================
     def build_excel():
         output = BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
-            wb = writer.book
+        import xlsxwriter
 
-            # Define solid formats (hard color)
-            fmt_red = wb.add_format({"font_name": "Calibri", "font_size": 9,
-                                     "align": "center", "valign": "vcenter",
-                                     "font_color": "#FF0000"})
-            fmt_purple = wb.add_format({"font_name": "Calibri", "font_size": 9,
-                                        "align": "center", "valign": "vcenter",
-                                        "font_color": "#7030A0"})
-            fmt_black = wb.add_format({"font_name": "Calibri", "font_size": 9,
-                                       "align": "center", "valign": "vcenter",
-                                       "font_color": "#000000"})
-            fmts = {"red": fmt_red, "purple": fmt_purple, "black": fmt_black}
+        wb = xlsxwriter.Workbook(output, {'in_memory': True})
+        fmt_red = wb.add_format({"font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "font_color": "#FF0000"})
+        fmt_purple = wb.add_format({"font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "font_color": "#7030A0"})
+        fmt_black = wb.add_format({"font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "font_color": "#000000"})
+        fmts = {"red": fmt_red, "purple": fmt_purple, "black": fmt_black}
 
-            def write(ws, df, colors):
-                for j, col in enumerate(df.columns):
-                    ws.write(0, j, col, fmt_black)
-                for i, (_, row) in enumerate(df.iterrows()):
-                    fmt = fmts.get(colors[i] if i < len(colors) else "black", fmt_black)
-                    for j, val in enumerate(row):
-                        ws.write(i + 1, j, val if not pd.isna(val) else "", fmt)
-                ws.freeze_panes(1, 0)
-                ws.autofilter(0, 0, len(df), len(df.columns) - 1)
-
+        def write_sheet(sheet_name, df, colors):
+            ws = wb.add_worksheet(sheet_name)
+            # Header
+            for j, col in enumerate(df.columns):
+                ws.write(0, j, col, fmt_black)
             # Data
-            df_sizelist.to_excel(writer, sheet_name="Data", index=False)
-            write(writer.sheets["Data"], df_sizelist, color_main)
+            for i, (_, row) in enumerate(df.iterrows()):
+                fmt = fmts.get(colors[i] if i < len(colors) else "black", fmt_black)
+                for j, val in enumerate(row):
+                    ws.write(i + 1, j, "" if pd.isna(val) else str(val), fmt)
+            ws.freeze_panes(1, 0)
+            ws.autofilter(0, 0, len(df), len(df.columns) - 1)
+            ws.set_column(0, len(df.columns) - 1, 14)
 
-            # Subtotals
-            sizes_df.to_excel(writer, sheet_name="Sizes", index=False)
-            write(writer.sheets["Sizes"], sizes_df, color_sizes)
-            crd_df.to_excel(writer, sheet_name="CRD_Mth_Sizes", index=False)
-            write(writer.sheets["CRD_Mth_Sizes"], crd_df, color_crd)
-            crdpd_df.to_excel(writer, sheet_name="CRDPD_Mth_Sizes", index=False)
-            write(writer.sheets["CRDPD_Mth_Sizes"], crdpd_df, color_crdpd)
+        write_sheet("Data", df_sizelist, color_main)
+        write_sheet("Sizes", sizes_df, color_sizes)
+        write_sheet("CRD_Mth_Sizes", crd_df, color_crd)
+        write_sheet("CRDPD_Mth_Sizes", crdpd_df, color_crdpd)
 
+        wb.close()
+        output.seek(0)
         return output.getvalue()
 
     excel_bytes = build_excel()
-    st.success("✅ Proses selesai dan warna aktif di semua sheet!")
+    st.success("✅ Semua sheet sudah berwarna permanen (red/purple/black)!")
     st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v10.2.xlsx",
+                       file_name="Tooling_Sizelist_v11.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
