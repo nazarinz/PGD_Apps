@@ -1,5 +1,5 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v9 stable)
+# 8_Tooling Sizelist.py — PGD Apps (v10 intelligent coloring)
 # ==========================================
 import re
 import pandas as pd
@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final v9)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final v10)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -117,6 +117,7 @@ if st.button("🚀 Execute Generate"):
 
     def make_subtotal(df, group_col):
         pieces = []
+        color_tags = []
         for key, grp in df.groupby(group_col, dropna=False):
             subtotal = {col: "" for col in ["Remark", "Sales Order", group_col] + order_cols}
             subtotal["Remark"] = (
@@ -125,17 +126,23 @@ if st.button("🚀 Execute Generate"):
             subtotal[group_col] = key
             for col in order_cols:
                 subtotal[col] = grp[col].sum(skipna=True)
+
+            # logic warna group
+            has_new = (grp["Remark"].str.lower() == "new").any()
+            has_cancel = any(grp["Sales Order"].astype(str).isin(cancel_sos))
+            color = "red" if has_new else ("purple" if has_cancel else "black")
             pieces.append(subtotal)
-        out = pd.DataFrame(pieces)
-        # Hapus kolom Sales Order & Remark dari hasil subtotal
-        return out.drop(columns=["Sales Order", "Remark"], errors="ignore")
+            color_tags.append(color)
 
-    sizes_df = make_subtotal(df_sizelist, "Document Date")
-    crd_df = make_subtotal(df_sizelist, "CRD_Mth")
-    crdpd_df = make_subtotal(df_sizelist, "CRDPD_Mth")
+        out = pd.DataFrame(pieces).drop(columns=["Sales Order", "Remark"], errors="ignore")
+        return out, color_tags
 
-    # ================= Pewarnaan =================
-    def colorize(df):
+    sizes_df, color_sizes = make_subtotal(df_sizelist, "Document Date")
+    crd_df, color_crd = make_subtotal(df_sizelist, "CRD_Mth")
+    crdpd_df, color_crdpd = make_subtotal(df_sizelist, "CRDPD_Mth")
+
+    # ================= Pewarnaan Data =================
+    def colorize_data(df):
         colors = []
         for _, row in df.iterrows():
             so = str(row.get("Sales Order", ""))
@@ -147,10 +154,7 @@ if st.button("🚀 Execute Generate"):
                 colors.append("black")
         return colors
 
-    color_main = colorize(df_sizelist)
-    color_sizes = colorize(sizes_df)
-    color_crd = colorize(crd_df)
-    color_crdpd = colorize(crdpd_df)
+    color_main = colorize_data(df_sizelist)
 
     # ================= Preview =================
     st.subheader("📑 Data (preview)")
@@ -228,5 +232,5 @@ if st.button("🚀 Execute Generate"):
 
     excel_bytes = build_excel()
     st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v9.xlsx",
+                       file_name="Tooling_Sizelist_v10.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
