@@ -21,15 +21,17 @@ header("🧾 Quantity Change Tools")
 # ----------------------------- Util (Extractor)
 def split_blocks(raw: str, delimiter: str = "---") -> List[str]:
     """
-    1) Jika ada baris '---' sebagai delimiter, pakai itu.
-    2) Jika tidak ada, auto-split berdasarkan baris yang berisi nomor tiket 7–12 digit (mis. 10462867).
-    3) Jika tetap gagal, fallback split berdasarkan 3+ blank lines.
+    Urutan prioritas:
+    1) Jika ada delimiter '---' → gunakan itu.
+    2) Jika tidak ada, split berdasarkan baris yang persis 'BTP Ticket Number'.
+       Setiap kemunculan label ini dianggap awal blok baru.
+    3) Fallback: 3+ baris kosong.
     """
     text = raw or ""
     if not text.strip():
         return []
 
-    # Buang baris code fence kalau ada
+    # Buang code fence kalau ada
     text = "\n".join([ln for ln in text.splitlines() if ln.strip() not in {"```", "``"}])
 
     # Mode 1: explicit delimiter
@@ -46,16 +48,13 @@ def split_blocks(raw: str, delimiter: str = "---") -> List[str]:
             parts.append("\n".join(buf).strip())
         return [p for p in parts if p]
 
-    # Mode 2: auto-split by ticket number line (7–12 digits)
+    # Mode 2: split by label 'BTP Ticket Number' (BUKAN angka polos)
     lines = text.splitlines()
-    idxs = []
-    for i, ln in enumerate(lines):
-        if re.fullmatch(r"\s*\d{7,12}\s*", ln or ""):
-            idxs.append(i)
-    if idxs:
-        idxs.append(len(lines))
+    starts = [i for i, ln in enumerate(lines) if (ln or "").strip().lower() == "btp ticket number"]
+    if starts:
+        starts.append(len(lines))
         parts = []
-        for a, b in zip(idxs, idxs[1:]):
+        for a, b in zip(starts, starts[1:]):
             chunk = "\n".join(lines[a:b]).strip()
             if chunk:
                 parts.append(chunk)
@@ -67,7 +66,7 @@ def split_blocks(raw: str, delimiter: str = "---") -> List[str]:
 
 def looks_like_html(text: str) -> bool:
     t = (text or "").lower()
-    return ("<html" in t) or ("<body" in t) or ("</div>" in t) or ("<table" in t) or ("<div" in t)
+    return ("<html" in t) or ("<body" in t) or ("</div" in t) or ("<table" in t) or ("<div" in t)
 
 def normalize_lines(txt: str) -> List[str]:
     return [ln.strip() for ln in (txt or "").splitlines() if (ln or "").strip()]
@@ -192,7 +191,7 @@ def _get_new_po_qty(lines: List[str]) -> Optional[str]:
 def parse_plain_text_block(txt: str) -> Dict[str, Optional[str]]:
     lines = normalize_lines(txt)
 
-    # 1) BTP Ticket Number
+    # 1) BTP Ticket Number (STRICT: harus ada labelnya)
     btp_ticket = None
     for i, ln in enumerate(lines):
         if (ln or "").lower() == "btp ticket number" and i + 1 < len(lines):
@@ -200,13 +199,9 @@ def parse_plain_text_block(txt: str) -> Dict[str, Optional[str]]:
             if re.fullmatch(r"\d{7,12}", cand or ""):
                 btp_ticket = cand
                 break
+    # Fallback ringan: pola satu baris (kalau HTML/minify dsb)
     if not btp_ticket:
-        for ln in lines:
-            if re.fullmatch(r"\d{7,12}", ln or ""):
-                btp_ticket = ln
-                break
-    if not btp_ticket:
-        m = re.search(r"\b(\d{7,12})\b\s*-\s*", txt or "")
+        m = re.search(r"(?i)btp\s*ticket\s*number\s*[:\-]?\s*(\d{7,12})", (txt or "").replace("\n", " "))
         if m:
             btp_ticket = m.group(1)
 
@@ -253,7 +248,7 @@ with tab1:
         delimiter = st.text_input(
             "Delimiter antar blok:",
             value="---",
-            help="Opsional. Tanpa delimiter pun aplikasi akan auto-split berdasarkan nomor tiket."
+            help="Opsional. Tanpa delimiter pun aplikasi akan split berdasarkan label 'BTP Ticket Number'."
         )
         show_transposed = st.toggle("🔃 Tampilkan hasil sebagai transpose", value=True)
 
@@ -389,6 +384,8 @@ def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
 
         "country": "Ship-To Country",
         "ship to country": "Ship-To Country",
+        "ship-to country": "Ship-To Country",
+        "ship to  country": "Ship-To Country",
 
         "document date": "Document Date",
         "doc date": "Document Date",
@@ -412,9 +409,6 @@ def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
         "old quantity": "Old Quantity",
         "new quantity": "New Quantity",
         "reduce quantity": "Reduce",
-        "reduce qty": "Reduce",
-        "ship-to country": "Ship-To Country",
-        "ship to  country": "Ship-To Country",
     }
 
     rename_map = {}
