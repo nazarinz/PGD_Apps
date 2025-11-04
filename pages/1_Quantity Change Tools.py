@@ -20,132 +20,163 @@ header("🧾 Quantity Change Tools")
 
 # ----------------------------- Util (Extractor)
 def split_blocks(raw: str, delimiter: str = "---") -> List[str]:
-    if not raw.strip():
+    """
+    1) Kalau ada baris delimiter persis '---', pakai itu.
+    2) Jika tidak ada, auto-split berdasarkan baris yang berisi nomor tiket 7-12 digit (mis. 10462867).
+    """
+    text = raw or ""
+    if not text.strip():
         return []
-    parts, buf = [], []
-    for line in raw.splitlines():
-        if line.strip() == delimiter:
-            if buf:
-                parts.append("\n".join(buf).strip())
-                buf = []
-        else:
-            buf.append(line)
-    if buf:
-        parts.append("\n".join(buf).strip())
-    return [p for p in parts if p]
+
+    # mode 1: explicit delimiter line
+    if f"\n{delimiter}\n" in f"\n{text}\n":
+        parts, buf = [], []
+        for line in text.splitlines():
+            if line.strip() == delimiter:
+                if buf:
+                    parts.append("\n".join(buf).strip())
+                    buf = []
+            else:
+                buf.append(line)
+        if buf:
+            parts.append("\n".join(buf).strip())
+        return [p for p in parts if p]
+
+    # mode 2: auto-split by ticket number start markers
+    lines = text.splitlines()
+    idxs = []
+    for i, ln in enumerate(lines):
+        if re.fullmatch(r"\s*\d{7,12}\s*", ln or ""):
+            idxs.append(i)
+    if not idxs:
+        # fallback: split by 3+ blank lines
+        chunks = [b for b in re.split(r"\n{3,}", text.strip()) if b.strip()]
+        return chunks
+
+    idxs.append(len(lines))
+    parts = []
+    for a, b in zip(idxs, idxs[1:]):
+        chunk = "\n".join(lines[a:b]).strip()
+        if chunk:
+            parts.append(chunk)
+    return parts
 
 def looks_like_html(text: str) -> bool:
-    t = text.lower()
-    return ("<html" in t) or ("<body" in t) or ("</div>" in t) or ("<table" in t)
+    t = (text or "").lower()
+    return ("<html" in t) or ("<body" in t) or ("</div>" in t) or ("<table" in t) or ("<div" in t)
 
 def normalize_lines(txt: str) -> List[str]:
-    return [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    return [ln.strip() for ln in (txt or "").splitlines() if (ln or "").strip()]
 
 SECTION_END_MARKERS = {
-    "tracking log", "outcome", "comments", "attachments",
-    "information"
+    "tracking log", "outcome", "comments", "attachments", "information"
 }
 
 def is_data_row(ln: str) -> bool:
-    if "\t" in ln:
-        return True
-    if re.search(r"\s{2,}", ln):
-        return True
-    return bool(re.search(r"\d+\s+\d+", ln))
+    parts = re.split(r"\t+|\s+", (ln or "").strip())
+    parts = [p for p in parts if p]
+    return (len(parts) >= 5) and any(re.search(r"\d", p) for p in parts)
 
 def parse_row_like_line(line: str) -> List[str]:
-    parts = re.split(r"\t+|\s{2,}", line.strip())
-    if len(parts) <= 1:
-        parts = re.split(r"\s+", line.strip())
-    while parts and parts[-1] == "":
-        parts.pop()
-    return parts
+    # Split robust: TAB atau whitespace umum (1+)
+    parts = re.split(r"\t+|\s+", (line or "").strip())
+    return [p for p in parts if p != ""]
 
 def slice_po_lines_area(lines: List[str]) -> List[str]:
     start = None
     for i, ln in enumerate(lines):
-        if re.fullmatch(r"po\s*lines\s*(\(\d+\))?", ln, flags=re.IGNORECASE):
+        if re.fullmatch(r"po\s*lines\s*(\(\d+\))?", ln or "", flags=re.IGNORECASE):
             start = i
             break
     if start is None:
         return []
     out = []
     for j in range(start + 1, len(lines)):
-        if lines[j].lower() in SECTION_END_MARKERS:
+        if (lines[j] or "").lower() in SECTION_END_MARKERS:
             break
         out.append(lines[j])
     return out
 
 def get_label_value(area: List[str], label: str, start_idx: int = 0, headers_set: Optional[set] = None) -> Optional[str]:
-    lab = label.lower()
-    lower_headers = {h.lower() for h in (headers_set or set())}
+    lab = (label or "").lower()
+    lower_headers = { (h or "").lower() for h in (headers_set or set()) }
     for i in range(start_idx, len(area)):
-        if area[i].lower() == lab:
+        if (area[i] or "").lower() == lab:
             for j in range(i + 1, min(i + 6, len(area))):
-                v = area[j].strip()
+                v = (area[j] or "").strip()
                 if v and (v.lower() not in lower_headers):
                     return v
     return None
 
+def _norm_hdr(s: str) -> str:
+    return re.sub(r"[\s/_#\-]+", "", (s or "").strip().lower())
+
 def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Cari 'Tech_Size' dan 'Original PO Qty' dari blok 'PO Lines (...)' menggunakan:
+    - header berbaris (Aggregator, PO/Contract Line, ..., Tech_Size, Original PO Qty)
+    - baris data pertama setelah header (tokenized)
+    """
     area = slice_po_lines_area(lines)
     if not area:
         return None, None
 
     headers: List[str] = []
     data_line: Optional[str] = None
-    data_idx = None
-    for idx, ln in enumerate(area):
+
+    for ln in area:
         if is_data_row(ln):
             data_line = ln
-            data_idx = idx
             break
         headers.append(ln)
 
-    search_start = (data_idx + 1) if data_idx is not None else 0
-    headers_set = set(headers)
-    ts_label = get_label_value(area, "Tech_Size", start_idx=search_start, headers_set=headers_set)
-    oq_label = get_label_value(area, "Original PO Qty", start_idx=search_start, headers_set=headers_set)
-    if oq_label:
-        m = re.search(r"\d{1,10}", oq_label.replace(",", ""))
-        oq_label = m.group(0) if m else oq_label
-    if ts_label or oq_label:
-        return ts_label, oq_label
-
-    if data_line:
-        parts = parse_row_like_line(data_line)
-        ts = oq = None
-        if headers:
-            try:
-                idx_ts = headers.index("Tech_Size")
-            except ValueError:
-                idx_ts = None
-            try:
-                idx_oq = headers.index("Original PO Qty")
-            except ValueError:
-                idx_oq = None
-
-            if idx_ts is not None and idx_ts < len(parts):
-                ts = parts[idx_ts]
-            if idx_oq is not None and idx_oq < len(parts):
-                oq = parts[idx_oq]
-
-        if (ts is None or oq is None) and len(parts) >= 2:
-            ts = ts or parts[-2]
-            oq = oq or parts[-1]
-
+    # Fallback label scan jika tidak ketemu baris data
+    if not data_line:
+        ts = get_label_value(area, "Tech_Size", headers_set=set(headers))
+        oq = get_label_value(area, "Original PO Qty", headers_set=set(headers))
         if oq:
-            m = re.search(r"\d{1,10}", oq.replace(",", ""))
+            m = re.search(r"\d{1,10}", str(oq).replace(",", ""))
             oq = m.group(0) if m else oq
-
         return ts, oq
 
-    ts = get_label_value(area, "Tech_Size", headers_set=headers_set)
-    oq = get_label_value(area, "Original PO Qty", headers_set=headers_set)
+    # Map header → index
+    hnorm = [_norm_hdr(h) for h in headers if h is not None]
+    def _idx(hname: str) -> Optional[int]:
+        try:
+            return hnorm.index(_norm_hdr(hname))
+        except ValueError:
+            return None
+
+    idx_ts = _idx("Tech_Size")
+    idx_oq = _idx("Original PO Qty")
+
+    parts = parse_row_like_line(data_line)
+
+    ts = parts[idx_ts] if (idx_ts is not None and idx_ts < len(parts)) else None
+    oq = parts[idx_oq] if (idx_oq is not None and idx_oq < len(parts)) else None
+
+    # Cleanup OQ → angka saja
     if oq:
-        m = re.search(r"\d{1,10}", oq.replace(",", ""))
-        oq = m.group(0) if m else oq
+        m = re.search(r"\d{1,10}", str(oq).replace(",", ""))
+        oq = m.group(0) if m else str(oq)
+
+    # Fallback terakhir: ambil 2 token paling akhir sebagai (Tech_Size, OQ)
+    if (ts is None or ts == "") and len(parts) >= 2:
+        ts = parts[-2]
+    if (oq is None or oq == "") and len(parts) >= 1:
+        m = re.search(r"\d{1,10}", str(parts[-1]).replace(",", ""))
+        oq = m.group(0) if m else parts[-1]
+
     return ts, oq
+
+def _get_new_po_qty(lines: List[str]) -> Optional[str]:
+    # Cari baris yang mengandung 'New PO Qty' lalu ambil integer terakhir (mis. "00020 - 50" → 50)
+    for ln in lines:
+        if "new po qty" in (ln or "").lower():
+            nums = re.findall(r"\d+", ln or "")
+            if nums:
+                return nums[-1]
+    return None
 
 def parse_plain_text_block(txt: str) -> Dict[str, Optional[str]]:
     lines = normalize_lines(txt)
@@ -153,41 +184,32 @@ def parse_plain_text_block(txt: str) -> Dict[str, Optional[str]]:
     # 1) BTP Ticket Number
     btp_ticket = None
     for i, ln in enumerate(lines):
-        if ln.lower() == "btp ticket number" and i + 1 < len(lines):
+        if (ln or "").lower() == "btp ticket number" and i + 1 < len(lines):
             cand = lines[i + 1]
-            if re.fullmatch(r"\d{7,12}", cand):
+            if re.fullmatch(r"\d{7,12}", cand or ""):
                 btp_ticket = cand
                 break
     if not btp_ticket:
         for ln in lines:
-            if re.fullmatch(r"\d{7,12}", ln):
+            if re.fullmatch(r"\d{7,12}", ln or ""):
                 btp_ticket = ln
                 break
     if not btp_ticket:
-        m = re.search(r"\b(\d{7,12})\b\s*-\s*", txt)
+        m = re.search(r"\b(\d{7,12})\b\s*-\s*", txt or "")
         if m:
             btp_ticket = m.group(1)
 
     # 2) New PO Qty (Outcome)
-    new_po_qty = None
-    try:
-        idx_out = [i for i,l in enumerate(lines) if l.lower()=="outcome"][0]
-        for j in range(idx_out + 1, len(lines)):
-            if lines[j].lower().startswith("new po qty"):
-                m = re.search(r"(\d+)\s*$", lines[j]) or re.search(r"-\s*(\d+)", lines[j])
-                new_po_qty = m.group(1) if m else None
-                break
-    except IndexError:
-        pass
+    new_po_qty = _get_new_po_qty(lines)
 
     # 3) Tech_Size & Original PO Qty
     tech_size, original_po_qty = extract_from_po_lines(lines)
 
     if original_po_qty is None:
-        m = re.search(r"Original PO Qty\s*\n([^\n]+)", txt, flags=re.IGNORECASE)
+        m = re.search(r"Original PO Qty\s*\n([^\n]+)", txt or "", flags=re.IGNORECASE)
         if m:
             tail = m.group(1)
-            m2 = re.search(r"(\d{1,10})", tail.replace(",", ""))
+            m2 = re.search(r"(\d{1,10})", (tail or "").replace(",", ""))
             if m2:
                 original_po_qty = m2.group(1)
 
@@ -206,7 +228,7 @@ def parse_html_block(html: str) -> Dict[str, Optional[str]]:
     return parse_plain_text_block(txt)
 
 def parse_block_auto(block: str) -> Dict[str, Optional[str]]:
-    if looks_like_html(block):
+    if looks_like_html(block or ""):
         return parse_html_block(block)
     return parse_plain_text_block(block)
 
@@ -217,14 +239,18 @@ with tab1:
 
     with st.sidebar:
         st.header("⚙️ Pengaturan (Extractor)")
-        delimiter = st.text_input("Delimiter antar blok:", value="---",
-                                  help="Pisahkan setiap tiket/blok dengan baris yang persis berisi ---")
+        delimiter = st.text_input(
+            "Delimiter antar blok:",
+            value="---",
+            help="Pisahkan setiap tiket/blok dengan baris yang persis berisi --- (opsional; tanpa ini pun app akan auto-split)."
+        )
+        show_transposed = st.toggle("🔃 Tampilkan hasil sebagai transpose", value=True)
 
     col1, col2 = st.columns(2)
     with col1:
         raw = st.text_area(
-            "Paste 1..N blok teks/HTML (pisahkan dengan delimiter):",
-            height=320,
+            "Paste 1..N blok teks/HTML (boleh tanpa delimiter):",
+            height=360,
             placeholder="All Tasks (1)\n\n10400439\n10400439 - Provide Feedback\n...\n---\n<blok ke-2 atau HTML>..."
         )
     with col2:
@@ -236,12 +262,18 @@ with tab1:
 
     if st.button("🔎 Ekstrak (Text/HTML)"):
         blocks: List[str] = []
-        blocks.extend(split_blocks(raw or "", delimiter=delimiter))
+        # 1) dari textarea
+        if raw and raw.strip():
+            blocks.extend(split_blocks(raw, delimiter=delimiter))
+        # 2) dari upload files
         if uploads:
             for f in uploads:
                 content = f.read().decode("utf-8", errors="ignore")
                 if content.strip():
-                    blocks.append(content)
+                    blocks.extend(split_blocks(content, delimiter=delimiter))
+
+        # filter kosong
+        blocks = [b for b in blocks if b and b.strip()]
 
         if not blocks:
             st.warning("Tidak ada data yang diproses. Paste teks / upload file dulu ya.")
@@ -252,18 +284,31 @@ with tab1:
                 data["_Block"] = f"Block_{i:02d}"
                 results.append(data)
 
-            df = pd.DataFrame(results)[["_Block", "BTP Ticket Number", "Tech_Size", "Original PO Qty", "New PO Qty"]]
-            st.success(f"Berhasil ekstrak {len(df)} blok.")
-            st.dataframe(df, use_container_width=True)
+            base_cols = ["_Block", "BTP Ticket Number", "Tech_Size", "Original PO Qty", "New PO Qty"]
+            df = pd.DataFrame(results)[base_cols]
 
+            st.success(f"Berhasil ekstrak {len(df)} blok.")
+
+            if show_transposed:
+                wide = df.set_index("_Block").T.reset_index().rename(columns={"index": "_Block"})
+                st.dataframe(wide, use_container_width=True)
+            else:
+                st.dataframe(df, use_container_width=True)
+
+            # Export Excel: 2 sheet (Extract & Transposed)
             bio = io.BytesIO()
             with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
                 df.to_excel(writer, index=False, sheet_name="Extract")
-                ws = writer.sheets["Extract"]
-                for col_idx, col in enumerate(df.columns):
-                    max_len = max(len(str(col)), *(len(str(x)) for x in df[col].astype(str).tolist()))
-                    ws.set_column(col_idx, col_idx, min(max(10, max_len + 2), 60))
-                ws.freeze_panes(1, 0)
+                wide = df.set_index("_Block").T.reset_index().rename(columns={"index": "_Block"})
+                wide.to_excel(writer, index=False, sheet_name="Transposed")
+
+                for ws_name, frame in [("Extract", df), ("Transposed", wide)]:
+                    ws = writer.sheets[ws_name]
+                    for col_idx, col in enumerate(frame.columns):
+                        max_len = max(len(str(col)), *(len(str(x)) for x in frame[col].astype(str).tolist()))
+                        ws.set_column(col_idx, col_idx, min(max(10, max_len + 2), 60))
+                    ws.freeze_panes(1, 0)
+
             st.download_button(
                 "⬇️ Download Excel (Extractor)",
                 data=bio.getvalue(),
@@ -349,6 +394,16 @@ def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
         "new qty": "New Quantity",
         "reduce qty": "Reduce",
         "reduce": "Reduce",
+
+        # tambahan alias umum
+        "order quantity": "Order Quantity",
+        "order qty": "Order Quantity",
+        "old quantity": "Old Quantity",
+        "new quantity": "New Quantity",
+        "reduce quantity": "Reduce",
+        "reduce qty": "Reduce",
+        "ship-to country": "Ship-To Country",
+        "ship to  country": "Ship-To Country",
     }
 
     rename_map = {}
