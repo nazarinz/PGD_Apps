@@ -21,14 +21,18 @@ header("🧾 Quantity Change Tools")
 # ----------------------------- Util (Extractor)
 def split_blocks(raw: str, delimiter: str = "---") -> List[str]:
     """
-    1) Kalau ada baris delimiter persis '---', pakai itu.
-    2) Jika tidak ada, auto-split berdasarkan baris yang berisi nomor tiket 7-12 digit (mis. 10462867).
+    1) Jika ada baris '---' sebagai delimiter, pakai itu.
+    2) Jika tidak ada, auto-split berdasarkan baris yang berisi nomor tiket 7–12 digit (mis. 10462867).
+    3) Jika tetap gagal, fallback split berdasarkan 3+ blank lines.
     """
     text = raw or ""
     if not text.strip():
         return []
 
-    # mode 1: explicit delimiter line
+    # Buang baris code fence kalau ada
+    text = "\n".join([ln for ln in text.splitlines() if ln.strip() not in {"```", "``"}])
+
+    # Mode 1: explicit delimiter
     if f"\n{delimiter}\n" in f"\n{text}\n":
         parts, buf = [], []
         for line in text.splitlines():
@@ -42,24 +46,24 @@ def split_blocks(raw: str, delimiter: str = "---") -> List[str]:
             parts.append("\n".join(buf).strip())
         return [p for p in parts if p]
 
-    # mode 2: auto-split by ticket number start markers
+    # Mode 2: auto-split by ticket number line (7–12 digits)
     lines = text.splitlines()
     idxs = []
     for i, ln in enumerate(lines):
         if re.fullmatch(r"\s*\d{7,12}\s*", ln or ""):
             idxs.append(i)
-    if not idxs:
-        # fallback: split by 3+ blank lines
-        chunks = [b for b in re.split(r"\n{3,}", text.strip()) if b.strip()]
-        return chunks
+    if idxs:
+        idxs.append(len(lines))
+        parts = []
+        for a, b in zip(idxs, idxs[1:]):
+            chunk = "\n".join(lines[a:b]).strip()
+            if chunk:
+                parts.append(chunk)
+        return parts
 
-    idxs.append(len(lines))
-    parts = []
-    for a, b in zip(idxs, idxs[1:]):
-        chunk = "\n".join(lines[a:b]).strip()
-        if chunk:
-            parts.append(chunk)
-    return parts
+    # Mode 3: fallback by 3+ blank lines
+    chunks = [b for b in re.split(r"\n{3,}", text.strip()) if b.strip()]
+    return chunks
 
 def looks_like_html(text: str) -> bool:
     t = (text or "").lower()
@@ -72,15 +76,21 @@ SECTION_END_MARKERS = {
     "tracking log", "outcome", "comments", "attachments", "information"
 }
 
-def is_data_row(ln: str) -> bool:
-    parts = re.split(r"\t+|\s+", (ln or "").strip())
-    parts = [p for p in parts if p]
-    return (len(parts) >= 5) and any(re.search(r"\d", p) for p in parts)
-
 def parse_row_like_line(line: str) -> List[str]:
-    # Split robust: TAB atau whitespace umum (1+)
-    parts = re.split(r"\t+|\s+", (line or "").strip())
-    return [p for p in parts if p != ""]
+    """
+    Split robust:
+    - Jika baris mengandung TAB, pakai split('\t') dan TIDAK membuang token kosong.
+      (Penting agar posisi kolom tetap align saat ada PODD kosong, dll.)
+    - Jika tidak ada TAB, fallback ke split whitespace (termasuk multi-spasi).
+    """
+    line = (line or "").rstrip("\n")
+    if "\t" in line:
+        return line.split("\t")  # preserve empties for alignment
+    return re.split(r"\s{2,}|\s+", line.strip())
+
+def is_data_row(ln: str) -> bool:
+    parts = parse_row_like_line(ln)
+    return (len(parts) >= 5) and any(re.search(r"\d", p or "") for p in parts)
 
 def slice_po_lines_area(lines: List[str]) -> List[str]:
     start = None
@@ -113,9 +123,9 @@ def _norm_hdr(s: str) -> str:
 
 def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
     """
-    Cari 'Tech_Size' dan 'Original PO Qty' dari blok 'PO Lines (...)' menggunakan:
-    - header berbaris (Aggregator, PO/Contract Line, ..., Tech_Size, Original PO Qty)
-    - baris data pertama setelah header (tokenized)
+    Ambil 'Tech_Size' dan 'Original PO Qty' dari blok 'PO Lines (...)' dengan:
+    - Header multi-baris (Aggregator, ..., Tech_Size, Original PO Qty)
+    - Baris data pertama (tokenized) dengan TAB-split yang preserve empty tokens
     """
     area = slice_po_lines_area(lines)
     if not area:
@@ -130,7 +140,7 @@ def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str
             break
         headers.append(ln)
 
-    # Fallback label scan jika tidak ketemu baris data
+    # Kalau tidak ketemu baris data, fallback ke label scan
     if not data_line:
         ts = get_label_value(area, "Tech_Size", headers_set=set(headers))
         oq = get_label_value(area, "Original PO Qty", headers_set=set(headers))
@@ -150,27 +160,28 @@ def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str
     idx_ts = _idx("Tech_Size")
     idx_oq = _idx("Original PO Qty")
 
-    parts = parse_row_like_line(data_line)
+    parts = parse_row_like_line(data_line)  # <-- preserve empties saat TAB
 
     ts = parts[idx_ts] if (idx_ts is not None and idx_ts < len(parts)) else None
     oq = parts[idx_oq] if (idx_oq is not None and idx_oq < len(parts)) else None
 
-    # Cleanup OQ → angka saja
+    # Bersihkan qty → angka saja
     if oq:
         m = re.search(r"\d{1,10}", str(oq).replace(",", ""))
         oq = m.group(0) if m else str(oq)
 
-    # Fallback terakhir: ambil 2 token paling akhir sebagai (Tech_Size, OQ)
-    if (ts is None or ts == "") and len(parts) >= 2:
-        ts = parts[-2]
-    if (oq is None or oq == "") and len(parts) >= 1:
-        m = re.search(r"\d{1,10}", str(parts[-1]).replace(",", ""))
-        oq = m.group(0) if m else parts[-1]
+    # Fallback kanan bila mapping gagal (ambil token terakhir sebagai OQ dan sebelumnya sebagai TS)
+    if (ts is None or ts == "") or (oq is None or oq == ""):
+        tokens_no_empty = [t for t in parts if t != ""]
+        if len(tokens_no_empty) >= 2:
+            oq2 = re.search(r"\d{1,10}", str(tokens_no_empty[-1]).replace(",", ""))
+            oq = oq or (oq2.group(0) if oq2 else tokens_no_empty[-1])
+            ts = ts or tokens_no_empty[-2]
 
     return ts, oq
 
 def _get_new_po_qty(lines: List[str]) -> Optional[str]:
-    # Cari baris yang mengandung 'New PO Qty' lalu ambil integer terakhir (mis. "00020 - 50" → 50)
+    # Cari baris yang mengandung 'New PO Qty' → ambil integer terakhir ("00020 - 50" → 50)
     for ln in lines:
         if "new po qty" in (ln or "").lower():
             nums = re.findall(r"\d+", ln or "")
@@ -242,7 +253,7 @@ with tab1:
         delimiter = st.text_input(
             "Delimiter antar blok:",
             value="---",
-            help="Pisahkan setiap tiket/blok dengan baris yang persis berisi --- (opsional; tanpa ini pun app akan auto-split)."
+            help="Opsional. Tanpa delimiter pun aplikasi akan auto-split berdasarkan nomor tiket."
         )
         show_transposed = st.toggle("🔃 Tampilkan hasil sebagai transpose", value=True)
 
@@ -591,7 +602,7 @@ def _format_ticket_date_any(val) -> str:
 def add_fixed_fields_and_select(df_out: pd.DataFrame, ticket_date_val, subject_str: str) -> pd.DataFrame:
     df_out = df_out.copy()
 
-    # 1) Ticket Date: format sekali lalu broadcast
+    # 1) Ticket Date
     df_out["Ticket Date"] = _format_ticket_date_any(ticket_date_val)
 
     # 2) Subject
@@ -645,7 +656,7 @@ with tab2:
                 hasil_std = reshape_po(df_in)
                 hasil_lbl = rename_output_columns(hasil_std)
 
-                # PASS langsung objek tdate (date) — tidak perlu diubah string
+                # langsung pass objek tdate (date)
                 hasil_final = add_fixed_fields_and_select(hasil_lbl, tdate, subj)
 
                 st.success(f"Sukses! {len(hasil_final):,} baris dihasilkan.")
