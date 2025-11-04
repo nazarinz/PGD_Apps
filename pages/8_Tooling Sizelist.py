@@ -1,14 +1,15 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v12.0 Production)
+# 8_Tooling Sizelist.py — PGD Apps (v12.1 Stable + Excel Readable)
 # ==========================================
 import re
 import pandas as pd
 import numpy as np
 import streamlit as st
 from io import BytesIO
+import datetime as dt
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v12.0 Production Ready)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v12.1 Stable)")
 
 # ================= Upload =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -34,8 +35,6 @@ st.markdown("""
 
 # Baca Excel
 df_sizelist = pd.read_excel(uploaded)
-
-# 🧹 Normalisasi nama kolom
 df_sizelist.columns = df_sizelist.columns.str.strip().str.lower()
 
 # Filter Article hanya FG / HS
@@ -64,12 +63,10 @@ if st.button("🚀 Execute Generate"):
     if "remark" in df_sizelist.columns:
         df_sizelist.drop(columns=["remark"], inplace=True)
 
-    # Kolom wajib aman
     for c in ["working status", "document date", "lpd"]:
         if c not in df_sizelist.columns:
             df_sizelist[c] = np.nan
 
-    # Normalisasi Working Status agar bisa deteksi “10” dalam bentuk apapun
     work_status = df_sizelist["working status"].astype(str).str.strip().str.replace(".0", "", regex=False)
 
     remark = np.where(
@@ -144,13 +141,12 @@ if st.button("🚀 Execute Generate"):
 
     color_main = colorize(df_sizelist)
 
-    # ================= Excel Export =================
+    # ================= Excel Export (safe BytesIO version) =================
     def build_excel():
         output = BytesIO()
         import xlsxwriter
-        wb = xlsxwriter.Workbook(output, {'in_memory': True})
 
-        # Format warna
+        wb = xlsxwriter.Workbook(output, {'in_memory': True})
         fmt_red = wb.add_format({"font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "font_color": "#FF0000"})
         fmt_purple = wb.add_format({"font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "font_color": "#7030A0"})
         fmt_black = wb.add_format({"font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "font_color": "#000000"})
@@ -164,8 +160,8 @@ if st.button("🚀 Execute Generate"):
                 fmt = fmts.get(colors[i] if i < len(colors) else "black", fmt_black)
                 for j, val in enumerate(row):
                     if pd.isna(val): val = ""
-                    # Deteksi tanggal → tulis format shortdate
-                    if isinstance(val, (pd.Timestamp, np.datetime64)):
+                    # tulis tanggal pakai format datetime
+                    if isinstance(val, (pd.Timestamp, np.datetime64, dt.datetime)):
                         ws.write_datetime(i + 1, j, pd.to_datetime(val).to_pydatetime(), fmt)
                     else:
                         ws.write(i + 1, j, str(val), fmt)
@@ -180,10 +176,11 @@ if st.button("🚀 Execute Generate"):
 
         wb.close()
         output.seek(0)
-        return output.getvalue()
+        return output.read()
 
     excel_bytes = build_excel()
-    st.success("✅ Semua sheet sudah berwarna dan deteksi 'New' robust!")
+
+    st.success("✅ Semua sheet sudah berwarna, deteksi 'New' robust, dan Excel bisa dibuka tanpa error!")
     st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v12.xlsx",
+                       file_name="Tooling_Sizelist_v12.1.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
