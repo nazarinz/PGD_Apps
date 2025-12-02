@@ -106,7 +106,7 @@ def parse_excel_file(path: str) -> Dict[str,str]:
             break
     return {col: collected.get(col, "") for col in TARGET_HEADERS}
 
-def extract_zip_to_temp(zip_file):
+def extract_zip_to_temp(zip_file, zip_name):
     """Extract uploaded ZIP to temporary directory"""
     temp_dir = tempfile.mkdtemp()
     
@@ -123,53 +123,87 @@ def find_excel_files(root_dir):
         files += glob.glob(os.path.join(root_dir, "**", ext), recursive=True)
     return sorted(files)
 
-def process_folder(root_dir):
-    """Process all Excel files in folder"""
-    files = find_excel_files(root_dir)
-    rows, skipped, no_keys = [], [], []
-    today_date = pd.Timestamp.today().normalize()
-    total = len(files)
+def process_multiple_zips(uploaded_zips):
+    """Process multiple ZIP files"""
+    all_rows = []
+    all_skipped = []
+    all_no_keys = []
+    all_file_list = []
+    temp_dirs = []
     
-    if total == 0:
-        return pd.DataFrame(columns=OUTPUT_COLS), [], [], []
+    today_date = pd.Timestamp.today().normalize()
+    
+    # Extract all ZIPs first
+    st.info(f"📦 Extracting {len(uploaded_zips)} ZIP file(s)...")
+    extraction_progress = st.progress(0)
+    
+    for idx, zip_file in enumerate(uploaded_zips):
+        try:
+            temp_dir = extract_zip_to_temp(zip_file, zip_file.name)
+            temp_dirs.append((temp_dir, zip_file.name))
+            extraction_progress.progress((idx + 1) / len(uploaded_zips))
+        except Exception as e:
+            st.error(f"❌ Error extracting {zip_file.name}: {str(e)}")
+            continue
+    
+    st.success(f"✅ {len(temp_dirs)} ZIP file(s) berhasil di-extract")
+    
+    # Process all files
+    total_files = 0
+    for temp_dir, zip_name in temp_dirs:
+        files = find_excel_files(temp_dir)
+        total_files += len(files)
+    
+    if total_files == 0:
+        return pd.DataFrame(columns=OUTPUT_COLS), [], [], [], temp_dirs
+    
+    st.info(f"🔍 Total {total_files} file Excel/ODS ditemukan")
     
     progress_bar = st.progress(0)
     status_text = st.empty()
+    current_file_idx = 0
     
-    file_list = []
-    for idx, file_path in enumerate(files, 1):
-        rel_path = os.path.relpath(file_path, root_dir)
-        file_list.append(rel_path)
-        status_text.text(f"Processing {idx}/{total}: {rel_path}")
-        progress_bar.progress(idx / total)
+    # Process each ZIP
+    for temp_dir, zip_name in temp_dirs:
+        files = find_excel_files(temp_dir)
         
-        try:
-            row = parse_excel_file(file_path)
-            all_empty = all((not str(row[c]).strip()) for c in TARGET_HEADERS)
-            if all_empty:
-                no_keys.append(rel_path)
-                continue
-            row["_source_file"] = rel_path
-            row["Tanggal Rekap"] = today_date
-            rows.append(row)
-        except Exception as e:
-            tb = traceback.format_exc()
-            skipped.append((rel_path, str(e)))
+        for file_path in files:
+            current_file_idx += 1
+            rel_path = os.path.relpath(file_path, temp_dir)
+            # Add ZIP name prefix to identify source
+            full_path = f"[{zip_name}] {rel_path}"
+            all_file_list.append(full_path)
+            
+            status_text.text(f"Processing {current_file_idx}/{total_files}: {full_path}")
+            progress_bar.progress(current_file_idx / total_files)
+            
+            try:
+                row = parse_excel_file(file_path)
+                all_empty = all((not str(row[c]).strip()) for c in TARGET_HEADERS)
+                if all_empty:
+                    all_no_keys.append(full_path)
+                    continue
+                row["_source_file"] = full_path
+                row["Tanggal Rekap"] = today_date
+                all_rows.append(row)
+            except Exception as e:
+                tb = traceback.format_exc()
+                all_skipped.append((full_path, str(e)))
     
     status_text.text("✅ Processing complete!")
     
-    if rows:
-        df_out = pd.DataFrame(rows).reindex(columns=OUTPUT_COLS)
+    if all_rows:
+        df_out = pd.DataFrame(all_rows).reindex(columns=OUTPUT_COLS)
     else:
         df_out = pd.DataFrame(columns=OUTPUT_COLS)
     
-    return df_out, no_keys, skipped, file_list
+    return df_out, all_no_keys, all_skipped, all_file_list, temp_dirs
 
 # ---------------- Streamlit UI ----------------
 st.set_page_config(page_title="Excel/ODS Parser", page_icon="📊", layout="wide")
 
 st.title("📊 Excel/ODS Parser untuk E-Memo")
-st.markdown("Upload folder (dalam format ZIP) yang berisi file Excel/ODS untuk diparse secara otomatis")
+st.markdown("Upload **multiple ZIP files** yang berisi file Excel/ODS untuk diparse secara otomatis")
 
 # Sidebar info
 with st.sidebar:
@@ -182,10 +216,15 @@ with st.sidebar:
     - .xlsb
     - .ods
     
-    **Cara Upload Folder:**
-    1. Compress folder Anda menjadi ZIP
-    2. Upload file ZIP
-    3. Semua file Excel/ODS di dalam folder (termasuk subfolder) akan diproses otomatis
+    **Cara Upload Multiple ZIP:**
+    1. Compress setiap folder menjadi ZIP
+    2. Upload semua file ZIP sekaligus
+    3. Semua file Excel/ODS akan diproses otomatis
+    
+    **Keuntungan Multiple ZIP:**
+    - Upload beberapa folder sekaligus
+    - Source file diberi label nama ZIP
+    - Lebih cepat dan efisien
     
     **Target Headers:**
     """)
@@ -194,50 +233,70 @@ with st.sidebar:
             st.text(f"• {header}")
 
 # Instructions
-st.info("💡 **Cara Upload Folder:** Compress folder Anda menjadi file ZIP, kemudian upload file ZIP tersebut di bawah ini.")
+st.info("💡 **Cara Upload:** Compress setiap folder menjadi file ZIP, kemudian upload **semua file ZIP sekaligus** di bawah ini.")
 
-# File uploader for ZIP
-uploaded_zip = st.file_uploader(
-    "Upload Folder (dalam format ZIP)",
+# File uploader for multiple ZIPs
+uploaded_zips = st.file_uploader(
+    "Upload Multiple ZIP Files",
     type=["zip"],
-    help="Upload file ZIP yang berisi folder dengan file Excel/ODS"
+    accept_multiple_files=True,
+    help="Anda bisa upload beberapa file ZIP sekaligus. Setiap ZIP bisa berisi folder dengan file Excel/ODS"
 )
 
-if uploaded_zip:
-    st.success(f"✅ File ZIP berhasil diupload: {uploaded_zip.name}")
+if uploaded_zips:
+    st.success(f"✅ {len(uploaded_zips)} file ZIP berhasil diupload")
     
-    if st.button("🚀 Mulai Processing", type="primary"):
-        temp_dir = None
+    # Show uploaded ZIP files
+    with st.expander("📦 Daftar ZIP yang Diupload"):
+        for idx, zip_file in enumerate(uploaded_zips, 1):
+            st.text(f"{idx}. {zip_file.name} ({zip_file.size / 1024:.1f} KB)")
+    
+    if st.button("🚀 Mulai Processing Semua ZIP", type="primary"):
+        temp_dirs = []
         try:
-            with st.spinner("Extracting ZIP file..."):
-                temp_dir = extract_zip_to_temp(uploaded_zip)
-                st.success("✅ ZIP file berhasil di-extract")
-            
-            with st.spinner("Scanning dan memproses file..."):
-                df_result, no_keys, skipped, file_list = process_folder(temp_dir)
+            with st.spinner("Processing multiple ZIP files..."):
+                df_result, no_keys, skipped, file_list, temp_dirs = process_multiple_zips(uploaded_zips)
                 
                 # Display results
                 st.header("📈 Hasil Rekap")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("Total File Ditemukan", len(file_list))
+                    st.metric("Total ZIP Diupload", len(uploaded_zips))
                 with col2:
-                    st.metric("Berhasil Diparse", len(df_result))
+                    st.metric("Total File Ditemukan", len(file_list))
                 with col3:
-                    st.metric("Label Tidak Ketemu", len(no_keys))
+                    st.metric("Berhasil Diparse", len(df_result))
                 with col4:
-                    st.metric("Error", len(skipped))
+                    st.metric("Error + No Keys", len(skipped) + len(no_keys))
                 
-                # Show file list
-                with st.expander(f"📁 Daftar File yang Ditemukan ({len(file_list)})"):
+                # Show file list grouped by ZIP
+                with st.expander(f"📁 Daftar Semua File yang Ditemukan ({len(file_list)})"):
+                    current_zip = None
                     for f in file_list:
-                        st.text(f"• {f}")
+                        # Extract ZIP name from path
+                        if f.startswith("["):
+                            zip_name = f.split("]")[0][1:]
+                            if zip_name != current_zip:
+                                current_zip = zip_name
+                                st.markdown(f"**📦 {zip_name}**")
+                        st.text(f"  • {f}")
                 
                 # Show parsed data
                 if not df_result.empty:
                     st.subheader("📋 Data Hasil Parse")
-                    st.dataframe(df_result, use_container_width=True, height=400)
+                    
+                    # Add filter by ZIP
+                    all_zips = ["Semua ZIP"] + [f"[{z.name}]" for _, z in zip(temp_dirs, uploaded_zips)]
+                    selected_zip = st.selectbox("Filter berdasarkan ZIP:", all_zips)
+                    
+                    if selected_zip == "Semua ZIP":
+                        filtered_df = df_result
+                    else:
+                        filtered_df = df_result[df_result["_source_file"].str.startswith(selected_zip)]
+                    
+                    st.dataframe(filtered_df, use_container_width=True, height=400)
+                    st.info(f"Menampilkan {len(filtered_df)} dari {len(df_result)} data")
                     
                     # Download button
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -250,10 +309,29 @@ if uploaded_zip:
                         
                         # Add summary sheet
                         summary_data = {
-                            'Metric': ['Total File Ditemukan', 'Berhasil Diparse', 'Label Tidak Ketemu', 'Error'],
-                            'Count': [len(file_list), len(df_result), len(no_keys), len(skipped)]
+                            'Metric': [
+                                'Total ZIP Diupload',
+                                'Total File Ditemukan', 
+                                'Berhasil Diparse', 
+                                'Label Tidak Ketemu', 
+                                'Error'
+                            ],
+                            'Count': [
+                                len(uploaded_zips),
+                                len(file_list), 
+                                len(df_result), 
+                                len(no_keys), 
+                                len(skipped)
+                            ]
                         }
                         pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Summary')
+                        
+                        # Add ZIP list
+                        zip_data = {
+                            'ZIP File': [z.name for z in uploaded_zips],
+                            'Size (KB)': [f"{z.size / 1024:.1f}" for z in uploaded_zips]
+                        }
+                        pd.DataFrame(zip_data).to_excel(writer, index=False, sheet_name='ZIP Files')
                         
                         # Add skipped files sheet if any
                         if skipped:
@@ -266,7 +344,7 @@ if uploaded_zip:
                     output.seek(0)
                     
                     st.download_button(
-                        label="📥 Download Hasil (Excel)",
+                        label=f"📥 Download Hasil (Excel) - {len(df_result)} rows",
                         data=output,
                         file_name=output_filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -296,60 +374,82 @@ if uploaded_zip:
             st.code(traceback.format_exc())
         
         finally:
-            # Cleanup temp directory
-            if temp_dir and os.path.exists(temp_dir):
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
+            # Cleanup temp directories
+            for temp_dir, _ in temp_dirs:
+                if temp_dir and os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir)
+                    except:
+                        pass
 
 else:
-    st.info("👆 Silakan upload file ZIP yang berisi folder dengan file Excel/ODS")
+    st.info("👆 Silakan upload satu atau lebih file ZIP yang berisi folder dengan file Excel/ODS")
     
     # Show example
     with st.expander("💡 Panduan Lengkap"):
         st.markdown("""
         ### Langkah-langkah:
         
-        1. **Persiapan Folder**
-           - Pastikan semua file Excel/ODS ada dalam satu folder
-           - File bisa tersebar di berbagai subfolder
+        1. **Persiapan Multiple Folder**
+           - Folder 1: Rekap Januari
+           - Folder 2: Rekap Februari
+           - Folder 3: Rekap Maret
+           - dst...
         
-        2. **Compress ke ZIP**
+        2. **Compress Setiap Folder ke ZIP**
            - **Windows:** Klik kanan folder → Send to → Compressed (zipped) folder
            - **Mac:** Klik kanan folder → Compress
            - **Linux:** Klik kanan folder → Compress
+           
+           Hasilnya:
+           - Rekap_Januari.zip
+           - Rekap_Februari.zip
+           - Rekap_Maret.zip
         
-        3. **Upload ZIP**
-           - Click tombol **"Browse files"** di atas
-           - Pilih file ZIP yang sudah dibuat
+        3. **Upload Semua ZIP Sekaligus**
+           - Click tombol **"Browse files"**
+           - Select multiple files (Ctrl+Click atau Shift+Click)
+           - Atau drag & drop semua ZIP files
         
         4. **Processing**
-           - Click tombol **"Mulai Processing"**
-           - Tunggu hingga semua file diproses
+           - Click tombol **"Mulai Processing Semua ZIP"**
+           - Tunggu hingga semua file dari semua ZIP diproses
         
-        5. **Download Hasil**
-           - Download hasil dalam format Excel
-           - File hasil berisi beberapa sheet:
-             - **Data:** Hasil parse semua file
-             - **Summary:** Ringkasan statistik
-             - **Errors:** Daftar file yang error (jika ada)
-             - **No Keys:** File yang tidak ketemu labelnya (jika ada)
+        5. **Filter & Download**
+           - Filter hasil berdasarkan ZIP tertentu (optional)
+           - Download hasil lengkap dalam format Excel
         
-        ### Contoh Struktur Folder:
+        ### Contoh Struktur:
         ```
-        Rekap E-Memo/
-        ├── Januari/
-        │   ├── file1.xlsx
-        │   └── file2.xls
-        ├── Februari/
-        │   ├── file3.xlsx
-        │   └── subfolder/
-        │       └── file4.ods
-        └── file5.xlsm
+        📦 Rekap_Januari.zip
+            └── Rekap Januari/
+                ├── file1.xlsx
+                └── file2.xls
+        
+        📦 Rekap_Februari.zip
+            └── Rekap Februari/
+                ├── file3.xlsx
+                └── subfolder/
+                    └── file4.ods
+        
+        📦 Rekap_Maret.zip
+            └── Rekap Maret/
+                └── file5.xlsm
         ```
         
-        **Semua file akan diproses secara otomatis, termasuk yang ada di subfolder!**
+        ### Output Excel akan berisi:
+        - **Sheet "Data":** Hasil parse semua file dari semua ZIP
+        - **Sheet "Summary":** Ringkasan statistik
+        - **Sheet "ZIP Files":** Daftar ZIP yang diupload
+        - **Sheet "Errors":** File yang error (jika ada)
+        - **Sheet "No Keys":** File tanpa label (jika ada)
+        
+        ### Keuntungan Multiple ZIP:
+        ✅ Upload banyak folder sekaligus  
+        ✅ Source file otomatis diberi label nama ZIP  
+        ✅ Bisa filter hasil berdasarkan ZIP tertentu  
+        ✅ Lebih cepat daripada upload satu-satu  
+        ✅ Ideal untuk rekap bulanan/tahunan  
         """)
 
 # Footer
