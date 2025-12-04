@@ -765,7 +765,7 @@ def main():
     # Footer
     st.markdown("---")
     st.markdown(
-        "<p style='text-align: center; color: #666;'>Made with ❤️ for PO Tracking | © 2024</p>",
+        "<p style='text-align: center; color: #666;'>Kadang males kalo mesti susunin by urutan template tracking | © 2025</p>",
         unsafe_allow_html=True
     )
 
