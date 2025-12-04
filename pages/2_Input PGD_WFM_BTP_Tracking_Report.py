@@ -105,7 +105,7 @@ def normalize_input_columns_common(df: pd.DataFrame) -> pd.DataFrame:
         "document date": "Document Date", "doc date": "Document Date",
         "size": "Size", "ticket #": "Ticket", "ticket": "Ticket", "btp ticket": "BTP Ticket",
         "claim cost": "Claim Cost",
-        "remark": "Remark", "remarks": "Remark",  # Add Remark mapping
+        "remark": "Remark", "remarks": "Remark",  # mapping Remark
         "qty": "Order Quantity", "order quantity": "Order Quantity", "order qty": "Order Quantity",
         "old quantity": "Old Quantity", "new quantity": "New Quantity",
         "reduce quantity": "Reduce", "reduce qty": "Reduce",
@@ -165,127 +165,225 @@ TRACKING_COL_ORDER = [
 ]
 
 
-def normalize_cancel_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject_str: str, 
-                                 size_prefix: str = "UK_") -> tuple[pd.DataFrame, list]:
-    """Mode: CANCELLATION"""
-    logs = []
+# =============== 4A) NORMALIZER: CANCELLATION (AGGREGATED PER HEADER) ===============
+def normalize_cancel_to_tracking(
+    df_in: pd.DataFrame,
+    ticket_date_val,
+    subject_str: str,
+    size_prefix: str = "UK_",
+) -> tuple[pd.DataFrame, list]:
+    """
+    Mode: CANCELLATION (AGGREGATED)
+    - TIDAK lagi per-size.
+    - Kolom Size dikosongkan.
+    - Qty & Reduce Qty = TOTAL Order Quantity per header (grand total).
+    - Total diambil dari:
+        1) Kolom 'Order Quantity' (jika ada & valid), kalau kosong/0 →
+        2) Jumlah seluruh kolom size (UK_*) sebagai fallback.
+    """
+    logs: list[str] = []
     logs.append("🔧 [CANCEL] Normalisasi header...")
+
+    # 1) Normalisasi nama kolom umum
     df = normalize_input_columns_common(df_in)
-    
+
+    # 2) Drop kolom duplikat & all-null
     df = df.copy()
     df = df.loc[:, ~df.columns.duplicated()]
     df = df.dropna(axis=1, how="all")
-    
+
+    # 3) Strip string & isi NaN jadi ""
     for c in df.columns:
         if df[c].dtype == "O":
             df[c] = df[c].astype(str).str.strip()
     df = df.fillna("")
-    
+
     logs.append(f"✅ Kolom terdeteksi: {len(df.columns)} kolom")
-    
-    # Debug: Check if Remark column exists
+
+    # 4) Deteksi kolom Remark
     if "Remark" in df.columns:
         remark_vals = df["Remark"].dropna().unique().tolist()
-        logs.append(f"✅ Kolom Remark ditemukan dengan nilai: {', '.join([str(v) for v in remark_vals[:10]])}")
+        logs.append(
+            "✅ Kolom Remark ditemukan dengan nilai: "
+            + ", ".join([str(v) for v in remark_vals[:10]])
+        )
     else:
-        logs.append(f"⚠️ Kolom Remark TIDAK ditemukan! Kolom yang ada: {', '.join([str(c) for c in df.columns[:10]])}")
-    
+        logs.append("⚠️ Kolom Remark TIDAK ditemukan! Semua baris akan diperlakukan sama.")
+
+    # 5) Deteksi kolom size (hanya untuk fallback total)
     size_cols = [c for c in df.columns if str(c).startswith(size_prefix)]
-    logs.append(f"🔹 Kolom size terdeteksi: {len(size_cols)} kolom ({', '.join(size_cols[:5])}{'...' if len(size_cols) > 5 else ''})")
-    
-    if not size_cols:
-        raise ValueError(f"Tidak ditemukan kolom size yang diawali '{size_prefix}'")
-    
+    logs.append(
+        f"🔹 Kolom size terdeteksi: {len(size_cols)} kolom "
+        f"({', '.join(size_cols[:5])}{'...' if len(size_cols) > 5 else ''})"
+    )
+
+    # 6) Filter baris untuk cancellation:
+    #    Remark == 'Order Quantity' atau 'Cancel'. Jika tidak ada Remark, pakai semua baris.
     if "Remark" in df.columns:
-        # Filter untuk Cancellation: bisa "Order Quantity" atau "Cancel"
         logs.append("🔎 Filter baris Remark == 'Order Quantity' atau 'Cancel'")
         remark_clean = df["Remark"].astype(str).str.strip()
         use = df[remark_clean.isin(["Order Quantity", "Cancel"])].copy()
-        logs.append(f"✅ Baris setelah filter: {len(use)} baris")
-        
+        logs.append(f"✅ Baris setelah filter Remark: {len(use)} baris")
+
         if use.empty:
-            uniq_remark = df["Remark"].astype(str).str.strip().replace("", "<blank>").unique().tolist()
-            logs.append(f"⚠️ Tidak ada baris dengan Remark = 'Order Quantity' atau 'Cancel'")
-            logs.append(f"⚠️ Nilai Remark yang ditemukan: {', '.join(uniq_remark[:10])}")
+            uniq_remark = (
+                df["Remark"].astype(str).str.strip().replace("", "<blank>").unique().tolist()
+            )
+            logs.append("⚠️ Tidak ada baris dengan Remark = 'Order Quantity' atau 'Cancel'")
+            logs.append(
+                "⚠️ Nilai Remark yang ditemukan: "
+                + ", ".join([str(v) for v in uniq_remark[:10]])
+            )
             return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
     else:
-        logs.append("⚠️ Kolom 'Remark' tidak ada. Semua baris dipakai.")
+        logs.append("⚠️ Kolom 'Remark' tidak ada. Semua baris dipakai sebagai kandidat cancellation.")
         use = df.copy()
-    
-    fixed_src = ["Work Center", "Document Date", "Sales Order", "Customer Contract ID",
-                 "Sold-To PO No.", "BTP Ticket", "Model Name", "Cust Article No.", "Article",
-                 "Ship-To Search Term", "Ship-To Country", "Order Quantity", "LPD", "PODD",
-                 "Status", "Prod. Status", "Claim Cost"]
-    fixed_cols = [c for c in fixed_src if c in use.columns]
-    
-    if fixed_cols:
-        use[fixed_cols] = use[fixed_cols].replace("", pd.NA).ffill().fillna("")
-    
-    long = use.melt(id_vars=fixed_cols, value_vars=size_cols, 
-                    var_name="Size", value_name="Qty_raw")
-    
-    long["Qty"] = pd.to_numeric(long["Qty_raw"], errors="coerce")
-    long = long[long["Qty"].notna() & (long["Qty"] != 0)]
-    
-    if long.empty:
-        logs.append("⚠️ Tidak ada data quantity setelah unpivot")
+
+    if use.empty:
+        logs.append("⚠️ Tidak ada baris yang bisa diproses setelah filter awal.")
         return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
-    
-    if "Document Date" in long.columns:
-        long["Document Date"] = _fmt_shortdate_series(long["Document Date"])
-    if "LPD" in long.columns:
-        long["LPD"] = _fmt_shortdate_series(long["LPD"])
-    if "PODD" in long.columns:
-        long["PODD"] = _fmt_shortdate_series(long["PODD"])
-    if "Claim Cost" in long.columns:
-        long["Claim Cost"] = long["Claim Cost"].apply(
+
+    # 7) Definisikan kolom header (key) per-header yang ingin dipertahankan
+    key_src = [
+        "Work Center",
+        "Document Date",
+        "Sales Order",
+        "Customer Contract ID",
+        "Sold-To PO No.",
+        "BTP Ticket",
+        "Model Name",
+        "Cust Article No.",
+        "Article",
+        "Ship-To Search Term",
+        "Ship-To Country",
+        "LPD",
+        "PODD",
+        "Status",
+        "Prod. Status",
+        "Claim Cost",
+    ]
+    key_cols = [c for c in key_src if c in use.columns]
+    if not key_cols:
+        logs.append("❌ Tidak ada kolom header kunci yang ditemukan. Periksa struktur file.")
+        return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
+
+    # 8) Forward-fill info header
+    use[key_cols] = use[key_cols].replace("", pd.NA).ffill().fillna("")
+
+    # 9) Hitung total quantity per baris:
+    #    Prioritas 1: kolom 'Order Quantity'
+    #    Prioritas 2: jumlah seluruh kolom size (UK_*)
+    if "Order Quantity" in use.columns:
+        use["_OrderQty_from_col"] = pd.to_numeric(use["Order Quantity"], errors="coerce")
+    else:
+        use["_OrderQty_from_col"] = np.nan
+        logs.append("ℹ️ Kolom 'Order Quantity' tidak tersedia, akan coba hitung dari size (UK_*) saja.")
+
+    if size_cols:
+        use["_OrderQty_from_sizes"] = (
+            use[size_cols]
+            .apply(lambda r: pd.to_numeric(r, errors="coerce").fillna(0).sum(), axis=1)
+        )
+    else:
+        use["_OrderQty_from_sizes"] = np.nan
+        logs.append("ℹ️ Kolom size tidak tersedia, fallback dari size tidak bisa digunakan.")
+
+    # 10) Agregasi per header
+    logs.append(f"🔗 Grouping per header dengan key: {', '.join(key_cols)}")
+    grp = (
+        use.groupby(key_cols, dropna=False)[["_OrderQty_from_col", "_OrderQty_from_sizes"]]
+        .agg({
+            "_OrderQty_from_col": lambda s: s.dropna().iloc[0] if s.dropna().size else np.nan,
+            "_OrderQty_from_sizes": "max",
+        })
+        .reset_index()
+    )
+
+    # 11) Tentukan total quantity final per header
+    grp["TotalQty"] = grp["_OrderQty_from_col"]
+    mask_fallback = grp["TotalQty"].isna() | (grp["TotalQty"] == 0)
+    grp.loc[mask_fallback, "TotalQty"] = grp.loc[mask_fallback, "_OrderQty_from_sizes"]
+
+    logs.append(
+        f"✅ TotalQty berhasil dihitung untuk {grp['TotalQty'].notna().sum()} header "
+        f"(fallback dari size dipakai untuk {mask_fallback.sum()} header)."
+    )
+
+    # 12) Format tanggal & Claim Cost
+    if "Document Date" in grp.columns:
+        grp["Document Date"] = _fmt_shortdate_series(grp["Document Date"])
+    if "LPD" in grp.columns:
+        grp["LPD"] = _fmt_shortdate_series(grp["LPD"])
+    if "PODD" in grp.columns:
+        grp["PODD"] = _fmt_shortdate_series(grp["PODD"])
+    if "Claim Cost" in grp.columns:
+        grp["Claim Cost"] = grp["Claim Cost"].apply(
             lambda x: (f"${_to_float(x):,.2f}" if pd.notna(_to_float(x)) else "")
         )
-    
-    out = pd.DataFrame(index=long.index)
+
+    # 13) Bangun output final sesuai template tracking
+    out = pd.DataFrame(index=grp.index)
+
     ticket_date_str = _format_ticket_date_any(ticket_date_val)
     subject_str = (subject_str or "").strip()
-    
+
     out["Ticket Date"] = ticket_date_str
-    out["Prod Fact."] = long.get("Work Center", "")
-    out["Document Date"] = long.get("Document Date", "")
-    out["SO NO"] = long.get("Sales Order", "")
-    out["Customer Contract No"] = long.get("Customer Contract ID", "")
-    out["PO#"] = long.get("Sold-To PO No.", "")
-    out["BTP Ticket"] = long.get("BTP Ticket", "")
+    out["Prod Fact."] = grp.get("Work Center", "")
+    out["Document Date"] = grp.get("Document Date", "")
+    out["SO NO"] = grp.get("Sales Order", "")
+    out["Customer Contract No"] = grp.get("Customer Contract ID", "")
+    out["PO#"] = grp.get("Sold-To PO No.", "")
+    out["BTP Ticket"] = grp.get("BTP Ticket", "")
     out["Factory E-mail Subject"] = subject_str
-    out["Art.Name"] = long.get("Model Name", "")
-    out["Art #"] = long.get("Cust Article No.", "")
-    out["Article"] = long.get("Article", "")
-    out["Cust#"] = long.get("Ship-To Search Term", "")
-    out["Country"] = long.get("Ship-To Country", "")
-    out["Size"] = long.get("Size", "")
-    out["Qty"] = long["Qty"]
-    out["Reduce Qty"] = long["Qty"]
-    out["Increase Qty"] = ""
-    out["New Qty"] = ""
-    out["LPD"] = long.get("LPD", "")
-    out["PODD"] = long.get("PODD", "")
-    out["Change Type"] = long.get("Status", "")
-    out["Cost Type"] = long.get("Status", "")
-    out["Claim Cost"] = long.get("Claim Cost", "")
-    
+    out["Art.Name"] = grp.get("Model Name", "")
+    out["Art #"] = grp.get("Cust Article No.", "")
+    out["Article"] = grp.get("Article", "")
+    out["Cust#"] = grp.get("Ship-To Search Term", "")
+    out["Country"] = grp.get("Ship-To Country", "")
+
+    # Sesuai request: Size dikosongkan untuk cancellation
+    out["Size"] = ""
+
+    # Qty & Reduce Qty = TotalQty (grand total)
+    out["Qty"] = grp["TotalQty"]
+    out["Reduce Qty"] = grp["TotalQty"]
+    out["Increase Qty"] = ""   # tidak dipakai untuk cancellation
+    out["New Qty"] = ""        # tidak dipakai untuk cancellation
+
+    out["LPD"] = grp.get("LPD", "")
+    out["PODD"] = grp.get("PODD", "")
+
+    # Change Type & Cost Type dari Status
+    out["Change Type"] = grp.get("Status", "")
+    out["Cost Type"] = grp.get("Status", "")
+
+    out["Claim Cost"] = grp.get("Claim Cost", "")
+
+    # 14) Format angka Qty / Reduce Qty
     for col in ["Qty", "Reduce Qty", "Increase Qty", "New Qty"]:
         if col in out.columns:
             as_float = pd.to_numeric(out[col], errors="coerce")
             out[col] = as_float.apply(
-                lambda v: "" if pd.isna(v) else (str(int(v)) if float(v).is_integer() else f"{v}")
+                lambda v: "" if pd.isna(v)
+                else (str(int(v)) if float(v).is_integer() else f"{v}")
             )
-    
+
+    # 15) Reorder kolom
     out = out.reindex(columns=TRACKING_COL_ORDER)
-    logs.append(f"✅ Berhasil memproses {len(out)} baris data")
+
+    logs.append(f"✅ Berhasil memproses {len(out)} baris data (1 baris per header, no per-size).")
     return out, logs
 
 
-def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject_str: str,
-                                   size_prefix: str = "UK_") -> tuple[pd.DataFrame, list]:
+# =============== 4B) NORMALIZER: QUANTITY CHANGE (PER SIZE) ===============
+def normalize_quantity_to_tracking(
+    df_in: pd.DataFrame,
+    ticket_date_val,
+    subject_str: str,
+    size_prefix: str = "UK_",
+) -> tuple[pd.DataFrame, list]:
     """Mode: QUANTITY CHANGE"""
-    logs = []
+    logs: list[str] = []
     logs.append("🔧 [QTY CHANGE] Normalisasi header...")
     df = normalize_input_columns_common(df_in)
     
@@ -343,7 +441,7 @@ def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject
         return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
     
     pivot = long.pivot_table(index=ffill_cols + ["Size"], columns="Remark",
-                            values="Qty", aggfunc="first").reset_index()
+                             values="Qty", aggfunc="first").reset_index()
     
     if "Document Date" in pivot.columns:
         pivot["Document Date"] = _fmt_shortdate_series(pivot["Document Date"])
@@ -366,7 +464,7 @@ def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject
     out["SO NO"] = pivot.get("Sales Order", "")
     out["Customer Contract No"] = pivot.get("Customer Contract ID", "")
     out["PO#"] = pivot.get("Sold-To PO No.", "")
-    out["BTP Ticket"] = ""
+    out["BTP Ticket"] = ""   # bisa di-merge dari extractor kalau perlu
     out["Factory E-mail Subject"] = subject_str
     out["Art.Name"] = pivot.get("Model Name", "")
     out["Art #"] = pivot.get("Cust Article No.", "")
@@ -390,9 +488,9 @@ def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject
     
     if red_f.isna().all():
         red = np.where((~pd.isna(old_f)) & (~pd.isna(new_f)) & (new_f < old_f),
-                      old_f - new_f, np.nan)
+                       old_f - new_f, np.nan)
         inc = np.where((~pd.isna(old_f)) & (~pd.isna(new_f)) & (new_f > old_f),
-                      new_f - old_f, np.nan)
+                       new_f - old_f, np.nan)
     
     out["Reduce Qty"] = red
     out["Increase Qty"] = inc
@@ -400,7 +498,7 @@ def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject
     out["LPD"] = pivot.get("LPD", "")
     out["PODD"] = pivot.get("PODD", "")
     out["Change Type"] = pivot.get("Status", "")
-    out["Cost Type"] = pivot.get("Status", "")
+    out["Cost Type"] = pivot.get("Status", "")  # sesuai revisi: Cost Type dari Status
     out["Claim Cost"] = pivot.get("Claim Cost", "")
     
     for col in ["Qty", "Reduce Qty", "Increase Qty", "New Qty"]:
@@ -435,16 +533,16 @@ def main():
         
         **Format File:**
         - Harus berformat Excel (.xlsx)
-        - Harus memiliki kolom size (UK_X)
-        - Harus memiliki kolom Remark
+        - Harus memiliki kolom size (UK_X) untuk Quantity Change
+        - Dianjurkan memiliki kolom Remark
         
         **Nilai Remark yang Valid:**
         - **Cancellation:** `Cancel` atau `Order Quantity`
         - **Quantity Change:** `Old Quantity`, `New Quantity`, `Reduce`
         
         **Tips:**
-        - Gunakan mode Cancellation untuk pembatalan order
-        - Gunakan mode Quantity Change untuk perubahan qty
+        - Gunakan mode Cancellation untuk pembatalan order (agregat per header)
+        - Gunakan mode Quantity Change untuk perubahan qty per size
         """)
         
         st.markdown("---")
@@ -542,7 +640,7 @@ def main():
                     
                     # Process based on mode
                     if mode == "Cancellation":
-                        st.info(f"🔄 Memproses sebagai: **{mode}**")
+                        st.info(f"🔄 Memproses sebagai: **{mode} (aggregated per header)**")
                         result, logs = normalize_cancel_to_tracking(
                             df_in, 
                             ticket_date_val=ticket_date,
@@ -551,7 +649,7 @@ def main():
                         )
                         output_prefix = "tracking_cancel"
                     else:  # Quantity Change
-                        st.info(f"🔄 Memproses sebagai: **{mode}**")
+                        st.info(f"🔄 Memproses sebagai: **{mode} (per size)**")
                         result, logs = normalize_quantity_to_tracking(
                             df_in,
                             ticket_date_val=ticket_date,
@@ -576,8 +674,8 @@ def main():
                         if mode == "Cancellation":
                             st.markdown("""
                             - Pastikan kolom **Remark** berisi nilai `Cancel` atau `Order Quantity`
-                            - Pastikan ada kolom size yang diawali dengan `UK_` (misalnya: UK_6-, UK_7, dll)
-                            - Pastikan ada nilai quantity di kolom size
+                            - Jika tidak ada kolom Remark, pastikan struktur header sudah benar
+                            - Jika ingin pakai fallback size, pastikan ada kolom `UK_*` berisi qty
                             """)
                         else:
                             st.markdown("""
