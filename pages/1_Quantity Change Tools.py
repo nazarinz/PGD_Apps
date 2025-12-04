@@ -424,6 +424,7 @@ def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
     df2.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in df2.columns]
     return df2
 
+
 def rename_output_columns(df: pd.DataFrame) -> pd.DataFrame:
     out_map = {
         "Work Center": "Prod Fact.",
@@ -443,11 +444,13 @@ def rename_output_columns(df: pd.DataFrame) -> pd.DataFrame:
     }
     return df.rename(columns=out_map)
 
+
 def _clean_money(x: str) -> str:
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return ""
     x = str(x).strip()
     return re.sub(r"[,$]", "", x)
+
 
 def _to_float(x):
     x = _clean_money(x)
@@ -458,10 +461,125 @@ def _to_float(x):
     except Exception:
         return np.nan
 
+
 def _fmt_shortdate_series(s: pd.Series) -> pd.Series:
     dt = pd.to_datetime(s, errors="coerce")
     out = dt.dt.strftime("%m/%d/%Y")
     return out.mask(dt.isna(), "")
+
+
+# ====================== FIXED COLS (2 MODE) ======================
+# Quantity change
+FIXED_COLS_QTYCHANGE = [
+    "Select",
+    "Status",
+    "Working Status",
+    "Working Status Descr.",
+    "PO Date",
+    "Requirement Segment",
+    "Order Type",
+    "Site",
+    "Work Center",
+    "Sales Order",
+    "Sold-To PO No.",
+    "Cost Category",
+    "Feedback Status",
+    "Feedback Date",
+    "Ship-To Party PO No.",
+    "CRD",
+    "PD",
+    "Prod. Team ATP",
+    "FPD",
+    "FPD-DRC",
+    "POSDD",
+    "POSDD-DRC",
+    "LPD",
+    "LPD-DRC",
+    "PODD",
+    "PODD-DRC",
+    "FGR",
+    "Model Name",
+    "Cust Article No.",
+    "Part Number",
+    "Gender",
+    "Article",
+    "Article Lead Time",
+    "Develop Type",
+    "Last Code",
+    "Season",
+    "Product Hierarchy 3",
+    "Outsole Mold",
+    "Pattern Code (Upper",
+    "Ship-To No.",
+    "Ship-To Search Term",
+    "Ship-To Name",
+    "Ship-To Country",
+    "Shipping Type",
+    "Packing Type",
+    "VAS Cut-Off Date",
+    "Classification Code",
+    "Changed By",
+    "Document Date",
+    "Remark",
+    "Order Quantity",
+]
+
+# Cancellation
+FIXED_COLS_CANCEL = [
+    "Select",
+    "Status",
+    "Working Status",
+    "Working Status Descr.",
+    "PO Date",
+    "Requirement Segment",
+    "Order Type",
+    "Site",
+    "Work Center",
+    "Sales Order",
+    "Customer Contract ID",
+    "BTP Ticket",
+    "Sold-To PO No.",
+    "Prod. Status",
+    "Claim Cost",
+    "Ship-To Party PO No.",
+    "CRD",
+    "PD",
+    "Prod. Team ATP",
+    "FPD",
+    "FPD-DRC",
+    "POSDD",
+    "POSDD-DRC",
+    "LPD",
+    "LPD-DRC",
+    "PODD",
+    "PODD-DRC",
+    "FGR",
+    "Model Name",
+    "Cust Article No.",
+    "Part Number",
+    "Gender",
+    "Article",
+    "Article Lead Time",
+    "Develop Type",
+    "Last Code",
+    "Season",
+    "Product Hierarchy 3",
+    "Outsole Mold",
+    "Pattern Code (Upper",
+    "Ship-To No.",
+    "Ship-To Search Term",
+    "Ship-To Name",
+    "Ship-To Country",
+    "Shipping Type",
+    "Packing Type",
+    "VAS Cut-Off Date",
+    "Classification Code",
+    "Changed By",
+    "Document Date",
+    "Remark",
+    "Order Quantity",
+]
+
 
 def reshape_po(df: pd.DataFrame,
                fixed_cols_all: List[str] = None,
@@ -492,7 +610,9 @@ def reshape_po(df: pd.DataFrame,
     group_key_cols = [c for c in fixed_cols if c not in ("Remark","Order Quantity")]
     if not group_key_cols:
         raise ValueError("Kolom kunci tidak ditemukan. Pastikan header sesuai.")
-    df["_group_key"] = df[group_key_cols].apply(lambda r: "|".join([str(v) for v in r.values]), axis=1)
+    df["_group_key"] = df[group_key_cols].apply(
+        lambda r: "|".join([str(v) for v in r.values]), axis=1
+    )
 
     ticket_map, claim_map = {}, {}
     for _, row in df.iterrows():
@@ -567,22 +687,55 @@ def reshape_po(df: pd.DataFrame,
         "Article Lead Time","Ship-To Search Term","Ship-To Country","Document Date",
         "Size","Ticket","Claim Cost","Old Quantity","New Quantity","Reduce"
     ]
-    std_order = [c for c in std_order if c in pivot.columns] + [c for c in pivot.columns if c not in std_order]
+    std_order = [c for c in std_order if c in pivot.columns] + \
+                [c for c in pivot.columns if c not in std_order]
     out = pivot[std_order].copy()
 
-    sort_cols = [c for c in ["Work Center","Sales Order","Model Name","Cust Article No.","Size"] if c in out.columns]
+    sort_cols = [c for c in ["Work Center","Sales Order","Model Name","Cust Article No.","Size"]
+                 if c in out.columns]
     if sort_cols:
         out = out.sort_values(sort_cols, kind="mergesort")
 
     return out.reset_index(drop=True)
 
+
+# ===================== FINAL ORDER (SAMA UNTUK 2 MODE) =====================
 FINAL_ORDER = [
-    "Ticket Date","Prod Fact.","Document Date","SO NO","Customer Contract No","PO#","Ticket#",
-    "Factory E-mail Subject","Art.Name","Art #","Article","Cust#","Country","Size",
-    "Qty","Reduce Qty","Increase Qty","New Qty","LPD","PODD","Change Type","Cost Type","Claim Cost"
+    "Ticket Date",
+    "Prod Fact.",
+    "Document Date",
+    "SO NO",
+    "Customer Contract No",
+    "PO#",
+    "BTP Ticket",
+    "Factory E-mail Subject",
+    "Art.Name",
+    "Art #",
+    "Article",
+    "Cust#",
+    "Country",
+    "Size",
+    "Qty",
+    "Reduce Qty",
+    "Increase Qty",
+    "New Qty",
+    "LPD",
+    "PODD",
+    "Change Type",
+    "Cost Type",
+    "Claim Cost",
+    "Final Status",
+    "Leftover Qty (FG)",
+    "Final cost",
+    "Remark",
+    "Cancel/ Update Date",
+    "Result",
+    "Propose Check FG (Y/N)",
+    "Remark2",
+    "Email",
 ]
 
-# ====== FIX: helper & revised function ======
+
 def _format_ticket_date_any(val) -> str:
     """Terima string/date/datetime/Timestamp -> 'MM/DD/YYYY' atau '' jika invalid."""
     if val is None or val == "":
@@ -593,7 +746,10 @@ def _format_ticket_date_any(val) -> str:
         return ""
     return d.strftime("%m/%d/%Y") if pd.notna(d) else ""
 
-def add_fixed_fields_and_select(df_out: pd.DataFrame, ticket_date_val, subject_str: str) -> pd.DataFrame:
+
+def add_fixed_fields_and_select(df_out: pd.DataFrame,
+                                ticket_date_val,
+                                subject_str: str) -> pd.DataFrame:
     df_out = df_out.copy()
 
     # 1) Ticket Date
@@ -605,29 +761,61 @@ def add_fixed_fields_and_select(df_out: pd.DataFrame, ticket_date_val, subject_s
     # 3) Increase Qty (jika New Qty > Qty)
     qty  = pd.to_numeric(df_out.get("Qty"), errors="coerce")
     newq = pd.to_numeric(df_out.get("New Qty"), errors="coerce")
-    inc = np.where((~pd.isna(qty)) & (~pd.isna(newq)) & (newq > qty), newq - qty, np.nan)
+    inc = np.where(
+        (~pd.isna(qty)) & (~pd.isna(newq)) & (newq > qty),
+        newq - qty,
+        np.nan
+    )
     df_out["Increase Qty"] = inc
 
-    # 4) Susun kolom final (hanya yang tersedia)
+    # 4) Kolom tambahan yang mungkin belum ada → buat kosong
+    extra_cols = [
+        "BTP Ticket",
+        "Final Status",
+        "Leftover Qty (FG)",
+        "Final cost",
+        "Remark",
+        "Cancel/ Update Date",
+        "Result",
+        "Propose Check FG (Y/N)",
+        "Remark2",
+        "Email",
+    ]
+    for c in extra_cols:
+        if c not in df_out.columns:
+            df_out[c] = ""
+
+    # 5) Susun kolom final (hanya yang tersedia)
     have_cols = [c for c in FINAL_ORDER if c in df_out.columns]
     df_out = df_out[have_cols].copy()
 
-    # 5) Format angka
-    for col in ["Qty","Reduce Qty","Increase Qty","New Qty"]:
+    # 6) Format angka
+    for col in ["Qty", "Reduce Qty", "Increase Qty", "New Qty", "Leftover Qty (FG)"]:
         if col in df_out.columns:
             as_float = pd.to_numeric(df_out[col], errors="coerce")
-            df_out[col] = as_float.apply(lambda v: ("" if pd.isna(v) else (str(int(v)) if float(v).is_integer() else f"{v}")))
+            df_out[col] = as_float.apply(
+                lambda v: "" if pd.isna(v)
+                else (str(int(v)) if float(v).is_integer() else f"{v}")
+            )
+
     return df_out
 
+
+# ===================== STREAMLIT UI =====================
 with tab2:
     st.subheader("② Normalizer (Excel) — Reshape UK_* + Ticket Date & Subject")
+
     st.markdown('''
 **Cara pakai singkat:**
-1) Upload Excel sumber (sheet pertama).  
-2) Isi **Ticket Date** (sekali untuk semua baris) dan **Factory E-mail Subject**.  
-3) Klik **Proses & Download**.  
-**Catatan:** Aplikasi otomatis menangkap **semua kolom yang diawali `UK_`** (robust untuk variasi variasi ukuran).
+1) Pilih jenis tiket (Quantity Change / Cancellation).  
+2) Upload Excel sumber (sheet pertama).  
+3) Isi **Ticket Date** (sekali untuk semua baris) dan **Factory E-mail Subject**.  
+4) Klik **Proses & Download**.  
+
+**Catatan:** Aplikasi otomatis menangkap **semua kolom yang diawali `UK_`** (robust untuk variasi ukuran).
 ''')
+
+    mode = st.radio("Jenis Ticket", ["Quantity Change", "Cancellation"], index=0)
 
     file_xlsx = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], accept_multiple_files=False)
     colA, colB, colC = st.columns([1,1,1])
@@ -647,7 +835,13 @@ with tab2:
             try:
                 df_in = pd.read_excel(file_xlsx, sheet_name=0, dtype=str)
                 df_in = normalize_input_columns(df_in)
-                hasil_std = reshape_po(df_in)
+
+                if mode == "Quantity Change":
+                    fixed_cols = FIXED_COLS_QTYCHANGE
+                else:
+                    fixed_cols = FIXED_COLS_CANCEL
+
+                hasil_std = reshape_po(df_in, fixed_cols_all=fixed_cols)
                 hasil_lbl = rename_output_columns(hasil_std)
 
                 # langsung pass objek tdate (date)
