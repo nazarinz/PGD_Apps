@@ -68,12 +68,15 @@ def looks_like_html(text: str) -> bool:
     t = (text or "").lower()
     return ("<html" in t) or ("<body" in t) or ("</div" in t) or ("<table" in t) or ("<div" in t)
 
+
 def normalize_lines(txt: str) -> List[str]:
     return [ln.strip() for ln in (txt or "").splitlines() if (ln or "").strip()]
+
 
 SECTION_END_MARKERS = {
     "tracking log", "outcome", "comments", "attachments", "information"
 }
+
 
 def parse_row_like_line(line: str) -> List[str]:
     """
@@ -87,9 +90,11 @@ def parse_row_like_line(line: str) -> List[str]:
         return line.split("\t")  # preserve empties for alignment
     return re.split(r"\s{2,}|\s+", line.strip())
 
+
 def is_data_row(ln: str) -> bool:
     parts = parse_row_like_line(ln)
     return (len(parts) >= 5) and any(re.search(r"\d", p or "") for p in parts)
+
 
 def slice_po_lines_area(lines: List[str]) -> List[str]:
     start = None
@@ -106,6 +111,7 @@ def slice_po_lines_area(lines: List[str]) -> List[str]:
         out.append(lines[j])
     return out
 
+
 def get_label_value(area: List[str], label: str, start_idx: int = 0, headers_set: Optional[set] = None) -> Optional[str]:
     lab = (label or "").lower()
     lower_headers = { (h or "").lower() for h in (headers_set or set()) }
@@ -117,8 +123,10 @@ def get_label_value(area: List[str], label: str, start_idx: int = 0, headers_set
                     return v
     return None
 
+
 def _norm_hdr(s: str) -> str:
     return re.sub(r"[\s/_#\-]+", "", (s or "").strip().lower())
+
 
 def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -150,6 +158,7 @@ def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str
 
     # Map header → index
     hnorm = [_norm_hdr(h) for h in headers if h is not None]
+
     def _idx(hname: str) -> Optional[int]:
         try:
             return hnorm.index(_norm_hdr(hname))
@@ -179,6 +188,7 @@ def extract_from_po_lines(lines: List[str]) -> Tuple[Optional[str], Optional[str
 
     return ts, oq
 
+
 def _get_new_po_qty(lines: List[str]) -> Optional[str]:
     # Cari baris yang mengandung 'New PO Qty' → ambil integer terakhir ("00020 - 50" → 50)
     for ln in lines:
@@ -187,6 +197,7 @@ def _get_new_po_qty(lines: List[str]) -> Optional[str]:
             if nums:
                 return nums[-1]
     return None
+
 
 def parse_plain_text_block(txt: str) -> Dict[str, Optional[str]]:
     lines = normalize_lines(txt)
@@ -226,6 +237,7 @@ def parse_plain_text_block(txt: str) -> Dict[str, Optional[str]]:
         "New PO Qty": new_po_qty,
     }
 
+
 def parse_html_block(html: str) -> Dict[str, Optional[str]]:
     if not HAS_BS4:
         return parse_plain_text_block(html)
@@ -233,10 +245,12 @@ def parse_html_block(html: str) -> Dict[str, Optional[str]]:
     txt = soup.get_text("\n", strip=True)
     return parse_plain_text_block(txt)
 
+
 def parse_block_auto(block: str) -> Dict[str, Optional[str]]:
     if looks_like_html(block or ""):
         return parse_html_block(block)
     return parse_plain_text_block(block)
+
 
 tab1, tab2 = st.tabs(["① Extractor (Text/HTML)", "② Normalizer (Excel)"])
 
@@ -592,7 +606,11 @@ def reshape_po(df: pd.DataFrame,
             "Ship-To Search Term","Ship-To Country","Document Date","Remark","Order Quantity"
         ]
 
-    df = df.copy().dropna(axis=1, how="all")
+    # PATCH: remove duplicate columns (e.g. Shipping Type twice)
+    df = df.copy()
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    df = df.dropna(axis=1, how="all")
     for c in df.columns:
         if df[c].dtype == "O":
             df[c] = df[c].astype(str).str.strip()
