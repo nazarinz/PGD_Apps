@@ -161,6 +161,20 @@ def _format_ticket_date_any(val) -> str:
     return d.strftime("%m/%d/%Y") if pd.notna(d) else ""
 
 
+def _prefer_series(primary, secondary):
+    """
+    Pilih nilai dari primary kalau tidak kosong, kalau kosong pakai secondary.
+    Dipakai untuk Cost Type: prefer 'Prod. Status', fallback 'Cost Category'.
+    """
+    if not isinstance(primary, pd.Series) or not isinstance(secondary, pd.Series):
+        return primary
+    a = primary.fillna("").astype(str).str.strip()
+    b = secondary.fillna("").astype(str).str.strip()
+    out = a.mask(a == "", b)
+    out = out.replace({"nan": "", "None": ""})
+    return out
+
+
 TRACKING_COL_ORDER = [
     "Ticket Date", "Prod Fact.", "Document Date", "SO NO", "Customer Contract No",
     "PO#", "BTP Ticket", "Factory E-mail Subject", "Art.Name", "Art #", "Article",
@@ -184,6 +198,8 @@ def normalize_cancel_to_tracking(
     - Total diambil dari:
         1) Kolom 'Order Quantity' (jika ada & valid), kalau kosong/0 →
         2) Jumlah seluruh kolom size (UK_*) sebagai fallback.
+    - Change Type = 'PO Cancelation'
+    - Cost Type = dari 'Prod. Status' atau fallback 'Cost Category'
     """
     logs: list[str] = []
     logs.append("🔧 [CANCEL] Normalisasi header...")
@@ -246,7 +262,7 @@ def normalize_cancel_to_tracking(
         logs.append("⚠️ Tidak ada baris yang bisa diproses setelah filter awal.")
         return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
 
-    # 7) Definisikan kolom header (key) per-header yang ingin dipertahankan
+    # 7) Kolom header (key) per-header
     key_src = [
         "Work Center",
         "Document Date",
@@ -263,6 +279,7 @@ def normalize_cancel_to_tracking(
         "PODD",
         "Status",
         "Prod. Status",
+        "Cost Category",
         "Claim Cost",
     ]
     key_cols = [c for c in key_src if c in use.columns]
@@ -353,8 +370,14 @@ def normalize_cancel_to_tracking(
     out["LPD"] = grp.get("LPD", "")
     out["PODD"] = grp.get("PODD", "")
 
-    out["Change Type"] = grp.get("Status", "")
-    out["Cost Type"] = grp.get("Status", "")  # Cost Type dari Status
+    # Change Type fixed by mode
+    out["Change Type"] = "PO Cancelation"
+
+    # Cost Type = Prod. Status → Cost Category (fallback)
+    prod_series = grp.get("Prod. Status", pd.Series([""] * len(grp)))
+    costcat_series = grp.get("Cost Category", pd.Series([""] * len(grp)))
+    out["Cost Type"] = _prefer_series(prod_series, costcat_series)
+
     out["Claim Cost"] = grp.get("Claim Cost", "")
 
     # Format angka
@@ -381,8 +404,10 @@ def normalize_quantity_to_tracking(
 ) -> tuple[pd.DataFrame, list]:
     """
     Mode: QUANTITY CHANGE (PER SIZE)
-    - Gunakan Remark = Old Quantity / New Quantity / Reduce
+    - Gunakan Remark = Ticket / Old Quantity / New Quantity / Reduce
     - Ticket diambil dari baris Remark = "Ticket" (UK_* berisi nomor ticket per size)
+    - Change Type = 'PO Quantity change'
+    - Cost Type = Prod. Status atau fallback Cost Category
     """
     logs: list[str] = []
     logs.append("🔧 [QTY CHANGE] Normalisasi header...")
@@ -422,7 +447,7 @@ def normalize_quantity_to_tracking(
         "Work Center", "Document Date", "Sales Order", "Customer Contract ID",
         "Sold-To PO No.", "Model Name", "Cust Article No.", "Article",
         "Ship-To Search Term", "Ship-To Country", "LPD", "PODD",
-        "Status", "Cost Category", "Claim Cost"
+        "Status", "Prod. Status", "Cost Category", "Claim Cost"
     ]
     ffill_cols_base = [c for c in ffill_cols_base if c in df.columns]
 
@@ -545,8 +570,15 @@ def normalize_quantity_to_tracking(
     out["New Qty"] = new_q
     out["LPD"] = pivot.get("LPD", "")
     out["PODD"] = pivot.get("PODD", "")
-    out["Change Type"] = pivot.get("Status", "")
-    out["Cost Type"] = pivot.get("Status", "")  # Cost Type dari Status
+
+    # Change Type fixed by mode
+    out["Change Type"] = "PO Quantity change"
+
+    # Cost Type = Prod. Status → Cost Category (fallback)
+    prod_series = pivot.get("Prod. Status", pd.Series([""] * len(pivot)))
+    costcat_series = pivot.get("Cost Category", pd.Series([""] * len(pivot)))
+    out["Cost Type"] = _prefer_series(prod_series, costcat_series)
+
     out["Claim Cost"] = pivot.get("Claim Cost", "")
 
     for col in ["Qty", "Reduce Qty", "Increase Qty", "New Qty"]:
@@ -574,7 +606,6 @@ def main():
     with st.sidebar:
         st.image("https://via.placeholder.com/300x100/1f77b4/ffffff?text=PO+Tracker", use_container_width=True)
         st.markdown("### 📖 Panduan Penggunaan")
-        # ⬇️ FIXED: sebelumnya st.markmarkdown (typo)
         st.markdown("""
         **Langkah-langkah:**
         1. Upload file Excel (.xlsx)
@@ -592,11 +623,13 @@ def main():
         - **Cancellation:** `Cancel` atau `Order Quantity`
         - **Quantity Change:** `Ticket`, `Old Quantity`, `New Quantity`, `Reduce`
         
-        **Tips:**
-        - Mode Cancellation → agregat per header (Size kosong, Qty = total)
-        - Mode Quantity Change → per size, BTP Ticket diambil dari baris `Ticket`
+        **Change Type (output):**
+        - Quantity Change → `PO Quantity change`
+        - Cancellation → `PO Cancelation`
+        
+        **Cost Type (output):**
+        - Mengambil dari `Prod. Status`, jika kosong → `Cost Category`
         """)
-
         st.markdown("---")
         st.markdown("### ℹ️ Info")
         st.info("Tool ini akan mengkonversi file PO menjadi format tracking standar dengan normalisasi kolom otomatis.")
