@@ -175,11 +175,12 @@ def _prefer_series(primary, secondary):
     return out
 
 
+# ✅ Tambahkan CRD sebelum LPD
 TRACKING_COL_ORDER = [
     "Ticket Date", "Prod Fact.", "Document Date", "SO NO", "Customer Contract No",
     "PO#", "BTP Ticket", "Factory E-mail Subject", "Art.Name", "Art #", "Article",
     "Cust#", "Country", "Size", "Qty", "Reduce Qty", "Increase Qty", "New Qty",
-    "LPD", "PODD", "Change Type", "Cost Type", "Claim Cost",
+    "CRD", "LPD", "PODD", "Change Type", "Cost Type", "Claim Cost",
 ]
 
 
@@ -275,6 +276,7 @@ def normalize_cancel_to_tracking(
         "Article",
         "Ship-To Search Term",
         "Ship-To Country",
+        "CRD",   # ✅ ikut sebagai key & output
         "LPD",
         "PODD",
         "Status",
@@ -330,6 +332,8 @@ def normalize_cancel_to_tracking(
     # 12) Format tanggal & Claim Cost
     if "Document Date" in grp.columns:
         grp["Document Date"] = _fmt_shortdate_series(grp["Document Date"])
+    if "CRD" in grp.columns:
+        grp["CRD"] = _fmt_shortdate_series(grp["CRD"])
     if "LPD" in grp.columns:
         grp["LPD"] = _fmt_shortdate_series(grp["LPD"])
     if "PODD" in grp.columns:
@@ -367,6 +371,8 @@ def normalize_cancel_to_tracking(
     out["Increase Qty"] = ""
     out["New Qty"] = ""
 
+    # ✅ CRD sebelum LPD
+    out["CRD"] = grp.get("CRD", "")
     out["LPD"] = grp.get("LPD", "")
     out["PODD"] = grp.get("PODD", "")
 
@@ -446,7 +452,7 @@ def normalize_quantity_to_tracking(
     ffill_cols_base = [
         "Work Center", "Document Date", "Sales Order", "Customer Contract ID",
         "Sold-To PO No.", "Model Name", "Cust Article No.", "Article",
-        "Ship-To Search Term", "Ship-To Country", "LPD", "PODD",
+        "Ship-To Search Term", "Ship-To Country", "CRD", "LPD", "PODD",
         "Status", "Prod. Status", "Cost Category", "Claim Cost"
     ]
     ffill_cols_base = [c for c in ffill_cols_base if c in df.columns]
@@ -517,6 +523,8 @@ def normalize_quantity_to_tracking(
     # Format tanggal & Claim Cost
     if "Document Date" in pivot.columns:
         pivot["Document Date"] = _fmt_shortdate_series(pivot["Document Date"])
+    if "CRD" in pivot.columns:
+        pivot["CRD"] = _fmt_shortdate_series(pivot["CRD"])
     if "LPD" in pivot.columns:
         pivot["LPD"] = _fmt_shortdate_series(pivot["LPD"])
     if "PODD" in pivot.columns:
@@ -568,6 +576,9 @@ def normalize_quantity_to_tracking(
     out["Reduce Qty"] = red
     out["Increase Qty"] = inc
     out["New Qty"] = new_q
+
+    # ✅ CRD sebelum LPD
+    out["CRD"] = pivot.get("CRD", "")
     out["LPD"] = pivot.get("LPD", "")
     out["PODD"] = pivot.get("PODD", "")
 
