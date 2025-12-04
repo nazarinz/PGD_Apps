@@ -354,7 +354,7 @@ def normalize_cancel_to_tracking(
     out["PODD"] = grp.get("PODD", "")
 
     out["Change Type"] = grp.get("Status", "")
-    out["Cost Type"] = grp.get("Status", "")
+    out["Cost Type"] = grp.get("Status", "")  # Cost Type dari Status
     out["Claim Cost"] = grp.get("Claim Cost", "")
 
     # Format angka
@@ -386,35 +386,36 @@ def normalize_quantity_to_tracking(
     """
     logs: list[str] = []
     logs.append("🔧 [QTY CHANGE] Normalisasi header...")
+
     df = normalize_input_columns_common(df_in)
-    
+
     df = df.copy()
     df = df.loc[:, ~df.columns.duplicated()]
     df = df.dropna(axis=1, how="all")
-    
+
     for c in df.columns:
         if df[c].dtype == "O":
             df[c] = df[c].astype(str).str.strip()
     df = df.fillna("")
-    
+
     logs.append(f"✅ Kolom terdeteksi: {len(df.columns)} kolom")
-    
+
     # Debug Remark
     if "Remark" in df.columns:
         remark_vals = df["Remark"].dropna().unique().tolist()
         logs.append(f"✅ Kolom Remark ditemukan dengan nilai: {', '.join([str(v) for v in remark_vals[:10]])}")
     else:
         logs.append(f"⚠️ Kolom Remark TIDAK ditemukan! Kolom yang ada: {', '.join([str(c) for c in df.columns[:10]])}")
-    
+
     size_cols = [c for c in df.columns if str(c).startswith(size_prefix)]
     logs.append(f"🔹 Kolom size terdeteksi: {len(size_cols)} kolom ({', '.join(size_cols[:5])}{'...' if len(size_cols) > 5 else ''})")
-    
+
     if not size_cols:
         raise ValueError(f"Tidak ditemukan kolom size yang diawali '{size_prefix}'")
-    
+
     if "Remark" not in df.columns:
         raise ValueError("Kolom 'Remark' tidak ditemukan setelah normalisasi. Periksa nama kolom di file Excel Anda.")
-    
+
     # --------- 1) Build ticket_map dari Remark = "Ticket" ---------
     ticket_map: dict[str, str] = {}
     ffill_cols_base = [
@@ -447,39 +448,39 @@ def normalize_quantity_to_tracking(
     else:
         logs.append("ℹ️ Tidak ada baris Remark = 'Ticket'. BTP Ticket akan dikosongkan.")
 
-    # --------- 2) Proses Old/New/Reduce seperti biasa ---------
+    # --------- 2) Proses Old/New/Reduce ---------
     use = df[df["Remark"].isin(["Old Quantity", "New Quantity", "Reduce"])].copy()
     logs.append(f"✅ Baris dengan Remark Old/New/Reduce: {len(use)} baris")
-    
+
     if use.empty:
         logs.append("⚠️ Tidak ada baris Old Quantity / New Quantity / Reduce")
         return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
-    
-    ffill_cols = ffill_cols_base  # sama set header
+
+    ffill_cols = ffill_cols_base
     if ffill_cols:
         use[ffill_cols] = use[ffill_cols].replace("", pd.NA).ffill().fillna("")
-    
+
     long = use.melt(
         id_vars=ffill_cols + ["Remark"],
         value_vars=size_cols,
         var_name="Size",
         value_name="Qty_raw"
     )
-    
+
     long["Qty"] = pd.to_numeric(long["Qty_raw"], errors="coerce")
     long = long[long["Qty"].notna()]
-    
+
     if long.empty:
         logs.append("⚠️ Tidak ada data quantity setelah unpivot")
         return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
-    
+
     pivot = long.pivot_table(
         index=ffill_cols + ["Size"],
         columns="Remark",
         values="Qty",
         aggfunc="first"
     ).reset_index()
-    
+
     # --------- 3) Mapping BTP Ticket ke pivot per header+size ---------
     if ticket_map:
         pivot["_key"] = pivot[ffill_cols + ["Size"]].astype(str).agg("|".join, axis=1)
@@ -487,7 +488,7 @@ def normalize_quantity_to_tracking(
         logs.append("✅ BTP Ticket berhasil dipetakan ke pivot per size")
     else:
         pivot["BTP_Ticket_Mapped"] = ""
-    
+
     # Format tanggal & Claim Cost
     if "Document Date" in pivot.columns:
         pivot["Document Date"] = _fmt_shortdate_series(pivot["Document Date"])
@@ -499,12 +500,12 @@ def normalize_quantity_to_tracking(
         pivot["Claim Cost"] = pivot["Claim Cost"].apply(
             lambda x: (f"${_to_float(x):,.2f}" if pd.notna(_to_float(x)) else "")
         )
-    
+
     # Bangun output
     out = pd.DataFrame(index=pivot.index)
     ticket_date_str = _format_ticket_date_any(ticket_date_val)
     subject_str = (subject_str or "").strip()
-    
+
     out["Ticket Date"] = ticket_date_str
     out["Prod Fact."] = pivot.get("Work Center", "")
     out["Document Date"] = pivot.get("Document Date", "")
@@ -519,26 +520,26 @@ def normalize_quantity_to_tracking(
     out["Cust#"] = pivot.get("Ship-To Search Term", "")
     out["Country"] = pivot.get("Ship-To Country", "")
     out["Size"] = pivot.get("Size", "")
-    
+
     old_q = pivot.get("Old Quantity")
     new_q = pivot.get("New Quantity")
     red_q = pivot.get("Reduce")
-    
+
     out["Qty"] = old_q
-    
+
     old_f = pd.to_numeric(old_q, errors="coerce")
     new_f = pd.to_numeric(new_q, errors="coerce")
     red_f = pd.to_numeric(red_q, errors="coerce")
-    
+
     inc = np.full(len(pivot), np.nan)
     red = red_f.copy()
-    
+
     if red_f.isna().all():
         red = np.where((~pd.isna(old_f)) & (~pd.isna(new_f)) & (new_f < old_f),
                        old_f - new_f, np.nan)
         inc = np.where((~pd.isna(old_f)) & (~pd.isna(new_f)) & (new_f > old_f),
                        new_f - old_f, np.nan)
-    
+
     out["Reduce Qty"] = red
     out["Increase Qty"] = inc
     out["New Qty"] = new_q
@@ -547,16 +548,19 @@ def normalize_quantity_to_tracking(
     out["Change Type"] = pivot.get("Status", "")
     out["Cost Type"] = pivot.get("Status", "")  # Cost Type dari Status
     out["Claim Cost"] = pivot.get("Claim Cost", "")
-    
+
     for col in ["Qty", "Reduce Qty", "Increase Qty", "New Qty"]:
         if col in out.columns:
             as_float = pd.to_numeric(out[col], errors="coerce")
             out[col] = as_float.apply(
                 lambda v: "" if pd.isna(v) else (str(int(v)) if float(v).is_integer() else f"{v}")
             )
-    
+
     out = out.reindex(columns=TRACKING_COL_ORDER)
-    logs.append(f"✅ Berhasil memproses {len(out)} baris data (per size, BTP Ticket terisi kalau ada baris Remark='Ticket')")
+    logs.append(
+        f"✅ Berhasil memproses {len(out)} baris data "
+        f"(per size, BTP Ticket terisi kalau ada baris Remark='Ticket')"
+    )
     return out, logs
 
 
@@ -565,12 +569,13 @@ def main():
     # Header
     st.markdown('<p class="main-header">📊 PO Tracking Normalizer</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Convert Quantity Change & Cancellation Reports to Tracking Format</p>', unsafe_allow_html=True)
-    
+
     # Sidebar - Instructions
     with st.sidebar:
         st.image("https://via.placeholder.com/300x100/1f77b4/ffffff?text=PO+Tracker", use_container_width=True)
         st.markdown("### 📖 Panduan Penggunaan")
-        st.markmarkdown("""
+        # ⬇️ FIXED: sebelumnya st.markmarkdown (typo)
+        st.markdown("""
         **Langkah-langkah:**
         1. Upload file Excel (.xlsx)
         2. Pilih jenis tiket
@@ -591,14 +596,14 @@ def main():
         - Mode Cancellation → agregat per header (Size kosong, Qty = total)
         - Mode Quantity Change → per size, BTP Ticket diambil dari baris `Ticket`
         """)
-        
+
         st.markdown("---")
         st.markdown("### ℹ️ Info")
         st.info("Tool ini akan mengkonversi file PO menjadi format tracking standar dengan normalisasi kolom otomatis.")
-    
+
     # Main content area
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         st.markdown("### 📁 Upload File")
         uploaded_file = st.file_uploader(
@@ -606,7 +611,7 @@ def main():
             type=['xlsx'],
             help="Upload file Excel yang berisi data PO Quantity Change atau Cancellation"
         )
-    
+
     with col2:
         st.markdown("### ⚙️ Pengaturan")
         mode = st.radio(
@@ -614,25 +619,25 @@ def main():
             options=["Quantity Change", "Cancellation"],
             help="Pilih jenis tiket sesuai dengan data yang akan diproses"
         )
-    
+
     # Additional inputs
     st.markdown("### 📝 Informasi Tambahan")
     col3, col4 = st.columns(2)
-    
+
     with col3:
         ticket_date = st.date_input(
             "Ticket Date",
             value=datetime.now(),
             help="Tanggal tiket dibuat"
         )
-    
+
     with col4:
         email_subject = st.text_input(
             "Factory E-mail Subject",
             placeholder="Masukkan subject email...",
             help="Subject dari email factory terkait tiket ini"
         )
-    
+
     # Advanced settings (collapsible)
     with st.expander("🔧 Pengaturan Lanjutan"):
         size_prefix = st.text_input(
@@ -640,51 +645,53 @@ def main():
             value="UK_",
             help="Prefix untuk kolom size (default: UK_)"
         )
-    
-    # Process button
+
     st.markdown("---")
-    
+
     if uploaded_file is not None:
         st.markdown('<div class="info-box">', unsafe_allow_html=True)
         st.markdown(f"**File:** {uploaded_file.name}")
         st.markdown(f"**Size:** {uploaded_file.size / 1024:.2f} KB")
         st.markdown('</div>', unsafe_allow_html=True)
-        
+
         if st.button("🚀 Process File", type="primary", use_container_width=True):
             try:
                 with st.spinner("⏳ Memproses file..."):
                     df_in = pd.read_excel(uploaded_file, dtype=str)
-                    
+
                     # Preview
                     with st.expander("👀 Preview Data Input"):
                         st.dataframe(df_in.head(10), use_container_width=True)
                         st.caption(f"Menampilkan 10 dari {len(df_in)} baris")
-                        
+
                         if 'Remark' in df_in.columns:
                             st.markdown("**Nilai kolom Remark yang terdeteksi:**")
                             remark_values = df_in['Remark'].dropna().unique().tolist()
                             st.code(", ".join([str(v) for v in remark_values[:10]]))
-                            
+
                             remark_set = set([str(v).strip() for v in remark_values])
                             cancel_indicators = {"Cancel", "Order Quantity"}
                             qty_change_indicators = {"Ticket", "Old Quantity", "New Quantity", "Reduce"}
-                            
+
                             detected_mode = None
                             if remark_set & cancel_indicators:
                                 detected_mode = "Cancellation"
                             elif remark_set & qty_change_indicators:
                                 detected_mode = "Quantity Change"
-                            
+
                             if detected_mode and detected_mode != mode:
-                                st.warning(f"⚠️ Mode terdeteksi: **{detected_mode}** (Anda memilih: **{mode}**). Pertimbangkan untuk mengganti mode.")
+                                st.warning(
+                                    f"⚠️ Mode terdeteksi: **{detected_mode}** "
+                                    f"(Anda memilih: **{mode}**). Pertimbangkan untuk mengganti mode."
+                                )
                             elif detected_mode:
                                 st.success(f"✅ Mode yang dipilih sesuai dengan data: **{mode}**")
-                    
+
                     # Process
                     if mode == "Cancellation":
                         st.info(f"🔄 Memproses sebagai: **{mode} (aggregated per header)**")
                         result, logs = normalize_cancel_to_tracking(
-                            df_in, 
+                            df_in,
                             ticket_date_val=ticket_date,
                             subject_str=email_subject,
                             size_prefix=size_prefix
@@ -699,17 +706,17 @@ def main():
                             size_prefix=size_prefix
                         )
                         output_prefix = "tracking_qtychange"
-                    
+
                     # Logs
                     with st.expander("📋 Processing Logs"):
                         for log in logs:
                             st.text(log)
-                    
+
                     if result.empty:
                         st.markdown('<div class="warning-box">', unsafe_allow_html=True)
                         st.warning("⚠️ Tidak ada data yang dihasilkan.")
                         st.markdown('</div>', unsafe_allow_html=True)
-                        
+
                         st.markdown("### 💡 Kemungkinan Penyebab:")
                         if mode == "Cancellation":
                             st.markdown("""
@@ -723,20 +730,20 @@ def main():
                             - Pastikan kolom **Remark** berisi nilai `Old Quantity`, `New Quantity`, atau `Reduce`
                             - Pastikan ada kolom size yang diawali dengan `UK_` dan ada nilai qty
                             """)
-                        
+
                         st.info("📋 Lihat **Processing Logs** di atas untuk detail lebih lanjut")
                     else:
                         st.markdown('<div class="success-box">', unsafe_allow_html=True)
                         st.success(f"✅ Berhasil! {len(result)} baris data telah diproses")
                         st.markdown('</div>', unsafe_allow_html=True)
-                        
+
                         st.markdown("### 📊 Preview Hasil")
                         st.dataframe(result, use_container_width=True)
-                        
+
                         st.markdown("### 💾 Download Hasil")
-                        
+
                         col5, col6, col7 = st.columns([1, 1, 1])
-                        
+
                         with col5:
                             output = io.BytesIO()
                             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -750,7 +757,7 @@ def main():
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 use_container_width=True
                             )
-                        
+
                         with col6:
                             csv = result.to_csv(index=False)
                             csv_name = f"{output_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -761,38 +768,38 @@ def main():
                                 mime="text/csv",
                                 use_container_width=True
                             )
-                        
+
                         with col7:
                             st.metric("Total Rows", len(result))
-                        
+
                         with st.expander("📈 Statistik Data"):
                             col8, col9, col10 = st.columns(3)
-                            
+
                             with col8:
                                 unique_so = result['SO NO'].nunique()
                                 st.metric("Unique SO", unique_so)
-                            
+
                             with col9:
                                 unique_articles = result['Art #'].nunique()
                                 st.metric("Unique Articles", unique_articles)
-                            
+
                             with col10:
                                 total_qty = pd.to_numeric(result['Qty'], errors='coerce').sum()
                                 st.metric("Total Qty", f"{int(total_qty):,}")
-            
+
             except Exception as e:
                 st.markdown('<div class="error-box">', unsafe_allow_html=True)
                 st.error(f"❌ Error: {str(e)}")
                 st.markdown('</div>', unsafe_allow_html=True)
-                
+
                 with st.expander("🔍 Detail Error"):
                     st.exception(e)
-    
+
     else:
         st.markdown('<div class="info-box">', unsafe_allow_html=True)
         st.info("👆 Silakan upload file Excel untuk memulai proses")
         st.markdown('</div>', unsafe_allow_html=True)
-    
+
     st.markdown("---")
     st.markdown(
         "<p style='text-align: center; color: #666;'>Made with ❤️ for PO Tracking | © 2024</p>",
