@@ -105,6 +105,7 @@ def normalize_input_columns_common(df: pd.DataFrame) -> pd.DataFrame:
         "document date": "Document Date", "doc date": "Document Date",
         "size": "Size", "ticket #": "Ticket", "ticket": "Ticket", "btp ticket": "BTP Ticket",
         "claim cost": "Claim Cost",
+        "remark": "Remark", "remarks": "Remark",  # Add Remark mapping
         "qty": "Order Quantity", "order quantity": "Order Quantity", "order qty": "Order Quantity",
         "old quantity": "Old Quantity", "new quantity": "New Quantity",
         "reduce quantity": "Reduce", "reduce qty": "Reduce",
@@ -495,9 +496,16 @@ def main():
                     with st.expander("👀 Preview Data Input"):
                         st.dataframe(df_in.head(10), use_container_width=True)
                         st.caption(f"Menampilkan 10 dari {len(df_in)} baris")
+                        
+                        # Show Remark column values for debugging
+                        if 'Remark' in df_in.columns:
+                            st.markdown("**Nilai kolom Remark yang terdeteksi:**")
+                            remark_values = df_in['Remark'].dropna().unique().tolist()
+                            st.code(", ".join([str(v) for v in remark_values[:10]]))
                     
                     # Process based on mode
                     if mode == "Cancellation":
+                        st.info(f"🔄 Memproses sebagai: **{mode}**")
                         result, logs = normalize_cancel_to_tracking(
                             df_in, 
                             ticket_date_val=ticket_date,
@@ -506,6 +514,7 @@ def main():
                         )
                         output_prefix = "tracking_cancel"
                     else:  # Quantity Change
+                        st.info(f"🔄 Memproses sebagai: **{mode}**")
                         result, logs = normalize_quantity_to_tracking(
                             df_in,
                             ticket_date_val=ticket_date,
