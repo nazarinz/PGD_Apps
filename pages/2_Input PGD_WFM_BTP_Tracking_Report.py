@@ -183,6 +183,13 @@ def normalize_cancel_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject_s
     
     logs.append(f"✅ Kolom terdeteksi: {len(df.columns)} kolom")
     
+    # Debug: Check if Remark column exists
+    if "Remark" in df.columns:
+        remark_vals = df["Remark"].dropna().unique().tolist()
+        logs.append(f"✅ Kolom Remark ditemukan dengan nilai: {', '.join([str(v) for v in remark_vals[:10]])}")
+    else:
+        logs.append(f"⚠️ Kolom Remark TIDAK ditemukan! Kolom yang ada: {', '.join([str(c) for c in df.columns[:10]])}")
+    
     size_cols = [c for c in df.columns if str(c).startswith(size_prefix)]
     logs.append(f"🔹 Kolom size terdeteksi: {len(size_cols)} kolom ({', '.join(size_cols[:5])}{'...' if len(size_cols) > 5 else ''})")
     
@@ -190,13 +197,16 @@ def normalize_cancel_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject_s
         raise ValueError(f"Tidak ditemukan kolom size yang diawali '{size_prefix}'")
     
     if "Remark" in df.columns:
-        logs.append("🔎 Filter baris Remark == 'Order Quantity'")
-        use = df[df["Remark"].astype(str).str.strip().eq("Order Quantity")].copy()
+        # Filter untuk Cancellation: bisa "Order Quantity" atau "Cancel"
+        logs.append("🔎 Filter baris Remark == 'Order Quantity' atau 'Cancel'")
+        remark_clean = df["Remark"].astype(str).str.strip()
+        use = df[remark_clean.isin(["Order Quantity", "Cancel"])].copy()
         logs.append(f"✅ Baris setelah filter: {len(use)} baris")
         
         if use.empty:
             uniq_remark = df["Remark"].astype(str).str.strip().replace("", "<blank>").unique().tolist()
-            logs.append(f"⚠️ Nilai Remark: {', '.join(uniq_remark[:5])}")
+            logs.append(f"⚠️ Tidak ada baris dengan Remark = 'Order Quantity' atau 'Cancel'")
+            logs.append(f"⚠️ Nilai Remark yang ditemukan: {', '.join(uniq_remark[:10])}")
             return pd.DataFrame(columns=TRACKING_COL_ORDER), logs
     else:
         logs.append("⚠️ Kolom 'Remark' tidak ada. Semua baris dipakai.")
@@ -290,6 +300,13 @@ def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject
     
     logs.append(f"✅ Kolom terdeteksi: {len(df.columns)} kolom")
     
+    # Debug: Check if Remark column exists
+    if "Remark" in df.columns:
+        remark_vals = df["Remark"].dropna().unique().tolist()
+        logs.append(f"✅ Kolom Remark ditemukan dengan nilai: {', '.join([str(v) for v in remark_vals[:10]])}")
+    else:
+        logs.append(f"⚠️ Kolom Remark TIDAK ditemukan! Kolom yang ada: {', '.join([str(c) for c in df.columns[:10]])}")
+    
     size_cols = [c for c in df.columns if str(c).startswith(size_prefix)]
     logs.append(f"🔹 Kolom size terdeteksi: {len(size_cols)} kolom ({', '.join(size_cols[:5])}{'...' if len(size_cols) > 5 else ''})")
     
@@ -297,7 +314,7 @@ def normalize_quantity_to_tracking(df_in: pd.DataFrame, ticket_date_val, subject
         raise ValueError(f"Tidak ditemukan kolom size yang diawali '{size_prefix}'")
     
     if "Remark" not in df.columns:
-        raise ValueError("Kolom 'Remark' tidak ditemukan")
+        raise ValueError("Kolom 'Remark' tidak ditemukan setelah normalisasi. Periksa nama kolom di file Excel Anda.")
     
     use = df[df["Remark"].isin(["Old Quantity", "New Quantity", "Reduce"])].copy()
     logs.append(f"✅ Baris dengan Remark Old/New/Reduce: {len(use)} baris")
@@ -421,6 +438,10 @@ def main():
         - Harus memiliki kolom size (UK_X)
         - Harus memiliki kolom Remark
         
+        **Nilai Remark yang Valid:**
+        - **Cancellation:** `Cancel` atau `Order Quantity`
+        - **Quantity Change:** `Old Quantity`, `New Quantity`, `Reduce`
+        
         **Tips:**
         - Gunakan mode Cancellation untuk pembatalan order
         - Gunakan mode Quantity Change untuk perubahan qty
@@ -502,6 +523,22 @@ def main():
                             st.markdown("**Nilai kolom Remark yang terdeteksi:**")
                             remark_values = df_in['Remark'].dropna().unique().tolist()
                             st.code(", ".join([str(v) for v in remark_values[:10]]))
+                            
+                            # Auto-detect and suggest mode
+                            remark_set = set([str(v).strip() for v in remark_values])
+                            cancel_indicators = {"Cancel", "Order Quantity"}
+                            qty_change_indicators = {"Old Quantity", "New Quantity", "Reduce"}
+                            
+                            detected_mode = None
+                            if remark_set & cancel_indicators:
+                                detected_mode = "Cancellation"
+                            elif remark_set & qty_change_indicators:
+                                detected_mode = "Quantity Change"
+                            
+                            if detected_mode and detected_mode != mode:
+                                st.warning(f"⚠️ Mode terdeteksi: **{detected_mode}** (Anda memilih: **{mode}**). Pertimbangkan untuk mengganti mode.")
+                            elif detected_mode:
+                                st.success(f"✅ Mode yang dipilih sesuai dengan data: **{mode}**")
                     
                     # Process based on mode
                     if mode == "Cancellation":
@@ -531,8 +568,25 @@ def main():
                     # Show results
                     if result.empty:
                         st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-                        st.warning("⚠️ Tidak ada data yang dihasilkan. Periksa format file atau jenis tiket yang dipilih.")
+                        st.warning("⚠️ Tidak ada data yang dihasilkan.")
                         st.markdown('</div>', unsafe_allow_html=True)
+                        
+                        # Provide helpful suggestions
+                        st.markdown("### 💡 Kemungkinan Penyebab:")
+                        if mode == "Cancellation":
+                            st.markdown("""
+                            - Pastikan kolom **Remark** berisi nilai `Cancel` atau `Order Quantity`
+                            - Pastikan ada kolom size yang diawali dengan `UK_` (misalnya: UK_6-, UK_7, dll)
+                            - Pastikan ada nilai quantity di kolom size
+                            """)
+                        else:
+                            st.markdown("""
+                            - Pastikan kolom **Remark** berisi nilai `Old Quantity`, `New Quantity`, atau `Reduce`
+                            - Pastikan ada kolom size yang diawali dengan `UK_` (misalnya: UK_4, UK_5, dll)
+                            - Pastikan ada nilai quantity di kolom size
+                            """)
+                        
+                        st.info("📋 Lihat **Processing Logs** di atas untuk detail lebih lanjut")
                     else:
                         st.markdown('<div class="success-box">', unsafe_allow_html=True)
                         st.success(f"✅ Berhasil! {len(result)} baris data telah diproses")
