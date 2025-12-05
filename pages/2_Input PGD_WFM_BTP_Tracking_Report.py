@@ -635,7 +635,8 @@ def main():
     
     # Sidebar - Instructions
     with st.sidebar:
-        st.image("https://via.placeholder.com/300x100/1f77b4/ffffff?text=PO+Tracker", use_container_width=True)
+        st.markdown("### 🧾 PGD PO Tracker")
+        st.caption("Quantity Change & Cancellation Normalizer")
         st.markdown("### 📖 Panduan Penggunaan")
         st.markdown("""
         **Langkah-langkah:**
