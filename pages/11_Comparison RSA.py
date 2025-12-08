@@ -1,10 +1,11 @@
 # app_streamlit_merged_simple.py
 # -*- coding: utf-8 -*-
 """
-Simplified Streamlit app:
-- Only PGD Comparison (core pipeline from script1) with script2 UX improvements.
-- Removed PO Splitter & Sales Analytics.
-- Exports: primary xlsxwriter per-cell date + optional openpyxl styled export.
+RSA - PGD Comparison — Simple (only Comparison + Export)
+Updates:
+- Compare SAP 'Ship-to-Sort1' with Infor 'Customer Number'
+- Normalize Infor 'Customer Number' value '--' -> 'ZA30' before grouping
+- Styled export visibility improvements
 """
 
 import re
@@ -24,13 +25,17 @@ try:
 except Exception:
     _tz = None
 
-# Try import openpyxl styling
-EXCEL_STYLED_AVAILABLE = True
+# Attempt import openpyxl styling and capture availability/errors
+EXCEL_STYLED_AVAILABLE = False
+_OPENPYXL_ERROR = None
 try:
+    import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-except Exception:
+    EXCEL_STYLED_AVAILABLE = True
+except Exception as imp_e:
     EXCEL_STYLED_AVAILABLE = False
+    _OPENPYXL_ERROR = imp_e
 
 # -------------------
 # Config / constants
@@ -50,7 +55,10 @@ DESIRED_ORDER = [
     "Delay/Early - Confirmation CRD","infor Delay/Early - Confirmation CRD","Result Delay/Early - Confirmation CRD",
     "Delay - PO PSDD Update","infor Delay - PO PSDD Update","Result Delay - PO PSDD Update",
     "Delay - PO PD Update","infor Delay - PO PD Update","Result Delay - PO PD Update",
-    "MDP","PDP","SDP","Article Lead time","Ship-to-Sort1","Ship-to Country","Ship to Name","infor Shipment Method",
+    "MDP","PDP","SDP","Article Lead time",
+    # Ship-to / Customer Number comparison added here
+    "Ship-to-Sort1","infor Customer Number","Result_Ship-to-Sort1",
+    "Ship-to Country","Ship to Name","infor Shipment Method",
     "Document Date","FPD","infor FPD","Result FPD","LPD","infor LPD","Result LPD",
     "CRD","infor CRD","Result CRD","PSDD","infor PSDD","Result PSDD",
     "PODD","infor PODD","Result PODD","FCR Date","PD","infor PD","Result PD",
@@ -65,7 +73,7 @@ DATE_FMT_OPENPYXL = "m/d/yyyy"
 BLANKS = {"(blank)", "blank", "", "--", " -- ", " --"}
 
 # -------------------
-# Helpers (from merged app)
+# Helpers (kept)
 # -------------------
 def to_dt_series(s: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce").dt.normalize()
@@ -126,7 +134,7 @@ def to_excel_col(n):
     return s
 
 # -------------------
-# Utilities: file reads + parsing
+# File readers (cached)
 # -------------------
 @st.cache_data(show_spinner=False)
 def read_excel_file_bytes(uploaded):
@@ -185,13 +193,12 @@ def match_qty_nearest(df_sap, df_infor, key="PO No.(Full)", qty_col="Quanity", i
     return pd.DataFrame(out_rows)
 
 # -------------------
-# Core pipeline (clean + compare + exports)
+# Core pipeline (same as before) with Customer Number normalization and comparison
 # -------------------
 def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                      prefer_strict_join=True,
                      fallback_match_qty=True,
                      export_filename_prefix=None):
-    # copy
     df_sap = df_sap_raw.copy()
     df_infor = df_infor_raw_all.copy()
 
@@ -199,7 +206,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     _today_str = _today.strftime("%Y%m%d")
     OUT_JOINED = export_filename_prefix or f"RSA - PGD Comparison Tracking Report - {_today_str}.xlsx"
 
-    # normalize infor columns (script1 mapping)
+    # normalize infor columns
     rename_cols = {
         'Order #': 'PO No.(Full)',
         'Line Aggregator': 'Customer PO item',
@@ -217,8 +224,13 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         'Grand Total': 'Quantity',
         'Delivery Delay Pd': 'Delay - PO PD Update',
         'Shipment Method': 'Shipment Method',
+        # NOTE: do not rename Customer Number here so we can detect it explicitly
     }
     df_infor = df_infor.rename(columns=rename_cols)
+
+    # --- Normalization: replace '--' in Customer Number with 'ZA30' ---
+    if "Customer Number" in df_infor.columns:
+        df_infor["Customer Number"] = df_infor["Customer Number"].replace("--", "ZA30")
 
     if "Confirmation Delay Pd" in df_infor.columns and "Delay/Early - Confirmation PD" not in df_infor.columns:
         df_infor = df_infor.rename(columns={"Confirmation Delay Pd": "Delay/Early - Confirmation PD"})
@@ -226,6 +238,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Quantity" in df_infor.columns:
         df_infor = df_infor[df_infor["Quantity"].fillna(0) != 0].copy()
 
+    # detect size columns
     size_pat  = re.compile(r'^(?:[1-9]|1[0-8])(?:K|-K|-)?$')
     size_cols = [c for c in df_infor.columns if size_pat.match(str(c))]
     sum_cols   = size_cols + (["Quantity"] if "Quantity" in df_infor.columns else [])
@@ -263,6 +276,16 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         if "Customer PO item" in df_infor_grouped.columns and "Line Aggregator" not in df_infor_grouped.columns:
             df_infor_grouped["Line Aggregator"] = df_infor_grouped["Customer PO item"]
 
+    # Ensure Customer Number (if present) is carried over to grouped table
+    if "Customer Number" in df_infor.columns and "Customer Number" not in df_infor_grouped.columns:
+        # use keep_or_join grouping of original column by PO No.(Full)
+        if "PO No.(Full)" in df_infor.columns:
+            df_infor_grouped = df_infor_grouped.merge(
+                df_infor.groupby("PO No.(Full)", dropna=False)["Customer Number"].agg(keep_or_join).reset_index().rename(columns={"Customer Number":"Customer Number"}),
+                on="PO No.(Full)", how="left"
+            )
+
+    # make keys
     if "CRD" in df_infor_grouped.columns:
         df_infor_grouped["CRD_key"] = to_dt_series(df_infor_grouped["CRD"])
     else:
@@ -280,21 +303,28 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     df_sap["CRD_key"] = to_dt_series(df_sap["CRD"]) if "CRD" in df_sap.columns else pd.NaT
     df_sap["PD_key"]  = to_dt_series(df_sap["PD"]) if "PD" in df_sap.columns else pd.NaT
 
+    # prepare infor pick; include Customer Number if present
     infor_cols_for_merge = [
         "Order Status","Article No","LPD","PODD","PSDD","FPD","CRD","PD",
         "Delay/Early - Confirmation CRD","Delay - PO PSDD Update","Delay - PO PD Update",
         "Quantity","Shipment Method","Issue Date",
         "Customer PO item","Line Aggregator"
     ]
+    # add Customer Number to pick if exists
+    if "Customer Number" in df_infor_grouped.columns:
+        infor_cols_for_merge.append("Customer Number")
+
     if "Delay/Early - Confirmation PD" in df_infor_grouped.columns:
         infor_cols_for_merge = ["Delay/Early - Confirmation PD"] + infor_cols_for_merge
 
     inf_pick_cols = [c for c in infor_cols_for_merge if c in df_infor_grouped.columns]
     inf_pick = df_infor_grouped[["PO No.(Full)","CRD_key","PD_key"] + inf_pick_cols].copy()
+    # prefix
     pref_map = {c: f"infor {c}" for c in inf_pick_cols}
     inf_pick = inf_pick.rename(columns=pref_map)
 
-    # try strict join
+    # if customer number was included, rename prefixed column to 'infor Customer Number' (no extra changes)
+    # Try strict join
     df_join = None
     if prefer_strict_join:
         try:
@@ -395,6 +425,11 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Shipment Method" in df.columns and "infor Shipment Method" in df.columns:
         df["Result Shipment Method"] = equal_series(norm_str(df["Shipment Method"]), norm_str(df["infor Shipment Method"])).fillna(False)
 
+    # --- NEW: compare Ship-to-Sort1 (SAP) with infor Customer Number ---
+    # ensure prefixed column name exists: 'infor Customer Number'
+    if "Ship-to-Sort1" in df.columns and "infor Customer Number" in df.columns:
+        df["Result_Ship-to-Sort1"] = equal_series(norm_str(df["Ship-to-Sort1"]), norm_str(df["infor Customer Number"])).fillna(False)
+
     if "Line Aggregator" not in df.columns and "infor Line Aggregator" in df.columns:
         df["Line Aggregator"] = df["infor Line Aggregator"]
 
@@ -402,7 +437,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     rest     = [c for c in df.columns if c not in present]
     df_final = df[present + rest]
 
-    # Export primary: xlsxwriter per-cell date
+    # Primary export (xlsxwriter) with per-cell date handling
     DATE_FMT = "mm/dd/yyyy"
     date_display_cols = [
         "Document Date","FPD","LPD","PSDD","PODD","FCR Date","PD","PO Date","Actual PGI",
@@ -410,7 +445,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         "CRD"
     ]
     date_display_cols = [c for c in date_display_cols if c in df_final.columns]
-
     def is_single_date_text(s: str) -> bool:
         if not isinstance(s, str): return False
         if " | " in s: return False
@@ -446,7 +480,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                             else:
                                 ws.write_string(ridx, cidx, s)
 
-            res_cols = [c for c in df_final.columns if c.startswith("Result ")]
+            res_cols = [c for c in df_final.columns if c.startswith("Result " ) or c.startswith("Result_")]
             for col in res_cols:
                 cidx = df_final.columns.get_loc(col)
                 rng  = f"{to_excel_col(cidx)}2:{to_excel_col(cidx)}{nrows+1}"
@@ -454,7 +488,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                 ws.conditional_format(rng, {"type":"cell","criteria":"==","value":"FALSE","format":fmt_bool_F})
 
             for idx, col in enumerate(df_final.columns, start=1):
-                if col.startswith("Result "):
+                if col.startswith("Result " ) or col.startswith("Result_"):
                     ws.set_column(idx-1, idx-1, 16)
                 elif col in date_display_cols:
                     ws.set_column(idx-1, idx-1, 12)
@@ -463,7 +497,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
 
             ws.freeze_panes(1, 0)
             ws.autofilter(0, 0, nrows, ncols-1)
-            # writer.save() not needed with context manager
         out.seek(0)
     except Exception:
         out = io.BytesIO()
@@ -471,7 +504,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
             df_final.to_excel(writer, index=False, sheet_name="Data")
         out.seek(0)
 
-    # Styled export (openpyxl) if available
+    # Styled export using openpyxl (only if import succeeded)
     styled_bytes = None
     if EXCEL_STYLED_AVAILABLE:
         try:
@@ -479,23 +512,28 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
             with pd.ExcelWriter(bio, engine="openpyxl") as writer:
                 df_final.to_excel(writer, index=False, sheet_name="Report")
                 ws = writer.sheets["Report"]
+
+                # header styling
                 header_cells = list(ws.iter_rows(min_row=1, max_row=1, values_only=False))[0]
                 idx_by_name = {c.value: i+1 for i, c in enumerate(header_cells)}
                 for cell in header_cells:
-                    col_name = str(cell.value)
-                    if col_name.startswith("infor ") or col_name.startswith("Infor "):
-                        fill = PatternFill("solid", fgColor=INFOR_COLOR)
+                    col_name = str(cell.value) if cell.value is not None else ""
+                    if col_name.lower().startswith("infor ") or col_name.startswith("Infor "):
+                        cell.fill = PatternFill("solid", fgColor=INFOR_COLOR)
                     elif col_name.startswith("Result ") or col_name.startswith("Result_"):
-                        fill = PatternFill("solid", fgColor=RESULT_COLOR)
+                        cell.fill = PatternFill("solid", fgColor=RESULT_COLOR)
                     else:
-                        fill = PatternFill("solid", fgColor=OTHER_COLOR)
-                    cell.fill = fill
+                        cell.fill = PatternFill("solid", fgColor=OTHER_COLOR)
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                     cell.font = Font(name="Calibri", size=9, bold=True)
+
+                # body formatting
                 for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                     for cell in row:
                         cell.alignment = Alignment(horizontal="center", vertical="center")
                         cell.font = Font(name="Calibri", size=9)
+
+                # date columns: convert strings to datetimes and set number_format
                 for date_col in date_display_cols:
                     if date_col in idx_by_name:
                         cidx = idx_by_name[date_col]
@@ -506,10 +544,12 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                                     if isinstance(cell.value, str):
                                         dt = pd.to_datetime(cell.value, errors="coerce")
                                         if not pd.isna(dt):
-                                            cell.value = dt
+                                            cell.value = dt.to_pydatetime()
                                     cell.number_format = DATE_FMT_OPENPYXL
                                 except Exception:
                                     pass
+
+                # auto width
                 for col_idx in range(1, ws.max_column + 1):
                     col_letter = get_column_letter(col_idx)
                     maxlen = 0
@@ -517,17 +557,20 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                         v = "" if cell.value is None else str(cell.value)
                         maxlen = max(maxlen, len(v))
                     ws.column_dimensions[col_letter].width = min(max(9, maxlen + 2), 60)
+
                 ws.freeze_panes = "A2"
                 ws.auto_filter.ref = ws.dimensions
+
             bio.seek(0)
             styled_bytes = bio
-        except Exception:
+        except Exception as e:
             styled_bytes = None
+            print("Styled export error:", e, file=sys.stderr)
 
     return df_final, out, styled_bytes, OUT_JOINED
 
 # -------------------
-# Streamlit UI (simplified)
+# Streamlit UI
 # -------------------
 st.set_page_config(page_title="RSA - PGD Comparison (Simple)", layout="wide")
 st.title("RSA - PGD Comparison — Simple (only Comparison + Export)")
@@ -541,7 +584,12 @@ with st.sidebar:
     prefer_strict = st.checkbox("Prefer strict join (PO + CRD_key + PD_key)", value=True)
     fallback_match = st.checkbox("Enable fallback tolerant matching (match_qty_nearest)", value=True)
     st.markdown("---")
-    st.info("This simplified app only runs PGD Comparison and provides Excel exports.\nStyled export uses openpyxl if available on the environment.")
+    if EXCEL_STYLED_AVAILABLE:
+        st.success("openpyxl available — styled export enabled")
+    else:
+        st.warning("openpyxl NOT available — styled export disabled")
+        if _OPENPYXL_ERROR is not None:
+            st.caption(f"Import error: {_OPENPYXL_ERROR}")
 
 st.markdown("### 1) Upload & Run Pipeline")
 if sap_file and infor_files:
@@ -582,30 +630,32 @@ if sap_file and infor_files:
             st.subheader("Preview result (top 200 rows)")
             st.dataframe(df_final.head(200), use_container_width=True)
 
+            # primary download
             st.download_button("⬇️ Download Excel (xlsxwriter, per-cell dates)", data=bytes_xlsx.getvalue(),
                                file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+            # styled download only if styled_bytes produced
             if EXCEL_STYLED_AVAILABLE and styled_bytes is not None:
                 st.download_button("⬇️ Download Excel (styled, openpyxl)", data=styled_bytes.getvalue(),
                                    file_name=out_name.replace(".xlsx","_styled.xlsx"),
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                st.success("Styled export created successfully (openpyxl). Open in Microsoft Excel (desktop) to view colors.")
             else:
-                if not EXCEL_STYLED_AVAILABLE:
-                    st.info("openpyxl not available in environment — styled export disabled.")
+                if EXCEL_STYLED_AVAILABLE and styled_bytes is None:
+                    st.error("Styled export attempted but failed during creation. Check server logs.")
                 else:
-                    st.info("Styled export not produced due to internal error.")
+                    st.info("Styled export unavailable (openpyxl not installed).")
 
             csv_name = out_name.replace(".xlsx", ".csv")
             st.download_button("⬇️ Download CSV (basic)", data=df_final.to_csv(index=False).encode("utf-8"), file_name=csv_name, mime="text/csv")
 
-            # quick summary counts for Result_* columns
+            # summary Result*
             st.markdown("### Summary Result*")
-            res_bool_cols = [c for c in df_final.columns if c.startswith("Result ")]
+            res_bool_cols = [c for c in df_final.columns if c.startswith("Result " ) or c.startswith("Result_")]
             if res_bool_cols:
                 summary = {}
                 for c in res_bool_cols:
                     col = df_final[c]
-                    # support bool or object
                     true_count = int(col.eq(True).sum()) if col.dtype == bool else int(col.eq("TRUE").sum()) if col.dtype == object else int(col.eq(True).sum())
                     false_count = int(col.eq(False).sum()) if col.dtype == bool else int(col.eq("FALSE").sum()) if col.dtype == object else int(col.eq(False).sum())
                     summary[c] = {"TRUE": true_count, "FALSE": false_count}
@@ -629,5 +679,7 @@ with st.expander("🛠 Debug info"):
         import numpy as np2
         st.write("NumPy:", np2.__version__)
         st.write("openpyxl available:", EXCEL_STYLED_AVAILABLE)
+        if _OPENPYXL_ERROR is not None:
+            st.write("openpyxl import error:", _OPENPYXL_ERROR)
     except Exception as e:
         st.write("Failed to fetch debug info:", e)
