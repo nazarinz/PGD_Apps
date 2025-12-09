@@ -594,7 +594,7 @@ with st.sidebar:
         if _OPENPYXL_ERROR is not None:
             st.caption(f"Import error: {_OPENPYXL_ERROR}")
 
-st.markdown("### 1) Upload & Run Pipeline")
+st.markdown("### Upload & Run Pipeline")
 if sap_file and infor_files:
     try:
         if sap_file.name.lower().endswith((".xls",".xlsx")):
