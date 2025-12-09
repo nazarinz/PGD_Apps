@@ -1,0 +1,262 @@
+import React, { useState } from 'react';
+import { Upload, Download, AlertCircle, CheckCircle, FileSpreadsheet, Play } from 'lucide-react';
+
+const PGDAnalysisDashboard = () => {
+  const [pbiFile, setPbiFile] = useState(null);
+  const [sapFile, setSapFile] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [progress, setProgress] = useState('');
+
+  const handleFileUpload = (e, type) => {
+    const file = e.target.files[0];
+    if (file) {
+      if (type === 'pbi') {
+        setPbiFile(file);
+      } else {
+        setSapFile(file);
+      }
+      setError(null);
+    }
+  };
+
+  const processFiles = async () => {
+    if (!pbiFile || !sapFile) {
+      setError('Please upload both files before processing');
+      return;
+    }
+
+    setProcessing(true);
+    setError(null);
+    setProgress('Reading files...');
+
+    try {
+      // Simulate processing steps
+      const steps = [
+        'Reading PBI Data file...',
+        'Reading SAP/INFOR report...',
+        'Cleaning duplicate columns...',
+        'Preparing dashboard columns...',
+        'Performing 1:1 nearest quantity pairing...',
+        'Creating comparison columns...',
+        'Calculating MDP/SDP Delay Quantities...',
+        'Processing dates and CRD Monthly...',
+        'Finalizing output...',
+        'Generating Excel file...'
+      ];
+
+      for (let i = 0; i < steps.length; i++) {
+        setProgress(steps[i]);
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
+
+      // Mock result
+      const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
+      setResult({
+        filename: `PGD_sapinf_dashboard_exploded_${timestamp}.xlsx`,
+        rows: Math.floor(Math.random() * 5000) + 1000,
+        timestamp: new Date().toLocaleString()
+      });
+
+      setProgress('Processing complete!');
+    } catch (err) {
+      setError(`Error processing files: ${err.message}`);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const downloadResult = () => {
+    // In real implementation, this would download the actual processed file
+    alert('In production, this would download the processed Excel file');
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+      <div className="max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <div className="flex items-center gap-3 mb-2">
+            <FileSpreadsheet className="w-8 h-8 text-indigo-600" />
+            <h1 className="text-3xl font-bold text-gray-800">PGD Data Analysis</h1>
+          </div>
+          <p className="text-gray-600">
+            Merge per-PO (Exploded) + Dashboard vs SAP Compare (No Aggregation)
+          </p>
+          <p className="text-sm text-gray-500 mt-1">
+            Version: 2025-10-21 | 1:1 Nearest Pairing with CRD Monthly
+          </p>
+        </div>
+
+        {/* File Upload Section */}
+        <div className="grid md:grid-cols-2 gap-6 mb-6">
+          {/* PBI Data Upload */}
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Upload className="w-5 h-5 text-blue-600" />
+              <h2 className="text-lg font-semibold text-gray-800">PBI Data File</h2>
+            </div>
+            <label className="block">
+              <div className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition ${
+                pbiFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+              }`}>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(e) => handleFileUpload(e, 'pbi')}
+                  className="hidden"
+                />
+                {pbiFile ? (
+                  <div className="flex items-center justify-center gap-2 text-green-600">
+                    <CheckCircle className="w-5 h-5" />
+                    <span className="font-medium">{pbiFile.name}</span>
+                  </div>
+                ) : (
+                  <div className="text-gray-500">
+                    <Upload className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                    <p className="font-medium">Click to upload PBI Data</p>
+                    <p className="text-sm">Dashboard (PBI) Excel file</p>
+                  </div>
+                )}
+              </div>
+            </label>
+          </div>
+
+          {/* SAP/INFOR Upload */}
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Upload className="w-5 h-5 text-purple-600" />
+              <h2 className="text-lg font-semibold text-gray-800">SAP/INFOR File</h2>
+            </div>
+            <label className="block">
+              <div className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition ${
+                sapFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-purple-400 hover:bg-purple-50'
+              }`}>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(e) => handleFileUpload(e, 'sap')}
+                  className="hidden"
+                />
+                {sapFile ? (
+                  <div className="flex items-center justify-center gap-2 text-green-600">
+                    <CheckCircle className="w-5 h-5" />
+                    <span className="font-medium">{sapFile.name}</span>
+                  </div>
+                ) : (
+                  <div className="text-gray-500">
+                    <Upload className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                    <p className="font-medium">Click to upload SAP/INFOR</p>
+                    <p className="text-sm">Comparison Tracking Report</p>
+                  </div>
+                )}
+              </div>
+            </label>
+          </div>
+        </div>
+
+        {/* Process Button */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <button
+            onClick={processFiles}
+            disabled={!pbiFile || !sapFile || processing}
+            className={`w-full py-4 px-6 rounded-lg font-semibold text-white transition flex items-center justify-center gap-3 ${
+              !pbiFile || !sapFile || processing
+                ? 'bg-gray-400 cursor-not-allowed'
+                : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg hover:shadow-xl'
+            }`}
+          >
+            <Play className="w-5 h-5" />
+            {processing ? 'Processing...' : 'Process Files'}
+          </button>
+          
+          {processing && (
+            <div className="mt-4">
+              <div className="bg-blue-50 rounded-lg p-4">
+                <div className="flex items-center gap-2 text-blue-700 mb-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-700"></div>
+                  <span className="font-medium">{progress}</span>
+                </div>
+                <div className="w-full bg-blue-200 rounded-full h-2">
+                  <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{width: '70%'}}></div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+            <div className="flex items-center gap-2 text-red-700">
+              <AlertCircle className="w-5 h-5" />
+              <span className="font-medium">{error}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Result Section */}
+        {result && (
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <CheckCircle className="w-6 h-6 text-green-600" />
+              <h2 className="text-xl font-semibold text-gray-800">Processing Complete!</h2>
+            </div>
+            
+            <div className="bg-green-50 rounded-lg p-4 mb-4">
+              <div className="grid md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <p className="text-gray-600">Output File</p>
+                  <p className="font-medium text-gray-800 break-all">{result.filename}</p>
+                </div>
+                <div>
+                  <p className="text-gray-600">Total Rows</p>
+                  <p className="font-medium text-gray-800">{result.rows.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-gray-600">Processed At</p>
+                  <p className="font-medium text-gray-800">{result.timestamp}</p>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={downloadResult}
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition flex items-center justify-center gap-2"
+            >
+              <Download className="w-5 h-5" />
+              Download Excel File
+            </button>
+
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+              <p className="text-sm text-gray-700 font-medium mb-2">Features included:</p>
+              <ul className="text-sm text-gray-600 space-y-1">
+                <li>✓ 1:1 Nearest quantity pairing per PO</li>
+                <li>✓ Customer PO item & Line Aggregator from SAP</li>
+                <li>✓ MDP/SDP Delay Qty calculations</li>
+                <li>✓ GAP analysis (including NZ columns)</li>
+                <li>✓ CRD Monthly added</li>
+                <li>✓ All comparison columns (SAP vs Dashboard)</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {/* Info Section */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mt-6">
+          <h3 className="font-semibold text-gray-800 mb-3">Processing Details</h3>
+          <div className="text-sm text-gray-600 space-y-2">
+            <p>• <strong>Pairing Method:</strong> 1:1 nearest quantity matching per PO</p>
+            <p>• <strong>Key Fields:</strong> Customer PO item & Line Aggregator taken from SAP (raw)</p>
+            <p>• <strong>Calculations:</strong> MDP/SDP Delay Qty, Dashboard Delay Qty, GAP, GAP (NZ), Has Gap</p>
+            <p>• <strong>Date Handling:</strong> CRD Monthly added before CRD, all dates normalized</p>
+            <p>• <strong>Comparisons:</strong> Dashboard vs SAP for Quantity, FPD, LPD, CRD, PSDD, PODD, PD, FCR</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default PGDAnalysisDashboard;
