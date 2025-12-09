@@ -231,7 +231,10 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     # --- Normalization: replace '--' in Customer Number with 'ZA30' ---
     if "Customer Number" in df_infor.columns:
         df_infor["Customer Number"] = df_infor["Customer Number"].replace("--", "ZA30")
-
+        
+    if "infor Customer Number" in df_infor.columns:
+        df_infor["infor Customer Number"] = df_infor["infor Customer Number"].replace("--", "ZA30")
+                                                  
     if "Confirmation Delay Pd" in df_infor.columns and "Delay/Early - Confirmation PD" not in df_infor.columns:
         df_infor = df_infor.rename(columns={"Confirmation Delay Pd": "Delay/Early - Confirmation PD"})
 
