@@ -8,43 +8,89 @@ from pathlib import Path
 
 set_page("PGD Apps — Home", "🤖")
 
-# Theme variables (light + dark) - Blue theme optimized for both modes
-light_vars = """
---primary-color: #2563eb;
---primary-dark: #1d4ed8;
---accent-color: #0ea5e9;
---text-primary: #0f172a;
---text-secondary: #475569;
---bg-primary: #ffffff;
---bg-secondary: #f8fafc;
---card-bg: #fafbff;
---border-color: #e0e7ff;
---shadow: rgba(37, 99, 235, 0.08);
---hero-gradient-start: #3b82f6;
---hero-gradient-end: #2563eb;
-"""
+# Inject JavaScript to force theme application
+st.markdown("""
+<script>
+    // Force apply theme colors
+    const applyTheme = () => {
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const root = document.documentElement;
+        const stApp = document.querySelector('.stApp');
+        const main = document.querySelector('.main');
+        
+        if (isDark) {
+            root.style.setProperty('background-color', '#0f172a', 'important');
+            if (stApp) stApp.style.backgroundColor = '#0f172a';
+            if (main) main.style.backgroundColor = '#0f172a';
+        } else {
+            root.style.setProperty('background-color', '#ffffff', 'important');
+            if (stApp) stApp.style.backgroundColor = '#ffffff';
+            if (main) main.style.backgroundColor = '#ffffff';
+        }
+    };
+    
+    // Apply on load and theme change
+    setTimeout(applyTheme, 100);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+</script>
+""", unsafe_allow_html=True)
 
-dark_vars = """
---primary-color: #60a5fa;
---primary-dark: #3b82f6;
---accent-color: #93c5fd;
---text-primary: #f1f5f9;
---text-secondary: #cbd5e1;
---bg-primary: #0f172a;
---bg-secondary: #1e293b;
---card-bg: #1e293b;
---border-color: #334155;
---shadow: rgba(96, 165, 250, 0.15);
---hero-gradient-start: #1e40af;
---hero-gradient-end: #3730a3;
-"""
+# Complete CSS with forced backgrounds
+css = """
+<style>
+/* Force light mode as default */
+:root {
+    --primary-color: #2563eb;
+    --primary-dark: #1d4ed8;
+    --accent-color: #0ea5e9;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8fafc;
+    --card-bg: #fafbff;
+    --border-color: #e0e7ff;
+    --shadow: rgba(37, 99, 235, 0.08);
+    --hero-gradient-start: #3b82f6;
+    --hero-gradient-end: #2563eb;
+    color-scheme: light;
+}
 
-# Common CSS uses the variables above
-common_css = """
-:root { color-scheme: light; }
+/* Dark mode override */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --primary-color: #60a5fa;
+        --primary-dark: #3b82f6;
+        --accent-color: #93c5fd;
+        --text-primary: #f1f5f9;
+        --text-secondary: #cbd5e1;
+        --bg-primary: #0f172a;
+        --bg-secondary: #1e293b;
+        --card-bg: #1e293b;
+        --border-color: #334155;
+        --shadow: rgba(96, 165, 250, 0.15);
+        --hero-gradient-start: #1e40af;
+        --hero-gradient-end: #3730a3;
+        color-scheme: dark;
+    }
+}
 
-/* Force background colors */
+/* Aggressive background forcing */
+html, body {
+    background-color: var(--bg-primary) !important;
+    background: var(--bg-primary) !important;
+}
+
 .stApp {
+    background-color: var(--bg-primary) !important;
+    background: var(--bg-primary) !important;
+}
+
+section[data-testid="stAppViewContainer"] {
+    background-color: var(--bg-primary) !important;
+    background: var(--bg-primary) !important;
+}
+
+section[data-testid="stAppViewContainer"] > .main {
     background-color: var(--bg-primary) !important;
     background: var(--bg-primary) !important;
 }
@@ -53,16 +99,11 @@ common_css = """
     background-color: var(--bg-primary) !important;
 }
 
-section[data-testid="stAppViewContainer"] {
-    background-color: var(--bg-primary) !important;
-}
-
-.stApp, .main, body, [data-testid="stAppViewContainer"] > .main {
-    background: var(--bg-primary) !important;
-    background-color: var(--bg-primary) !important;
+.stApp, .main, body {
     color: var(--text-primary) !important;
 }
 
+/* Sidebar */
 [data-testid="stSidebar"] {
     background: var(--bg-secondary) !important;
     background-color: var(--bg-secondary) !important;
@@ -74,6 +115,11 @@ section[data-testid="stAppViewContainer"] {
     background-color: var(--bg-secondary) !important;
 }
 
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
+    color: var(--text-primary) !important;
+}
+
+/* Hero Section */
 .hero-section {
     background: linear-gradient(135deg, var(--hero-gradient-start) 0%, var(--hero-gradient-end) 100%);
     color: white;
@@ -91,14 +137,17 @@ section[data-testid="stAppViewContainer"] {
     font-weight: 700;
     margin-bottom: 1rem;
     text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    color: white !important;
 }
 
 .hero-section p {
     font-size: 1.15rem;
     opacity: 0.95;
     font-weight: 400;
+    color: white !important;
 }
 
+/* Tool Cards */
 .tool-card {
     background: var(--card-bg);
     border: 1.5px solid var(--border-color);
@@ -147,6 +196,7 @@ section[data-testid="stAppViewContainer"] {
     font-size: 0.95rem;
 }
 
+/* Stats */
 .stat-box {
     text-align: center;
     padding: 1.5rem 1rem;
@@ -175,6 +225,7 @@ section[data-testid="stAppViewContainer"] {
     font-weight: 500;
 }
 
+/* Info Banner */
 .info-banner {
     background: var(--card-bg);
     border-left: 4px solid var(--accent-color);
@@ -194,6 +245,7 @@ section[data-testid="stAppViewContainer"] {
     border-left-color: #06b6d4;
 }
 
+/* Divider */
 .section-divider {
     border: none;
     height: 2px;
@@ -202,6 +254,7 @@ section[data-testid="stAppViewContainer"] {
     opacity: 0.3;
 }
 
+/* Buttons */
 .stButton>button {
     background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
     color: white;
@@ -215,15 +268,22 @@ section[data-testid="stAppViewContainer"] {
     box-shadow: 0 4px 12px var(--shadow);
 }
 
+/* Override Streamlit default text colors */
+.stMarkdown, p, h1, h2, h3, h4, h5, h6, span, div {
+    color: var(--text-primary) !important;
+}
+
 .stDataFrame, table.dataframe {
     background: var(--card-bg) !important;
     color: var(--text-primary) !important;
 }
 
+/* Smooth transitions */
 * {
     transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 
+/* Mobile responsive */
 @media (max-width: 768px) {
     .hero-section {
         padding: 2rem 1rem;
@@ -235,21 +295,6 @@ section[data-testid="stAppViewContainer"] {
         font-size: 1rem;
     }
 }
-"""
-
-# Build CSS using prefers-color-scheme so app follows OS theme
-css = f"""
-<style>
-:root {{
-    {light_vars}
-}}
-@media (prefers-color-scheme: dark) {{
-    :root {{
-        {dark_vars}
-    }}
-    :root {{ color-scheme: dark; }}
-}}
-{common_css}
 </style>
 """
 
