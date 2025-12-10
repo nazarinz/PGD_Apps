@@ -306,7 +306,7 @@ header("🤖 PGD Apps — Home")
 st.markdown("""
 <div class="hero-section">
     <h1>🚀 Selamat Datang di PGD Apps</h1>
-    <p>Kumpulan tools otomasi harian untuk tim PGD yang powerful dan user-friendly</p>
+    <p>Kumpulan tools otomasi harian user-friendly</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -322,10 +322,7 @@ with col1:
 with col2:
     st.markdown("""
     ### 💼 Tentang Aplikasi Ini
-    PGD Apps adalah platform terintegrasi yang dirancang untuk meningkatkan efisiensi 
-    kerja tim PGD melalui otomasi proses-proses penting. Dengan antarmuka yang intuitif, 
-    tools ini membantu Anda mengelola data, membuat laporan, dan menganalisis informasi 
-    dengan lebih cepat.
+    PGD Apps adalah Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor.
 
     **✨ Info:** Tampilan mengikuti preferensi sistem (Light/Dark). Untuk mengubah, atur tema OS Anda.
     """)
