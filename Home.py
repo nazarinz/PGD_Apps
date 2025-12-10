@@ -8,31 +8,31 @@ from pathlib import Path
 
 set_page("PGD Apps — Home", "🤖")
 
-# Theme variables (light + dark)
+# Theme variables (light + dark) - Blue theme for dark/light mode friendly
 light_vars = """
---primary-color: #1f77b4;
---primary-dark: #0d47a1;
---accent-color: #ffc107;
---text-primary: #111827;
---text-secondary: #4b5563;
+--primary-color: #0066cc;
+--primary-dark: #0052a3;
+--accent-color: #00a8e8;
+--text-primary: #0f172a;
+--text-secondary: #475569;
 --bg-primary: #ffffff;
---bg-secondary: #f8fafc;
---card-bg: #ffffff;
---border-color: #e6eef8;
---shadow: rgba(16,24,40,0.06);
+--bg-secondary: #f0f7ff;
+--card-bg: #f8fbff;
+--border-color: #cce5ff;
+--shadow: rgba(0,51,153,0.08);
 """
 
 dark_vars = """
---primary-color: #5b9ee1;
---primary-dark: #7fb3f0;
---accent-color: #ffa500;
---text-primary: #e6eef8;
---text-secondary: #a0aec0;
---bg-primary: #0b1220;
---bg-secondary: #071123;
---card-bg: #0f1724;
---border-color: #1f2937;
---shadow: rgba(2,6,23,0.8);
+--primary-color: #3b82f6;
+--primary-dark: #60a5fa;
+--accent-color: #06b6d4;
+--text-primary: #e0e7ff;
+--text-secondary: #a5b4fc;
+--bg-primary: #0f172a;
+--bg-secondary: #1e293b;
+--card-bg: #1e3a5f;
+--border-color: #1e40af;
+--shadow: rgba(6,182,212,0.12);
 """
 
 # Common CSS uses the variables above
