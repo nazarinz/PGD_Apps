@@ -1,23 +1,14 @@
-# Home.py
+"""Home page for PGD Apps — simple layout with system theme support.
+This file uses CSS variables + prefers-color-scheme for light/dark theme,
+no sidebar theme selector.
+"""
 import streamlit as st
 from utils import set_page, header, footer
 from pathlib import Path
 
 set_page("PGD Apps — Home", "🤖")
 
-# Theme selector (System / Light / Dark)
-if "theme_choice" not in st.session_state:
-    st.session_state.theme_choice = "System"
-
-theme_options = ["System", "Light", "Dark"]
-# tempatkan kontrol di sidebar agar mudah diakses
-with st.sidebar:
-    st.header("Tampilan")
-    sel_index = theme_options.index(st.session_state.theme_choice) if st.session_state.theme_choice in theme_options else 0
-    choice = st.radio("Pilih tema", theme_options, index=sel_index, help="System: ikuti preferensi OS")
-    st.session_state.theme_choice = choice
-
-# Helper: variable declarations per theme
+# Theme variables (light + dark)
 light_vars = """
 --primary-color: #1f77b4;
 --primary-dark: #0d47a1;
@@ -27,7 +18,6 @@ light_vars = """
 --bg-primary: #ffffff;
 --bg-secondary: #f8fafc;
 --card-bg: #ffffff;
---muted: #6b7280;
 --border-color: #e6eef8;
 --shadow: rgba(16,24,40,0.06);
 """
@@ -41,42 +31,25 @@ dark_vars = """
 --bg-primary: #0b1220;
 --bg-secondary: #071123;
 --card-bg: #0f1724;
---muted: #9aa6bd;
 --border-color: #1f2937;
 --shadow: rgba(2,6,23,0.8);
 """
 
-# Common CSS (uses variables above)
+# Common CSS uses the variables above
 common_css = """
-/* Base app containers */
-:root {
-    color-scheme: light;
-}
+:root { color-scheme: light; }
 
 .stApp, .main, body {
     background: var(--bg-primary) !important;
     color: var(--text-primary) !important;
 }
 
-/* Block container (Streamlit) */
-[data-testid="stBlock"] {
-    color: var(--text-primary) !important;
-}
-
-/* Page container */
-.reportview-container .main, .css-1outpf7, .block-container {
-    background: var(--bg-primary) !important;
-    color: var(--text-primary) !important;
-}
-
-/* Sidebar */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)) !important;
     color: var(--text-primary) !important;
     border-right: 1px solid var(--border-color);
 }
 
-/* Hero section */
 .hero-section {
     background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
     color: white;
@@ -85,14 +58,10 @@ common_css = """
     margin-bottom: 2rem;
     text-align: center;
     box-shadow: 0 4px 12px var(--shadow);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255,255,255,0.06);
     transition: all 0.25s ease;
 }
 
-.hero-section h1 { margin: 0; font-size: 2.2rem; }
-.hero-section p { margin-top: .5rem; opacity: .95; }
-
-/* Tool cards */
 .tool-card {
     background: linear-gradient(135deg, var(--card-bg) 0%, var(--bg-primary) 100%);
     border: 1px solid var(--border-color);
@@ -103,116 +72,48 @@ common_css = """
     box-shadow: 0 2px 6px var(--shadow);
     color: var(--text-primary);
 }
-
-.tool-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 10px 30px rgba(59,130,246,0.08);
-    border-color: var(--primary-color);
-}
-
+.tool-card:hover { transform: translateY(-4px); box-shadow: 0 10px 30px rgba(59,130,246,0.08); border-color: var(--primary-color); }
 .tool-title { color: var(--primary-color); font-weight: 600; margin-bottom: 0.35rem; }
 .tool-description { color: var(--text-secondary); line-height: 1.45; }
 
-/* Stats */
-.stat-box {
-    text-align: center;
-    min-width: 150px;
-    padding: 1rem;
-    background: linear-gradient(135deg, var(--card-bg) 0%, var(--bg-primary) 100%);
-    border-radius: 8px;
-    margin: 0.5rem;
-    border: 1px solid var(--border-color);
-    box-shadow: 0 2px 8px var(--shadow);
-}
-.stat-number { font-size: 1.8rem; color: var(--primary-color); font-weight: 700; }
-.stat-label { color: var(--text-secondary); font-size: 0.9rem; }
+.stat-box { text-align:center; min-width:150px; padding:1rem; background: linear-gradient(135deg,var(--card-bg) 0%,var(--bg-primary) 100%); border-radius:8px; margin:0.5rem; border:1px solid var(--border-color); box-shadow:0 2px 8px var(--shadow); }
+.stat-number { font-size:1.8rem; color:var(--primary-color); font-weight:700; }
+.stat-label { color:var(--text-secondary); font-size:0.9rem; }
 
-/* Info banners */
-.info-banner {
-    background: linear-gradient(135deg, rgba(255,243,205,0.8), rgba(255,250,240,0.6));
-    border-left: 4px solid var(--accent-color);
-    padding: 1rem;
-    border-radius: 6px;
-    margin: 1.25rem 0;
-    color: var(--text-primary);
-}
-.info-banner-info {
-    background: linear-gradient(135deg, rgba(209,236,241,0.85), rgba(232,244,248,0.6));
-    border-left-color: #17a2b8;
-    color: var(--text-primary);
-}
+.info-banner { background: linear-gradient(135deg, rgba(255,243,205,0.85), rgba(255,250,240,0.7)); border-left:4px solid var(--accent-color); padding:1rem; border-radius:6px; margin:1.25rem 0; color:var(--text-primary); }
+.info-banner-info { background: linear-gradient(135deg, rgba(209,236,241,0.85), rgba(232,244,248,0.6)); border-left-color: #17a2b8; color:var(--text-primary); }
 
-/* Divider */
-.section-divider {
-    border: none;
-    height: 2px;
-    background: linear-gradient(to right, var(--primary-color), transparent);
-    margin: 2rem 0;
-    opacity: 0.45;
-}
+.section-divider { border:none; height:2px; background: linear-gradient(to right, var(--primary-color), transparent); margin:2rem 0; opacity:0.45; }
 
-/* Buttons / inputs styling fallback */
-.stButton>button, button[kind] {
-    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 8px 12px;
-}
+/* Buttons fallback */
+.stButton>button { background: linear-gradient(135deg, var(--primary-color), var(--primary-dark)); color: white; border-radius:8px; }
 
-/* Tables / dataframes */
-.stDataFrame, table.dataframe {
-    background: var(--card-bg) !important;
-    color: var(--text-primary) !important;
-}
+/* Dataframe */
+.stDataFrame, table.dataframe { background: var(--card-bg) !important; color: var(--text-primary) !important; }
 
-/* Smooth transitions */
 * { transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
 
-/* Mobile responsive */
-@media (max-width: 768px) {
-    .hero-section { padding: 1.5rem 1rem; }
-    .hero-section h1 { font-size: 1.6rem; }
-    .tool-card { padding: 1rem; }
+@media (max-width:768px) {
+  .hero-section{ padding:1.5rem 1rem; }
+  .hero-section h1{ font-size:1.6rem; }
 }
 """
 
-# Build final CSS depending on user choice
-if st.session_state.theme_choice == "System":
-    # keep prefers-color-scheme behavior
-    css = f"""
-    <style>
-    :root {{
-        {light_vars}
-    }}
-    @media (prefers-color-scheme: dark) {{
-        :root {{
-            {dark_vars}
-        }}
-        :root {{ color-scheme: dark; }}
-    }}
-    {common_css}
-    </style>
-    """
-elif st.session_state.theme_choice == "Light":
-    css = f"""
-    <style>
-    :root {{
-        {light_vars}
-    }}
-    {common_css}
-    </style>
-    """
-else:  # Dark
-    css = f"""
-    <style>
+# Build CSS using prefers-color-scheme so app follows OS theme
+css = f"""
+<style>
+:root {{
+    {light_vars}
+}}
+@media (prefers-color-scheme: dark) {{
     :root {{
         {dark_vars}
     }}
     :root {{ color-scheme: dark; }}
-    {common_css}
-    </style>
-    """
+}}
+{common_css}
+</style>
+"""
 
 st.markdown(css, unsafe_allow_html=True)
 
@@ -242,9 +143,8 @@ with col2:
     kerja tim PGD melalui otomasi proses-proses penting. Dengan antarmuka yang intuitif, 
     tools ini membantu Anda mengelola data, membuat laporan, dan menganalisis informasi 
     dengan lebih cepat.
-    
-    **✨ Fitur Baru:** Aplikasi sekarang mendukung **Theme Selector** (System / Light / Dark). 
-    Pilih preferensi di sidebar.
+
+    **✨ Info:** Tampilan mengikuti preferensi sistem (Light/Dark). Untuk mengubah, atur tema OS Anda.
     """)
 
 # Stats Section
@@ -258,7 +158,7 @@ with col2:
 with col3:
     st.metric("📈 Efisiensi", "40%+")
 with col4:
-    st.metric("🌙 Tema", st.session_state.theme_choice)
+    st.metric("🌙 Tema", "System")
 
 # Tools Section
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
@@ -281,12 +181,9 @@ if pages_dir.exists():
         "11_Comparison RSA": "🔍 Analisis dan bandingkan data RSA dengan statistik performa yang detail.",
         "12_Advanced_Analytics": "📊 Advanced Analytics Dashboard dengan visualisasi data dan statistik mendalam.",
     }
-    
     for p in items:
         name = p.stem
         desc = descriptions.get(name, f"Tool khusus untuk: {name}")
-        
-        # Render setiap tool sebagai card
         st.markdown(f"""
         <div class="tool-card" role="group" aria-label="{name}">
             <div class="tool-title">{desc.split()[0]} {' '.join(desc.split()[1:])}</div>
@@ -296,7 +193,6 @@ if pages_dir.exists():
 
 # Info Section
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-
 col1, col2 = st.columns([2, 1])
 with col1:
     st.markdown("""
@@ -305,11 +201,9 @@ with col1:
     • Gunakan sidebar untuk navigasi antar tool<br>
     • Setiap tool memiliki bantuan interaktif, hover/klik untuk melihat detail<br>
     • Selalu backup data sebelum melakukan proses besar<br>
-    • Untuk hasil optimal, ikuti instruksi sesuai format yang diminta<br>
-    • 🌙 Gunakan Theme Selector di sidebar untuk pilih tampilan
+    • Untuk hasil optimal, ikuti instruksi sesuai format yang diminta
     </div>
     """, unsafe_allow_html=True)
-
 with col2:
     st.markdown("""
     <div class="info-banner info-banner-info" role="note">
@@ -320,4 +214,4 @@ with col2:
     </div>
     """, unsafe_allow_html=True)
 
-footer("PGD Apps • Made by Nazarudin Zaini :D • Theme selector enabled")
+footer("PGD Apps • Made by Nazarudin Zaini :D")
