@@ -8,31 +8,35 @@ from pathlib import Path
 
 set_page("PGD Apps — Home", "🤖")
 
-# Theme variables (light + dark) - Blue theme for dark/light mode friendly
+# Theme variables (light + dark) - Blue theme optimized for both modes
 light_vars = """
---primary-color: #0066cc;
---primary-dark: #0052a3;
---accent-color: #00a8e8;
---text-primary: #0f172a;
---text-secondary: #475569;
---bg-primary: #ffffff;
---bg-secondary: #f0f7ff;
---card-bg: #f8fbff;
---border-color: #cce5ff;
---shadow: rgba(0,51,153,0.08);
+--primary-color: #1e40af;
+--primary-dark: #1e3a8a;
+--accent-color: #3b82f6;
+--text-primary: #1e293b;
+--text-secondary: #64748b;
+--bg-primary: #f8fafc;
+--bg-secondary: #f1f5f9;
+--card-bg: #ffffff;
+--border-color: #e2e8f0;
+--shadow: rgba(30, 64, 175, 0.1);
+--hero-gradient-start: #3b82f6;
+--hero-gradient-end: #1e40af;
 """
 
 dark_vars = """
---primary-color: #3b82f6;
---primary-dark: #60a5fa;
---accent-color: #06b6d4;
---text-primary: #e0e7ff;
---text-secondary: #a5b4fc;
+--primary-color: #60a5fa;
+--primary-dark: #3b82f6;
+--accent-color: #93c5fd;
+--text-primary: #f1f5f9;
+--text-secondary: #cbd5e1;
 --bg-primary: #0f172a;
 --bg-secondary: #1e293b;
---card-bg: #1e3a5f;
---border-color: #1e40af;
---shadow: rgba(6,182,212,0.12);
+--card-bg: #1e293b;
+--border-color: #334155;
+--shadow: rgba(96, 165, 250, 0.15);
+--hero-gradient-start: #1e40af;
+--hero-gradient-end: #3730a3;
 """
 
 # Common CSS uses the variables above
@@ -45,57 +49,171 @@ common_css = """
 }
 
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary)) !important;
+    background: var(--bg-secondary) !important;
     color: var(--text-primary) !important;
     border-right: 1px solid var(--border-color);
 }
 
 .hero-section {
-    background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+    background: linear-gradient(135deg, var(--hero-gradient-start) 0%, var(--hero-gradient-end) 100%);
     color: white;
-    padding: 3rem 2rem;
-    border-radius: 10px;
-    margin-bottom: 2rem;
+    padding: 3.5rem 2rem;
+    border-radius: 16px;
+    margin-bottom: 2.5rem;
     text-align: center;
-    box-shadow: 0 4px 12px var(--shadow);
-    border: 1px solid rgba(255,255,255,0.06);
-    transition: all 0.25s ease;
+    box-shadow: 0 8px 32px var(--shadow);
+    border: 1px solid rgba(255,255,255,0.1);
+    transition: all 0.3s ease;
+}
+
+.hero-section h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.hero-section p {
+    font-size: 1.15rem;
+    opacity: 0.95;
+    font-weight: 400;
 }
 
 .tool-card {
-    background: linear-gradient(135deg, var(--card-bg) 0%, var(--bg-primary) 100%);
+    background: var(--card-bg);
     border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 1.25rem;
+    border-radius: 12px;
+    padding: 1.5rem;
     margin: 1rem 0;
-    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
-    box-shadow: 0 2px 6px var(--shadow);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    box-shadow: 0 2px 8px var(--shadow);
     color: var(--text-primary);
+    position: relative;
+    overflow: hidden;
 }
-.tool-card:hover { transform: translateY(-4px); box-shadow: 0 10px 30px rgba(59,130,246,0.08); border-color: var(--primary-color); }
-.tool-title { color: var(--primary-color); font-weight: 600; margin-bottom: 0.35rem; }
-.tool-description { color: var(--text-secondary); line-height: 1.45; }
 
-.stat-box { text-align:center; min-width:150px; padding:1rem; background: linear-gradient(135deg,var(--card-bg) 0%,var(--bg-primary) 100%); border-radius:8px; margin:0.5rem; border:1px solid var(--border-color); box-shadow:0 2px 8px var(--shadow); }
-.stat-number { font-size:1.8rem; color:var(--primary-color); font-weight:700; }
-.stat-label { color:var(--text-secondary); font-size:0.9rem; }
+.tool-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    background: var(--primary-color);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
 
-.info-banner { background: linear-gradient(135deg, rgba(255,243,205,0.85), rgba(255,250,240,0.7)); border-left:4px solid var(--accent-color); padding:1rem; border-radius:6px; margin:1.25rem 0; color:var(--text-primary); }
-.info-banner-info { background: linear-gradient(135deg, rgba(209,236,241,0.85), rgba(232,244,248,0.6)); border-left-color: #17a2b8; color:var(--text-primary); }
+.tool-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 40px var(--shadow);
+    border-color: var(--primary-color);
+}
 
-.section-divider { border:none; height:2px; background: linear-gradient(to right, var(--primary-color), transparent); margin:2rem 0; opacity:0.45; }
+.tool-card:hover::before {
+    opacity: 1;
+}
 
-/* Buttons fallback */
-.stButton>button { background: linear-gradient(135deg, var(--primary-color), var(--primary-dark)); color: white; border-radius:8px; }
+.tool-title {
+    color: var(--primary-color);
+    font-weight: 600;
+    font-size: 1.1rem;
+    margin-bottom: 0.5rem;
+}
 
-/* Dataframe */
-.stDataFrame, table.dataframe { background: var(--card-bg) !important; color: var(--text-primary) !important; }
+.tool-description {
+    color: var(--text-secondary);
+    line-height: 1.6;
+    font-size: 0.95rem;
+}
 
-* { transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+.stat-box {
+    text-align: center;
+    padding: 1.5rem 1rem;
+    background: var(--card-bg);
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 2px 8px var(--shadow);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
 
-@media (max-width:768px) {
-  .hero-section{ padding:1.5rem 1rem; }
-  .hero-section h1{ font-size:1.6rem; }
+.stat-box:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px var(--shadow);
+}
+
+.stat-number {
+    font-size: 2rem;
+    color: var(--primary-color);
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+}
+
+.stat-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.info-banner {
+    background: var(--card-bg);
+    border-left: 4px solid var(--accent-color);
+    padding: 1.25rem;
+    border-radius: 8px;
+    margin: 1.5rem 0;
+    color: var(--text-primary);
+    box-shadow: 0 2px 8px var(--shadow);
+}
+
+.info-banner strong {
+    color: var(--primary-color);
+    font-size: 1.05rem;
+}
+
+.info-banner-info {
+    border-left-color: #06b6d4;
+}
+
+.section-divider {
+    border: none;
+    height: 2px;
+    background: linear-gradient(to right, var(--primary-color), transparent);
+    margin: 2.5rem 0;
+    opacity: 0.3;
+}
+
+.stButton>button {
+    background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+    color: white;
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.stButton>button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px var(--shadow);
+}
+
+.stDataFrame, table.dataframe {
+    background: var(--card-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+* {
+    transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+@media (max-width: 768px) {
+    .hero-section {
+        padding: 2rem 1rem;
+    }
+    .hero-section h1 {
+        font-size: 1.75rem;
+    }
+    .hero-section p {
+        font-size: 1rem;
+    }
 }
 """
 
@@ -122,7 +240,7 @@ header("🤖 PGD Apps — Home")
 # Hero Section
 st.markdown("""
 <div class="hero-section">
-    <h1>Selamat Datang di PGD Apps</h1>
+    <h1>🚀 Selamat Datang di PGD Apps</h1>
     <p>Kumpulan tools otomasi harian untuk tim PGD yang powerful dan user-friendly</p>
 </div>
 """, unsafe_allow_html=True)
@@ -138,7 +256,7 @@ with col1:
 
 with col2:
     st.markdown("""
-    ### Tentang Aplikasi Ini
+    ### 💼 Tentang Aplikasi Ini
     PGD Apps adalah platform terintegrasi yang dirancang untuk meningkatkan efisiensi 
     kerja tim PGD melalui otomasi proses-proses penting. Dengan antarmuka yang intuitif, 
     tools ini membantu Anda mengelola data, membuat laporan, dan menganalisis informasi 
@@ -152,13 +270,33 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("📊 Tools Tersedia", 12)
+    st.markdown("""
+    <div class="stat-box">
+        <div class="stat-number">12</div>
+        <div class="stat-label">📊 Tools Tersedia</div>
+    </div>
+    """, unsafe_allow_html=True)
 with col2:
-    st.metric("⚡ Fitur Utama", 50)
+    st.markdown("""
+    <div class="stat-box">
+        <div class="stat-number">50+</div>
+        <div class="stat-label">⚡ Fitur Utama</div>
+    </div>
+    """, unsafe_allow_html=True)
 with col3:
-    st.metric("📈 Efisiensi", "40%+")
+    st.markdown("""
+    <div class="stat-box">
+        <div class="stat-number">40%</div>
+        <div class="stat-label">📈 Efisiensi</div>
+    </div>
+    """, unsafe_allow_html=True)
 with col4:
-    st.metric("🌙 Tema", "System")
+    st.markdown("""
+    <div class="stat-box">
+        <div class="stat-number">Auto</div>
+        <div class="stat-label">🌙 Tema System</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # Tools Section
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
