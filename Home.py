@@ -10,18 +10,18 @@ set_page("PGD Apps — Home", "🤖")
 
 # Theme variables (light + dark) - Blue theme optimized for both modes
 light_vars = """
---primary-color: #1e40af;
---primary-dark: #1e3a8a;
---accent-color: #3b82f6;
---text-primary: #1e293b;
---text-secondary: #64748b;
---bg-primary: #f8fafc;
---bg-secondary: #f1f5f9;
---card-bg: #ffffff;
---border-color: #e2e8f0;
---shadow: rgba(30, 64, 175, 0.1);
+--primary-color: #2563eb;
+--primary-dark: #1d4ed8;
+--accent-color: #0ea5e9;
+--text-primary: #0f172a;
+--text-secondary: #475569;
+--bg-primary: #ffffff;
+--bg-secondary: #f8fafc;
+--card-bg: #fafbff;
+--border-color: #e0e7ff;
+--shadow: rgba(37, 99, 235, 0.08);
 --hero-gradient-start: #3b82f6;
---hero-gradient-end: #1e40af;
+--hero-gradient-end: #2563eb;
 """
 
 dark_vars = """
@@ -81,12 +81,12 @@ common_css = """
 
 .tool-card {
     background: var(--card-bg);
-    border: 1px solid var(--border-color);
+    border: 1.5px solid var(--border-color);
     border-radius: 12px;
     padding: 1.5rem;
     margin: 1rem 0;
     transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-    box-shadow: 0 2px 8px var(--shadow);
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.06), 0 4px 8px rgba(37, 99, 235, 0.04);
     color: var(--text-primary);
     position: relative;
     overflow: hidden;
@@ -106,7 +106,7 @@ common_css = """
 
 .tool-card:hover {
     transform: translateY(-4px);
-    box-shadow: 0 12px 40px var(--shadow);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12), 0 12px 32px rgba(37, 99, 235, 0.08);
     border-color: var(--primary-color);
 }
 
@@ -132,14 +132,14 @@ common_css = """
     padding: 1.5rem 1rem;
     background: var(--card-bg);
     border-radius: 12px;
-    border: 1px solid var(--border-color);
-    box-shadow: 0 2px 8px var(--shadow);
+    border: 1.5px solid var(--border-color);
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.06), 0 4px 8px rgba(37, 99, 235, 0.04);
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .stat-box:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 24px var(--shadow);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12), 0 8px 20px rgba(37, 99, 235, 0.08);
 }
 
 .stat-number {
