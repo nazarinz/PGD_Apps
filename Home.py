@@ -43,15 +43,35 @@ dark_vars = """
 common_css = """
 :root { color-scheme: light; }
 
-.stApp, .main, body {
+/* Force background colors */
+.stApp {
+    background-color: var(--bg-primary) !important;
     background: var(--bg-primary) !important;
+}
+
+.main .block-container {
+    background-color: var(--bg-primary) !important;
+}
+
+section[data-testid="stAppViewContainer"] {
+    background-color: var(--bg-primary) !important;
+}
+
+.stApp, .main, body, [data-testid="stAppViewContainer"] > .main {
+    background: var(--bg-primary) !important;
+    background-color: var(--bg-primary) !important;
     color: var(--text-primary) !important;
 }
 
 [data-testid="stSidebar"] {
     background: var(--bg-secondary) !important;
+    background-color: var(--bg-secondary) !important;
     color: var(--text-primary) !important;
     border-right: 1px solid var(--border-color);
+}
+
+[data-testid="stSidebar"] > div:first-child {
+    background-color: var(--bg-secondary) !important;
 }
 
 .hero-section {
