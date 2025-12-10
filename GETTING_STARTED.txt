@@ -1,0 +1,59 @@
+👋 **Selamat datang di PGD Apps!**
+
+Ini adalah kumpulan tools otomasi untuk tim PGD dengan UI/UX yang modern dan responsif.
+
+---
+
+## ⚡ MULAI DALAM 3 LANGKAH
+
+### 1️⃣ Install Dependencies
+```powershell
+pip install -r requirements.txt
+```
+
+### 2️⃣ Jalankan Aplikasi
+```powershell
+streamlit run Home.py
+```
+
+### 3️⃣ Gunakan Tools!
+Aplikasi akan terbuka di browser Anda. Pilih tool dari sidebar.
+
+---
+
+## 📚 Dokumentasi
+
+- **[QUICK_START.md](QUICK_START.md)** — Setup & tips (5 menit)
+- **[README.md](README.md)** — Informasi lengkap
+- **[INDEX.md](INDEX.md)** — Navigation ke semua dokumen
+- **[UI_UX_GUIDE.md](UI_UX_GUIDE.md)** — Untuk developer
+
+---
+
+## 🎯 Apa itu PGD Apps?
+
+13 tools terintegrasi dalam satu aplikasi:
+- 🧾 Quantity Change Extractor
+- 📋 Input Tracking Report
+- 📦 Merger Daily Report
+- 📅 Jadwal Audit
+- 🔄 Reroute Tools
+- ... dan 8 tools lainnya!
+
+---
+
+## 💡 Tips
+
+- Hover di atas elemen untuk melihat lebih detail
+- Semua file Excel export sudah siap pakai (header, filter, freeze)
+- Ada help info di setiap halaman
+
+---
+
+## 📞 Butuh Bantuan?
+
+📧 nazarudin@gsid.co.id
+
+---
+
+**Happy using! 🚀**
