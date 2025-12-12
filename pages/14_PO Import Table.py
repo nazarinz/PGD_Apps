@@ -451,9 +451,26 @@ def run_pipeline(packing_files, lookup_file, debug=False, normalize_pr_strip=Tru
         df_norm = group_packing_rules(df_norm)
 
     # Read lookup
-    lookup_df = safe_read_excel_bytes(io.BytesIO(lookup_file.read()), dtype=str) if lookup_file is not None else None
-    if lookup_df is None:
-        raise ValueError("Lookup file tidak bisa dibaca atau belum diupload.")
+    # Read lookup robustly (support single-sheet and multi-sheet Excel files)
+lookup_df = None
+if lookup_file is not None:
+    _raw = safe_read_excel_bytes(io.BytesIO(lookup_file.read()), sheet_name=None, dtype=str)
+    if _raw is None:
+        lookup_df = None
+    elif isinstance(_raw, dict):
+        # try to pick a sensible sheet by common names, otherwise take the first sheet
+        for candidate in ("FlexView","FlexView_PGDHDRE","Sheet1","Sheet 1","Lookup","Data","Sheet"):
+            if candidate in _raw:
+                lookup_df = _raw[candidate]
+                break
+        if lookup_df is None:
+            # fallback: take the first sheet
+            lookup_df = list(_raw.values())[0]
+    else:
+        lookup_df = _raw
+
+if lookup_df is None:
+    raise ValueError("Lookup file tidak bisa dibaca atau belum diupload.")
 
     required_lookup_cols = ["Order #","Material Color Description","Manufacturing Size","UPC/EAN (GTIN)","Country/Region"]
     missing_cols = [c for c in required_lookup_cols if c not in lookup_df.columns]
