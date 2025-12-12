@@ -278,11 +278,15 @@ def group_packing_rules(df):
     return df
 
 def apply_multirow_pack_rules(df, debug=False):
-    """Apply multi-row pack detection rules."""
+    """Apply multi-row pack detection rules and insert separator rows."""
     df = df.copy()
     for c in ["PO No.","Packing Rule No.","Pkg Count","Gross Weight"]:
         if c not in df.columns:
             df[c] = pd.NA
+
+    # Add separator marker column
+    if "_is_separator" not in df.columns:
+        df["_is_separator"] = False
 
     df = df.reset_index(drop=True)
 
@@ -291,6 +295,7 @@ def apply_multirow_pack_rules(df, debug=False):
 
     df["_is_multi_row_group"] = df["grp_size"].fillna(0).astype(int) > 1
 
+    # ACTION 1: Clear Pkg Count & Gross Weight for rows 2+ in multi-row groups
     for _, group in df.groupby(["PO No.","Packing Rule No."], sort=False):
         if len(group) > 1:
             idxs = group.index.tolist()
@@ -298,6 +303,7 @@ def apply_multirow_pack_rules(df, debug=False):
                 df.at[i, "Pkg Count"] = pd.NA
                 df.at[i, "Gross Weight"] = np.nan
 
+    # Mark first row of each multi-row group
     df['_group_first'] = False
     for (po, pr), group in df.groupby(["PO No.","Packing Rule No."], sort=False):
         if len(group) > 1:
@@ -307,16 +313,26 @@ def apply_multirow_pack_rules(df, debug=False):
     insert_indices = df[df['_group_first'] == True].index.tolist()
     df = df.drop(columns=["grp_size", "_is_multi_row_group", "_group_first"])
 
+    # ACTION 2: Insert separator rows BEFORE multi-row groups
     if insert_indices:
         result_parts = []
         last_idx = 0
+        separator_count = 0
         for insert_idx in insert_indices:
+            # Add data rows
             result_parts.append(df.iloc[last_idx:insert_idx])
+            # Create separator row with marker
             empty_row = pd.DataFrame([{col: np.nan for col in df.columns}])
+            empty_row["_is_separator"] = True
             result_parts.append(empty_row)
+            separator_count += 1
             last_idx = insert_idx
+        # Add remaining rows
         result_parts.append(df.iloc[last_idx:])
         df = pd.concat(result_parts, ignore_index=True)
+        
+        if debug:
+            st.info(f"✓ Inserted {separator_count} separator rows before multi-row groups")
 
     return df
 
@@ -389,6 +405,10 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         }
         df_norm = df_final.rename(columns=rename_map)
         
+        # Add separator marker column early
+        if "_is_separator" not in df_norm.columns:
+            df_norm["_is_separator"] = False
+        
         for c in ["PO No.", "Packing Rule No.", "Style", "Size", "Qty per Pkg/Inner Pack", "Pkg Count", "Gross Weight", "_original_pkg_empty"]:
             if c not in df_norm.columns:
                 if c == "_original_pkg_empty":
@@ -401,7 +421,7 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         if "Item No." not in df_norm.columns:
             df_norm["Item No."] = None
         
-        cols_order = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","_original_pkg_empty"]
+        cols_order = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","_original_pkg_empty","_is_separator"]
         df_norm = df_norm[[c for c in cols_order if c in df_norm.columns]]
         
         # Step 3: Group packing rules
@@ -444,18 +464,23 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         df["__PO_norm"] = df["PO No."].astype(str).str.strip()
         df["__Size_norm"] = df["Size"].astype(str).str.strip()
         
-        df_valid = df[
-            (df["__PO_norm"] != '') &
-            (df["__PO_norm"] != 'nan') &
-            (df["__Size_norm"] != '') &
-            (df["__Size_norm"] != 'nan')
+        # Separate separator rows from data rows
+        separator_rows = df[df["_is_separator"] == True].copy()
+        data_rows = df[df["_is_separator"] == False].copy()
+        
+        # Only merge data rows
+        df_valid = data_rows[
+            (data_rows["__PO_norm"] != '') &
+            (data_rows["__PO_norm"] != 'nan') &
+            (data_rows["__Size_norm"] != '') &
+            (data_rows["__Size_norm"] != 'nan')
         ].copy()
         
-        df_invalid = df[
-            (df["__PO_norm"] == '') |
-            (df["__PO_norm"] == 'nan') |
-            (df["__Size_norm"] == '') |
-            (df["__Size_norm"] == 'nan')
+        df_invalid = data_rows[
+            (data_rows["__PO_norm"] == '') |
+            (data_rows["__PO_norm"] == 'nan') |
+            (data_rows["__Size_norm"] == '') |
+            (data_rows["__Size_norm"] == 'nan')
         ].copy()
         
         merged = df_valid.merge(
@@ -477,6 +502,15 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             df_invalid["Country/Region"] = None
             merged = pd.concat([merged, df_invalid], ignore_index=True)
         
+        # Add separator rows back (they stay completely empty)
+        if len(separator_rows) > 0:
+            for col in merged.columns:
+                if col not in separator_rows.columns:
+                    separator_rows[col] = np.nan
+            merged = pd.concat([merged, separator_rows], ignore_index=True)
+            # Sort back to original order (if needed)
+            merged = merged.sort_index()
+        
         merged["Color"] = merged["Material Color Description"].where(
             merged["Material Color Description"].notna() & (merged["Material Color Description"] != ''),
             None
@@ -486,17 +520,22 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             None
         )
         
-        final_cols = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","Country/Region","_original_pkg_empty"]
+        final_cols = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","Country/Region","_original_pkg_empty","_is_separator"]
         final_cols = [c for c in final_cols if c in merged.columns]
         df_final_with_lookup = merged[final_cols].copy()
         
+        # Drop temporary columns but keep separator marker for now
         if "_original_pkg_empty" in df_final_with_lookup.columns:
             df_final_with_lookup = df_final_with_lookup.drop(columns=["_original_pkg_empty"])
         
-        # Step 6: Apply multi-row rules
+        # Step 6: Apply multi-row rules (this adds more separators)
         status_text.text("📊 Applying multi-row pack rules...")
         progress_bar.progress(85)
         df_final_with_lookup = apply_multirow_pack_rules(df_final_with_lookup, debug=debug_mode)
+        
+        # NOW remove the separator marker column before export
+        if "_is_separator" in df_final_with_lookup.columns:
+            df_final_with_lookup = df_final_with_lookup.drop(columns=["_is_separator"])
         
         # Step 7: Identify unmatched
         unmatched = df_final_with_lookup[
