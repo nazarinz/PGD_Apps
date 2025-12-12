@@ -7,6 +7,11 @@ from io import BytesIO
 import zipfile
 from datetime import datetime
 
+# tambahan untuk styling Excel
+from openpyxl import Workbook
+from openpyxl.styles import Font, Border, Side
+from openpyxl.utils import get_column_letter
+
 st.set_page_config(
     page_title="Packing Plan Processor",
     page_icon="📦",
@@ -22,6 +27,53 @@ with st.sidebar:
     debug_mode = st.checkbox("Debug Mode", value=True)
     st.markdown("---")
     st.info("Upload your packing plan files and lookup file to begin processing")
+
+# ============= EXCEL WRITER WITH STYLE =============
+def df_to_excel_bytes_with_style(df, sheet_name="Rekap"):
+    """
+    Write dataframe to BytesIO with:
+    - Header bold
+    - Thin border around all cells (including blank rows)
+    - Values written as strings (so display preserved)
+    Returns BytesIO positioned at 0
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+
+    thin = Side(border_style="thin", color="000000")
+    border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bold_font = Font(bold=True)
+
+    cols = list(df.columns)
+
+    # header
+    for c_idx, col_name in enumerate(cols, start=1):
+        cell = ws.cell(row=1, column=c_idx, value=str(col_name))
+        cell.font = bold_font
+        cell.border = border_all
+
+    # body
+    for r_idx, (_, row) in enumerate(df.iterrows(), start=2):
+        for c_idx, col_name in enumerate(cols, start=1):
+            val = row[col_name]
+            # preserve as-is for display: None/NaN -> empty string; otherwise str(value)
+            if pd.isna(val):
+                out_val = ""
+            else:
+                out_val = str(val)
+            cell = ws.cell(row=r_idx, column=c_idx, value=out_val)
+            cell.border = border_all
+
+    # autosize-ish
+    for i, col_name in enumerate(cols, start=1):
+        width = max(12, min(40, len(str(col_name)) + 2))
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
 
 # ============= HELPER FUNCTIONS =============
 
@@ -539,17 +591,66 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             ((df_final_with_lookup["Color"].isna()) | (df_final_with_lookup["Item No."].isna()))
         ].copy()
         
-        # Downloads
+        # Downloads (styled)
         status_text.text("💾 Preparing...")
         progress_bar.progress(95)
         
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_final_with_lookup.to_excel(writer, index=False, sheet_name='Rekap')
-            if not unmatched.empty:
-                unmatched.to_excel(writer, index=False, sheet_name='Unmatched')
-        output.seek(0)
-        
+        # Main report (Rekap + Unmatched) -> use BytesIO + openpyxl styling
+        report_bio = BytesIO()
+        # We'll create workbook with two sheets by constructing and then writing into BytesIO
+        wb_main = Workbook()
+        # sheet Rekap
+        ws_main = wb_main.active
+        ws_main.title = "Rekap"
+
+        # write Rekap with style
+        # reuse helper: create workbook from df and then append unmatched as second sheet
+        rekap_bio = df_to_excel_bytes_with_style(df_final_with_lookup, sheet_name="Rekap")
+        # load the bytes into wb_main: simpler to just save rekap_bio and unmatched separately into a single workbook:
+        # so we will create workbook manually:
+        wb_main = Workbook()
+        ws1 = wb_main.active
+        ws1.title = "Rekap"
+
+        # write Rekap sheet
+        cols_rekap = list(df_final_with_lookup.columns)
+        thin = Side(border_style="thin", color="000000")
+        border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
+        bold_font = Font(bold=True)
+        for c_idx, col_name in enumerate(cols_rekap, start=1):
+            cell = ws1.cell(row=1, column=c_idx, value=str(col_name))
+            cell.font = bold_font
+            cell.border = border_all
+        for r_idx, (_, row) in enumerate(df_final_with_lookup.iterrows(), start=2):
+            for c_idx, col_name in enumerate(cols_rekap, start=1):
+                v = row[col_name]
+                out_v = "" if pd.isna(v) else str(v)
+                cell = ws1.cell(row=r_idx, column=c_idx, value=out_v)
+                cell.border = border_all
+        for i, col_name in enumerate(cols_rekap, start=1):
+            ws1.column_dimensions[get_column_letter(i)].width = max(12, min(40, len(str(col_name))+2))
+
+        # Unmatched sheet (if any)
+        if not unmatched.empty:
+            ws2 = wb_main.create_sheet("Unmatched")
+            cols_un = list(unmatched.columns)
+            for c_idx, col_name in enumerate(cols_un, start=1):
+                cell = ws2.cell(row=1, column=c_idx, value=str(col_name))
+                cell.font = bold_font
+                cell.border = border_all
+            for r_idx, (_, row) in enumerate(unmatched.iterrows(), start=2):
+                for c_idx, col_name in enumerate(cols_un, start=1):
+                    v = row[col_name]
+                    out_v = "" if pd.isna(v) else str(v)
+                    cell = ws2.cell(row=r_idx, column=c_idx, value=out_v)
+                    cell.border = border_all
+            for i, col_name in enumerate(cols_un, start=1):
+                ws2.column_dimensions[get_column_letter(i)].width = max(12, min(40, len(str(col_name))+2))
+
+        wb_main.save(report_bio)
+        report_bio.seek(0)
+
+        # PO exports into ZIP: each PO file also styled
         po_country_map = lookup_df.set_index("__Order_norm")["Country/Region"].to_dict()
         unique_pos = df_final_with_lookup["PO No."].dropna().unique()
         
@@ -559,17 +660,13 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
                 df_po = df_final_with_lookup[df_final_with_lookup["PO No."] == po].copy()
                 if "Country/Region" in df_po.columns:
                     df_po = df_po.drop(columns=["Country/Region"])
-                
+
                 country = po_country_map.get(str(po), "Unknown")
                 country = str(country).strip() if pd.notna(country) else "Unknown"
                 file_name = f"Po import table_ {po} {country.replace('/', '-')}.xlsx"
-                
-                po_output = BytesIO()
-                with pd.ExcelWriter(po_output, engine='openpyxl') as writer:
-                    df_po.to_excel(writer, index=False, sheet_name='Rekap')
-                po_output.seek(0)
-                
-                zip_file.writestr(file_name, po_output.read())
+
+                po_bio = df_to_excel_bytes_with_style(df_po, sheet_name="Rekap")
+                zip_file.writestr(file_name, po_bio.read())
         
         zip_buffer.seek(0)
         
@@ -595,7 +692,7 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         with col1:
             st.download_button(
                 label="📥 Download Report",
-                data=output,
+                data=report_bio,
                 file_name=f"rekap_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
