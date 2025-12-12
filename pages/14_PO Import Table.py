@@ -593,35 +593,34 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             ((df_final_with_lookup["Color"].isna()) | (df_final_with_lookup["Item No."].isna()))
         ].copy()
         
-        # Downloads (styled) — RUN THIS AFTER SEMUA PROSES
+        # Downloads (styled) — RUN THIS AFTER SEMUA PROSES (ambil data dari hasil yang diproses)
         status_text.text("💾 Preparing styled downloads...")
         progress_bar.progress(95)
-        
-        # 1) Main report workbook (Rekap + Unmatched)
+
+        # 1) Main report workbook (Rekap + Unmatched) — use df_final_with_lookup & unmatched directly
         sheets = {"Rekap": df_final_with_lookup}
         if not unmatched.empty:
             sheets["Unmatched"] = unmatched
         report_bio = write_workbook_bytes(sheets)
-        
-        # 2) PO exports into ZIP (each PO has own styled XLSX)
+
+        # 2) PO exports into ZIP (each PO created from df_final_with_lookup)
         po_country_map = lookup_df.set_index("__Order_norm")["Country/Region"].to_dict()
         unique_pos = df_final_with_lookup["PO No."].dropna().unique()
-        
+
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for po in unique_pos:
                 df_po = df_final_with_lookup[df_final_with_lookup["PO No."] == po].copy()
                 if "Country/Region" in df_po.columns:
                     df_po = df_po.drop(columns=["Country/Region"])
-                # create BytesIO for this PO
                 po_bio = write_workbook_bytes({"Rekap": df_po})
-                # determine filename
                 country = po_country_map.get(str(po), "Unknown")
                 country = str(country).strip() if pd.notna(country) else "Unknown"
-                file_name = f"Po import table_ {po} {country.replace('/', '-')}.xlsx"
+                safe_country = country.replace('/', '-')
+                file_name = f"Po import table_ {po} {safe_country}.xlsx"
                 zip_file.writestr(file_name, po_bio.read())
         zip_buffer.seek(0)
-        
+
         progress_bar.progress(100)
         status_text.text("✅ Complete!")
         
