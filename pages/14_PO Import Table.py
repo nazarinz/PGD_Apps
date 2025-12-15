@@ -194,12 +194,13 @@ def extract_package_detail(file_bytes, filename, debug=False):
 
     for outcol, (cands, prefer_int) in mapping_candidates.items():
         if outcol == "Pkg Count":
-            out[outcol] = np.nan
+            out[outcol] = ""
             mapping_log[outcol] = None
             continue
         found = find_col_precise(cols, cands, data, prefer_integer=prefer_int)
         mapping_log[outcol] = found
-        out[outcol] = data[found].astype(str).replace(r'^\s*$', np.nan, regex=True) if (found and found in data.columns) else np.nan
+        # KEEP AS STRING - NO CONVERSION
+        out[outcol] = data[found].astype(str).replace(r'^\s*$', "", regex=True).replace('nan', '') if (found and found in data.columns) else ""
 
     # Pkg Count detection - 4-step approach
     pkg_count_col = None
@@ -281,27 +282,25 @@ def extract_package_detail(file_bytes, filename, debug=False):
                 if debug:
                     st.info(f"✓ Pkg Count pattern: '{best_col}' ({best_score:.2f})")
     
-    # Store Pkg Count
+    # Store Pkg Count - KEEP AS STRING
     if pkg_count_col and pkg_count_col in data.columns:
         raw_pkg = data[pkg_count_col].astype(str).str.strip()
-        out["_original_pkg_empty"] = raw_pkg.replace(r'^\s*$', np.nan, regex=True).isna()
-        out["Pkg Count"] = pd.to_numeric(raw_pkg.replace(r'^\s*$', np.nan, regex=True), errors="coerce").astype('Int64')
+        out["_original_pkg_empty"] = (raw_pkg == '') | (raw_pkg == 'nan')
+        out["Pkg Count"] = raw_pkg.replace('nan', '').replace('', '')
         mapping_log["Pkg Count"] = pkg_count_col
         if debug:
             st.success(f"✓ Pkg Count: '{pkg_count_col}'")
     else:
         out["_original_pkg_empty"] = True
-        out["Pkg Count"] = pd.Series([pd.NA]*len(data), index=data.index).astype('Int64')
+        out["Pkg Count"] = ""
         mapping_log["Pkg Count"] = None
         if debug:
             st.warning("⚠️ Pkg Count not found")
 
+    # ALL COLUMNS AS STRING
     for c in out.columns:
-        if c not in ["Qty per Pkg/Inner Pack", "Pkg Count", "_original_pkg_empty"]:
-            out[c] = out[c].astype(str).str.strip().replace('nan', np.nan)
-
-    out["Qty per Pkg/Inner Pack"] = pd.to_numeric(out["Qty per Pkg/Inner Pack"], errors="coerce")
-    out["Gross"] = out["Gross"].astype(str).str.strip().replace('nan', np.nan)
+        if c != "_original_pkg_empty":
+            out[c] = out[c].astype(str).str.strip().replace('nan', '')
 
     return out.reset_index(drop=True)
 
@@ -317,16 +316,16 @@ def group_packing_rules(df):
         separator_rows = pd.DataFrame()
         data_rows = df.copy()
     
-    data_rows["Packing Rule No."] = data_rows["Packing Rule No."].replace('', np.nan)
+    data_rows["Packing Rule No."] = data_rows["Packing Rule No."].replace('', '')
     valid_rule_mask = data_rows["Packing Rule No."].astype(str).str.match(r'^\d{4}$', na=False)
-    data_rows["_ffill_key"] = np.where(valid_rule_mask, data_rows["Packing Rule No."], np.nan)
-    data_rows["_ffill_key"] = data_rows["_ffill_key"].ffill()
+    data_rows["_ffill_key"] = data_rows["Packing Rule No."].where(valid_rule_mask, '')
+    data_rows["_ffill_key"] = data_rows["_ffill_key"].replace('', pd.NA).ffill().fillna('')
 
     detail_row_mask = data_rows["_original_pkg_empty"] == True
     data_rows["Packing Rule No."] = data_rows["_ffill_key"]
 
-    data_rows.loc[detail_row_mask, "Pkg Count"] = pd.NA
-    data_rows.loc[detail_row_mask, "Gross Weight"] = np.nan
+    data_rows.loc[detail_row_mask, "Pkg Count"] = ""
+    data_rows.loc[detail_row_mask, "Gross Weight"] = ""
     data_rows = data_rows.drop(columns=["_ffill_key"])
     
     if not separator_rows.empty:
@@ -342,7 +341,7 @@ def apply_multirow_pack_rules(df, debug=False):
     df = df.copy()
     for c in ["PO No.","Packing Rule No.","Pkg Count","Gross Weight"]:
         if c not in df.columns:
-            df[c] = pd.NA
+            df[c] = ""
 
     if "_is_separator" not in df.columns:
         df["_is_separator"] = False
@@ -359,8 +358,8 @@ def apply_multirow_pack_rules(df, debug=False):
         if len(group) > 1:
             idxs = group.index.tolist()
             for i in idxs[1:]:
-                data_rows.at[i, "Pkg Count"] = pd.NA
-                data_rows.at[i, "Gross Weight"] = np.nan
+                data_rows.at[i, "Pkg Count"] = ""
+                data_rows.at[i, "Gross Weight"] = ""
 
     # Mark first row of multi-row groups
     data_rows['_group_first'] = False
@@ -380,7 +379,7 @@ def apply_multirow_pack_rules(df, debug=False):
         
         for insert_idx in insert_indices:
             result_parts.append(data_rows.iloc[last_idx:insert_idx])
-            empty_row = pd.DataFrame([{col: np.nan for col in data_rows.columns}])
+            empty_row = pd.DataFrame([{col: "" for col in data_rows.columns}])
             empty_row["_is_separator"] = True
             result_parts.append(empty_row)
             separator_count += 1
@@ -395,7 +394,7 @@ def apply_multirow_pack_rules(df, debug=False):
     if not existing_separators.empty:
         for col in data_rows.columns:
             if col not in existing_separators.columns:
-                existing_separators[col] = np.nan
+                existing_separators[col] = ""
         result = pd.concat([data_rows, existing_separators], ignore_index=True)
     else:
         result = data_rows
@@ -474,14 +473,17 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         if "_is_separator" not in df_norm.columns:
             df_norm["_is_separator"] = False
         
-        for c in ["PO No.", "Packing Rule No.", "Style", "Size", "Qty per Pkg/Inner Pack", "Pkg Count", "Gross Weight", "_original_pkg_empty"]:
+        for c in ["PO No.", "Packing Rule No.", "Style", "Size", "Qty per Pkg/Inner Pack", "Pkg Count", "Gross Weight"]:
             if c not in df_norm.columns:
-                df_norm[c] = False if c == "_original_pkg_empty" else None
+                df_norm[c] = ""
+        
+        if "_original_pkg_empty" not in df_norm.columns:
+            df_norm["_original_pkg_empty"] = False
         
         if "Color" not in df_norm.columns:
-            df_norm["Color"] = None
+            df_norm["Color"] = ""
         if "Item No." not in df_norm.columns:
-            df_norm["Item No."] = None
+            df_norm["Item No."] = ""
         
         cols_order = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","_original_pkg_empty","_is_separator"]
         df_norm = df_norm[[c for c in cols_order if c in df_norm.columns]]
@@ -509,7 +511,7 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             st.stop()
         
         for c in required_cols:
-            lookup_df[c] = lookup_df[c].fillna('')
+            lookup_df[c] = lookup_df[c].fillna('').astype(str)
         
         lookup_df["__Order_norm"] = lookup_df["Order #"].astype(str).str.strip()
         lookup_df["__Size_norm"] = lookup_df["Manufacturing Size"].astype(str).str.strip()
@@ -559,53 +561,58 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         merged = merged.drop(columns=["_merge"])
         
         if len(df_invalid) > 0:
-            df_invalid["Material Color Description"] = None
-            df_invalid["UPC/EAN (GTIN)"] = None
-            df_invalid["Country/Region"] = None
+            df_invalid["Material Color Description"] = ""
+            df_invalid["UPC/EAN (GTIN)"] = ""
+            df_invalid["Country/Region"] = ""
             merged = pd.concat([merged, df_invalid], ignore_index=True)
         
         if len(separator_rows) > 0:
             for col in merged.columns:
                 if col not in separator_rows.columns:
-                    separator_rows[col] = np.nan
+                    separator_rows[col] = ""
             merged = pd.concat([merged, separator_rows], ignore_index=True)
             merged = merged.sort_index()
         
+        # KEEP AS STRING
         merged["Color"] = merged["Material Color Description"].where(
-            merged["Material Color Description"].notna() & (merged["Material Color Description"] != ''),
-            None
+            (merged["Material Color Description"] != '') & (merged["Material Color Description"] != 'nan'),
+            ""
         )
         merged["Item No."] = merged["UPC/EAN (GTIN)"].where(
-            merged["UPC/EAN (GTIN)"].notna() & (merged["UPC/EAN (GTIN)"] != ''),
-            None
+            (merged["UPC/EAN (GTIN)"] != '') & (merged["UPC/EAN (GTIN)"] != 'nan'),
+            ""
         )
         
         final_cols = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","Country/Region"]
         final_cols = [c for c in final_cols if c in merged.columns]
         df_final_with_lookup = merged[final_cols].copy()
         
+        # Ensure all are strings
+        for col in df_final_with_lookup.columns:
+            df_final_with_lookup[col] = df_final_with_lookup[col].fillna('').astype(str).replace('nan', '')
+        
         # Unmatched
         status_text.text("🔍 Checking...")
         progress_bar.progress(90)
         
         unmatched = df_final_with_lookup[
-            (df_final_with_lookup["PO No."].notna()) &
-            ((df_final_with_lookup["Color"].isna()) | (df_final_with_lookup["Item No."].isna()))
+            (df_final_with_lookup["PO No."] != '') &
+            ((df_final_with_lookup["Color"] == '') | (df_final_with_lookup["Item No."] == ''))
         ].copy()
         
-        # Downloads (styled) — RUN THIS AFTER SEMUA PROSES (ambil data dari hasil yang diproses)
+        # Downloads (styled)
         status_text.text("💾 Preparing styled downloads...")
         progress_bar.progress(95)
 
-        # 1) Main report workbook (Rekap + Unmatched) — use df_final_with_lookup & unmatched directly
+        # 1) Main report workbook (Rekap + Unmatched)
         sheets = {"Rekap": df_final_with_lookup}
         if not unmatched.empty:
             sheets["Unmatched"] = unmatched
         report_bio = write_workbook_bytes(sheets)
 
-        # 2) PO exports into ZIP (each PO created from df_final_with_lookup)
+        # 2) PO exports into ZIP
         po_country_map = lookup_df.set_index("__Order_norm")["Country/Region"].to_dict()
-        unique_pos = df_final_with_lookup["PO No."].dropna().unique()
+        unique_pos = [po for po in df_final_with_lookup["PO No."].unique() if po != '']
 
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -615,7 +622,7 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
                     df_po = df_po.drop(columns=["Country/Region"])
                 po_bio = write_workbook_bytes({"Rekap": df_po})
                 country = po_country_map.get(str(po), "Unknown")
-                country = str(country).strip() if pd.notna(country) else "Unknown"
+                country = str(country).strip() if country != '' else "Unknown"
                 safe_country = country.replace('/', '-')
                 file_name = f"Po import table_ {po} {safe_country}.xlsx"
                 zip_file.writestr(file_name, po_bio.read())
@@ -630,9 +637,9 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         with col1:
             st.metric("Total Rows", len(df_final_with_lookup))
         with col2:
-            st.metric("Color Filled", df_final_with_lookup["Color"].notna().sum())
+            st.metric("Color Filled", (df_final_with_lookup["Color"] != '').sum())
         with col3:
-            st.metric("Item No. Filled", df_final_with_lookup["Item No."].notna().sum())
+            st.metric("Item No. Filled", (df_final_with_lookup["Item No."] != '').sum())
         with col4:
             st.metric("Unmatched", len(unmatched))
         
