@@ -1,90 +1,144 @@
 import streamlit as st
 import pandas as pd
+import zipfile
 from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.styles import Font, Border, Side
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(
-    page_title="Mix-Packing Separator",
+    page_title="Mix-Packing Separator (ZIP)",
     page_icon="🧱",
     layout="wide"
 )
 
-st.title("🧱 Mix-Packing Separator Tool")
+st.title("🧱 Mix-Packing Separator — ZIP Processor")
 st.markdown("""
-Upload **final packing result Excel**.  
-App ini akan **menyisipkan baris kosong sebelum setiap mix-packing group**.
+Upload **ZIP berisi banyak file PO Import Table**.  
+Jika **mix-packing terdeteksi**, sistem akan **menyisipkan separator**.  
+Jika **tidak**, file **tetap original**.
 """)
 
-# ======================
-# CORE SEPARATOR LOGIC
-# ======================
-def insert_mixpacking_separators(df):
-    required_cols = ["PO No.", "Packing Rule No."]
-    for c in required_cols:
+# ==========================
+# EXCEL WRITER (ALL BORDER)
+# ==========================
+def write_styled_excel(df, sheet_name="Result"):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+
+    thin = Side(border_style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bold = Font(bold=True)
+
+    # header
+    for c, col in enumerate(df.columns, start=1):
+        cell = ws.cell(row=1, column=c, value=str(col))
+        cell.font = bold
+        cell.border = border
+
+    # body
+    for r, (_, row) in enumerate(df.iterrows(), start=2):
+        for c, col in enumerate(df.columns, start=1):
+            cell = ws.cell(row=r, column=c, value=str(row[col]))
+            cell.border = border
+
+    # autosize
+    for i, col in enumerate(df.columns, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = max(12, min(40, len(col) + 2))
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
+
+
+# ==========================
+# MIX-PACKING LOGIC
+# ==========================
+def apply_mixpacking_separator(df):
+    required = ["PO No.", "Packing Rule No."]
+    for c in required:
         if c not in df.columns:
-            raise ValueError(f"Missing required column: {c}")
+            raise ValueError(f"Missing column: {c}")
 
-    df = df.copy().reset_index(drop=True)
+    df = df.fillna("").astype(str).reset_index(drop=True)
 
-    # hitung jumlah baris per PO + Packing Rule
-    grp_size = (
+    grp = (
         df.groupby(["PO No.", "Packing Rule No."], dropna=False)
         .size()
         .rename("grp_size")
         .reset_index()
     )
 
-    df = df.merge(grp_size, on=["PO No.", "Packing Rule No."], how="left")
+    df = df.merge(grp, on=["PO No.", "Packing Rule No."], how="left")
+
+    has_mixpacking = (df["grp_size"] > 1).any()
+    if not has_mixpacking:
+        return df.drop(columns=["grp_size"]), False
 
     result = []
-    seen = set()
+    inserted = set()
 
     for _, row in df.iterrows():
         key = (row["PO No."], row["Packing Rule No."])
 
-        # === separator sebelum mix-packing pertama ===
-        if row["grp_size"] > 1 and key not in seen:
-            if len(result) > 0:
+        if row["grp_size"] > 1 and key not in inserted:
+            if result:
                 result.append({c: "" for c in df.columns if c != "grp_size"})
-            seen.add(key)
+            inserted.add(key)
 
         result.append(row.drop("grp_size").to_dict())
 
-    return pd.DataFrame(result, columns=[c for c in df.columns if c != "grp_size"])
+    return pd.DataFrame(result), True
 
 
-# ======================
+# ==========================
 # UI
-# ======================
-uploaded = st.file_uploader(
-    "Upload Excel file",
-    type=["xlsx"]
+# ==========================
+uploaded_zip = st.file_uploader(
+    "Upload ZIP (PO Import Tables)",
+    type=["zip"]
 )
 
-if uploaded:
-    df = pd.read_excel(uploaded, dtype=str).fillna("")
+if uploaded_zip:
+    if st.button("🚀 Process ZIP"):
+        out_zip = BytesIO()
 
-    st.subheader("📊 Preview (Before)")
-    st.dataframe(df.head(30), use_container_width=True)
+        with zipfile.ZipFile(uploaded_zip, "r") as zin, \
+             zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zout:
 
-    if st.button("➕ Insert Mix-Packing Separators"):
-        try:
-            df_out = insert_mixpacking_separators(df)
+            processed = 0
+            separated = 0
 
-            st.subheader("✅ Preview (After)")
-            st.dataframe(df_out.head(40), use_container_width=True)
+            for name in zin.namelist():
+                if not name.lower().endswith(".xlsx"):
+                    continue
 
-            # download
-            bio = BytesIO()
-            with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-                df_out.to_excel(writer, index=False, sheet_name="Result")
-            bio.seek(0)
+                with zin.open(name) as f:
+                    df = pd.read_excel(f, dtype=str)
 
-            st.download_button(
-                "📥 Download Excel with Separators",
-                data=bio,
-                file_name="packing_with_separators.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                df_out, is_mix = apply_mixpacking_separator(df)
 
-        except Exception as e:
-            st.error(str(e))
+                excel_bytes = write_styled_excel(df_out)
+
+                zout.writestr(name, excel_bytes.read())
+
+                processed += 1
+                if is_mix:
+                    separated += 1
+
+        out_zip.seek(0)
+
+        st.success(f"""
+        ✅ Processing complete  
+        📄 Files processed: {processed}  
+        🧱 Mix-packing detected: {separated}
+        """)
+
+        st.download_button(
+            "📦 Download Result ZIP",
+            data=out_zip,
+            file_name="PO_Import_With_Separators.zip",
+            mime="application/zip"
+        )
