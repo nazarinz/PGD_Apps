@@ -70,50 +70,47 @@ def write_workbook_bytes(sheets: dict):
 # ================= MIX-PACKING SEPARATOR (ADDED) =================
 def insert_mixpacking_separators(df):
     """
-    Insert ONE blank row BEFORE each contiguous mix-packing block
-    (same PO No. + Packing Rule No. appearing >= 2 times consecutively)
+    Insert blank row BEFORE each mix-packing group.
+    Mix-packing = same PO No. + Packing Rule No. with >1 row.
     """
 
     df = df.copy().reset_index(drop=True)
+
+    # hitung jumlah row per PO + Packing Rule
+    grp_size = (
+        df.groupby(["PO No.", "Packing Rule No."], dropna=False)
+        .size()
+        .rename("grp_size")
+        .reset_index()
+    )
+
+    df = df.merge(grp_size, on=["PO No.", "Packing Rule No."], how="left")
+
     result = []
-
-    prev_po = None
     prev_rule = None
-    block_count = 0
-    block_start_idx = None
+    prev_po = None
 
-    def is_new_block(po, rule, prev_po, prev_rule):
-        return po != prev_po or rule != prev_rule
-
-    # First pass: detect block starts that are mix-packing
-    mix_block_starts = set()
-
-    for i, row in df.iterrows():
+    for _, row in df.iterrows():
         po = row["PO No."]
         rule = row["Packing Rule No."]
+        size = row["grp_size"]
 
-        if is_new_block(po, rule, prev_po, prev_rule):
-            if block_count >= 2:
-                mix_block_starts.add(block_start_idx)
-            block_count = 1
-            block_start_idx = i
-        else:
-            block_count += 1
+        # trigger separator:
+        # - rule berubah
+        # - DAN rule baru adalah mix-packing (size > 1)
+        if (
+            prev_rule is not None
+            and rule != prev_rule
+            and size > 1
+        ):
+            result.append({c: "" for c in df.columns if c != "grp_size"})
 
-        prev_po = po
+        result.append(row.drop(labels="grp_size").to_dict())
         prev_rule = rule
+        prev_po = po
 
-    # check last block
-    if block_count >= 2:
-        mix_block_starts.add(block_start_idx)
+    return pd.DataFrame(result, columns=[c for c in df.columns if c != "grp_size"])
 
-    # Second pass: build result with separators
-    for i, row in df.iterrows():
-        if i in mix_block_starts:
-            result.append({c: "" for c in df.columns})
-        result.append(row.to_dict())
-
-    return pd.DataFrame(result, columns=df.columns)
 
 # ============= HELPER FUNCTIONS =============
 
