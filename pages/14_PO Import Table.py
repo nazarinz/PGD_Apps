@@ -68,29 +68,52 @@ def write_workbook_bytes(sheets: dict):
     return bio
 
 # ================= MIX-PACKING SEPARATOR (ADDED) =================
-def insert_mixpacking_separators(df: pd.DataFrame) -> pd.DataFrame:
+def insert_mixpacking_separators(df):
     """
-    Insert ONE fully-blank row BEFORE each mix-packing block
-    (Packing Rule No. that appears more than once per PO).
-    - Keeps ALL values as strings
-    - Does NOT remove any rows
+    Insert ONE blank row BEFORE each contiguous mix-packing block
+    (same PO No. + Packing Rule No. appearing >= 2 times consecutively)
     """
+
     df = df.copy().reset_index(drop=True)
+    result = []
 
-    # identify start index of each mix-packing group
-    starts = []
-    for (_, _), g in df.groupby(["PO No.", "Packing Rule No."], sort=False, dropna=False):
-        if len(g) > 1:
-            starts.append(g.index.min())
-    starts = set(starts)
+    prev_po = None
+    prev_rule = None
+    block_count = 0
+    block_start_idx = None
 
-    rows = []
+    def is_new_block(po, rule, prev_po, prev_rule):
+        return po != prev_po or rule != prev_rule
+
+    # First pass: detect block starts that are mix-packing
+    mix_block_starts = set()
+
     for i, row in df.iterrows():
-        if i in starts:
-            rows.append({c: "" for c in df.columns})  # true blank separator
-        rows.append(row.to_dict())
+        po = row["PO No."]
+        rule = row["Packing Rule No."]
 
-    return pd.DataFrame(rows, columns=df.columns)
+        if is_new_block(po, rule, prev_po, prev_rule):
+            if block_count >= 2:
+                mix_block_starts.add(block_start_idx)
+            block_count = 1
+            block_start_idx = i
+        else:
+            block_count += 1
+
+        prev_po = po
+        prev_rule = rule
+
+    # check last block
+    if block_count >= 2:
+        mix_block_starts.add(block_start_idx)
+
+    # Second pass: build result with separators
+    for i, row in df.iterrows():
+        if i in mix_block_starts:
+            result.append({c: "" for c in df.columns})
+        result.append(row.to_dict())
+
+    return pd.DataFrame(result, columns=df.columns)
 
 # ============= HELPER FUNCTIONS =============
 
@@ -386,25 +409,25 @@ def apply_multirow_pack_rules(df, debug=False):
     insert_indices = data_rows[data_rows['_group_first'] == True].index.tolist()
     data_rows = data_rows.drop(columns=["grp_size", "_group_first"])
 
-    # Insert separator rows
-    if insert_indices:
-        result_parts = []
-        last_idx = 0
-        separator_count = 0
+    # # Insert separator rows
+    # if insert_indices:
+    #     result_parts = []
+    #     last_idx = 0
+    #     separator_count = 0
         
-        for insert_idx in insert_indices:
-            result_parts.append(data_rows.iloc[last_idx:insert_idx])
-            empty_row = pd.DataFrame([{col: "" for col in data_rows.columns}])
-            empty_row["_is_separator"] = True
-            result_parts.append(empty_row)
-            separator_count += 1
-            last_idx = insert_idx
+    #     for insert_idx in insert_indices:
+    #         result_parts.append(data_rows.iloc[last_idx:insert_idx])
+    #         empty_row = pd.DataFrame([{col: "" for col in data_rows.columns}])
+    #         empty_row["_is_separator"] = True
+    #         result_parts.append(empty_row)
+    #         separator_count += 1
+    #         last_idx = insert_idx
         
-        result_parts.append(data_rows.iloc[last_idx:])
-        data_rows = pd.concat(result_parts, ignore_index=True)
+    #     result_parts.append(data_rows.iloc[last_idx:])
+    #     data_rows = pd.concat(result_parts, ignore_index=True)
         
-        if debug:
-            st.info(f"✓ Inserted {separator_count} separators")
+    #     if debug:
+    #         st.info(f"✓ Inserted {separator_count} separators")
 
     if not existing_separators.empty:
         for col in data_rows.columns:
