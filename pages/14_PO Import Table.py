@@ -76,7 +76,7 @@ def insert_mixpacking_separators(df):
 
     df = df.copy().reset_index(drop=True)
 
-    # hitung jumlah row per PO + Packing Rule
+    # hitung jumlah baris per PO + Packing Rule
     grp_size = (
         df.groupby(["PO No.", "Packing Rule No."], dropna=False)
         .size()
@@ -87,29 +87,26 @@ def insert_mixpacking_separators(df):
     df = df.merge(grp_size, on=["PO No.", "Packing Rule No."], how="left")
 
     result = []
-    prev_rule = None
-    prev_po = None
+    seen_mix_rule = set()
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         po = row["PO No."]
         rule = row["Packing Rule No."]
         size = row["grp_size"]
 
-        # trigger separator:
-        # - rule berubah
-        # - DAN rule baru adalah mix-packing (size > 1)
-        if (
-            prev_rule is not None
-            and rule != prev_rule
-            and size > 1
-        ):
-            result.append({c: "" for c in df.columns if c != "grp_size"})
+        key = (po, rule)
+
+        # === INSERT SEPARATOR BEFORE FIRST ROW OF EACH MIX-PACKING RULE ===
+        if size > 1 and key not in seen_mix_rule:
+            # jangan taruh separator di baris paling atas
+            if len(result) > 0:
+                result.append({c: "" for c in df.columns if c != "grp_size"})
+            seen_mix_rule.add(key)
 
         result.append(row.drop(labels="grp_size").to_dict())
-        prev_rule = rule
-        prev_po = po
 
     return pd.DataFrame(result, columns=[c for c in df.columns if c != "grp_size"])
+
 
 
 # ============= HELPER FUNCTIONS =============
