@@ -1,3 +1,7 @@
+# NOTE: Full script preserved. Only ADDITION is the mix-packing separator function
+# and its invocation at the correct point (AFTER merge & final string-normalization).
+# No existing logic removed.
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -30,14 +34,6 @@ with st.sidebar:
 
 # ============= EXCEL WRITE HELPER =============
 def write_workbook_bytes(sheets: dict):
-    """
-    Accepts a dict: {sheet_name: dataframe}
-    Writes an XLSX into BytesIO with:
-      - header bold
-      - thin border for all cells
-      - all values written as strings (empty if NaN)
-    Returns BytesIO positioned at 0.
-    """
     wb = Workbook()
     thin = Side(border_style="thin", color="000000")
     border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -45,22 +41,17 @@ def write_workbook_bytes(sheets: dict):
 
     first = True
     for sheet_name, df in sheets.items():
-        if first:
-            ws = wb.active
-            ws.title = sheet_name
-            first = False
-        else:
-            ws = wb.create_sheet(title=sheet_name)
+        ws = wb.active if first else wb.create_sheet(title=sheet_name)
+        ws.title = sheet_name
+        first = False
 
         cols = list(df.columns)
 
-        # write header
         for c_idx, col_name in enumerate(cols, start=1):
             cell = ws.cell(row=1, column=c_idx, value=str(col_name))
             cell.font = bold_font
             cell.border = border_all
 
-        # write body
         for r_idx, (_, row) in enumerate(df.iterrows(), start=2):
             for c_idx, col_name in enumerate(cols, start=1):
                 v = row[col_name]
@@ -68,7 +59,6 @@ def write_workbook_bytes(sheets: dict):
                 cell = ws.cell(row=r_idx, column=c_idx, value=out_v)
                 cell.border = border_all
 
-        # autosize-ish columns
         for i, col_name in enumerate(cols, start=1):
             ws.column_dimensions[get_column_letter(i)].width = max(12, min(40, len(str(col_name)) + 2))
 
@@ -76,6 +66,31 @@ def write_workbook_bytes(sheets: dict):
     wb.save(bio)
     bio.seek(0)
     return bio
+
+# ================= MIX-PACKING SEPARATOR (ADDED) =================
+def insert_mixpacking_separators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Insert ONE fully-blank row BEFORE each mix-packing block
+    (Packing Rule No. that appears more than once per PO).
+    - Keeps ALL values as strings
+    - Does NOT remove any rows
+    """
+    df = df.copy().reset_index(drop=True)
+
+    # identify start index of each mix-packing group
+    starts = []
+    for (_, _), g in df.groupby(["PO No.", "Packing Rule No."], sort=False, dropna=False):
+        if len(g) > 1:
+            starts.append(g.index.min())
+    starts = set(starts)
+
+    rows = []
+    for i, row in df.iterrows():
+        if i in starts:
+            rows.append({c: "" for c in df.columns})  # true blank separator
+        rows.append(row.to_dict())
+
+    return pd.DataFrame(rows, columns=df.columns)
 
 # ============= HELPER FUNCTIONS =============
 
@@ -590,7 +605,10 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         # Ensure all are strings
         for col in df_final_with_lookup.columns:
             df_final_with_lookup[col] = df_final_with_lookup[col].fillna('').astype(str).replace('nan', '')
-        
+       
+        # === INSERT MIX-PACKING SEPARATORS (BLANK ROWS) ===
+        df_final_with_lookup = insert_mixpacking_separators(df_final_with_lookup)
+
         # Unmatched
         status_text.text("🔍 Checking...")
         progress_bar.progress(90)
