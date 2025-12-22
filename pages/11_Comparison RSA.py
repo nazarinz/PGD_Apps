@@ -232,6 +232,38 @@ def run_core_pipeline(df_sap_raw, df_infor_raw):
         df["infor Customer Number"].astype(str)
     )
 
+    DESIRED_ORDER = [
+    "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
+    "PO No.(Full)","infor Order Status","Customer PO item","Line Aggregator","PO No.(Short)",
+    "Merchandise Category 2","Quanity","infor Quantity","Result_Quantity",
+    "Model Name","Article No","infor Article No","Result Article No","SAP Material",
+    "Pattern Code(Up.No.)","Model No","Outsole Mold","Gender",
+    "Category 1","Category 2","Category 3",
+    "Unit Price","Classification Code","DRC",
+    "Delay/Early - Confirmation PD","infor Delay/Early - Confirmation PD","Result Delay/Early - Confirmation PD",
+    "Delay/Early - Confirmation CRD","infor Delay/Early - Confirmation CRD","Result Delay/Early - Confirmation CRD",
+    "Delay - PO PSDD Update","infor Delay - PO PSDD Update","Result Delay - PO PSDD Update",
+    "Delay - PO PD Update","infor Delay - PO PD Update","Result Delay - PO PD Update",
+    "MDP","PDP","SDP","Article Lead time",
+    "Ship-to-Sort1","infor Customer Number","Result_Ship-to-Sort1",
+    "Ship-to Country","Ship to Name","infor Shipment Method",
+    "Document Date","FPD","infor FPD","Result FPD",
+    "LPD","infor LPD","Result LPD",
+    "CRD","infor CRD","Result CRD",
+    "PSDD","infor PSDD","Result PSDD",
+    "PODD","infor PODD","Result PODD",
+    "FCR Date","PD","infor PD","Result PD",
+    "PO Date","Actual PGI","Segment","S&P LPD","Currency"
+    ]
+
+    # =========================
+    # FINAL COLUMN REORDER (WAJIB)
+    # =========================
+    present_cols = [c for c in DESIRED_ORDER if c in df.columns]
+    extra_cols   = [c for c in df.columns if c not in present_cols]
+    
+    df = df[present_cols + extra_cols]
+
     # ---------- EXPORT (XLSXWRITER) ----------
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
