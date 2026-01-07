@@ -271,7 +271,11 @@ def process_files(base_file, ref_files) -> SOResult:
 
                 col, reason = detect_so_column(df2)
                 log_rows.append((f.name, sh, reason))
-                if not col:
+                
+                # FIX: Check if column still exists after cleanup
+                if not col or col not in df2.columns:
+                    if col:
+                        log_rows.append((f.name, sh, f"Kolom '{col}' terdeteksi tapi hilang setelah cleanup"))
                     continue
 
                 df2["__SO_norm__"] = normalize_so_series(df2[col])
