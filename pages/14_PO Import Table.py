@@ -1,7 +1,3 @@
-# NOTE: Full script preserved. Only ADDITION is the mix-packing separator function
-# and its invocation at the correct point (AFTER merge & final string-normalization).
-# No existing logic removed.
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -67,7 +63,39 @@ def write_workbook_bytes(sheets: dict):
     bio.seek(0)
     return bio
 
-# ================= MIX-PACKING SEPARATOR (ADDED) =================
+# ================= NORMALIZE ITEM NO TO 13 DIGITS (ADDED) =================
+def normalize_item_no_13_digits(df):
+    """
+    Pastikan Item No. minimal 13 digit.
+    Jika Item No. tepat 12 digit, tambahkan '0' di depan.
+    Contoh: 197626904536 → 0197626904536
+    """
+    if "Item No." not in df.columns:
+        return df
+    
+    df = df.copy()
+    
+    def pad_item_no(value):
+        val_str = str(value).strip()
+        
+        if val_str == '' or val_str == 'nan':
+            return val_str
+        
+        # Hapus karakter non-digit untuk cek panjang
+        digits_only = re.sub(r'\D', '', val_str)
+        
+        # Jika tepat 12 digit, tambahkan '0' di depan
+        if len(digits_only) == 12:
+            return '0' + digits_only
+        
+        # Selain itu, kembalikan nilai asli
+        return val_str
+    
+    df["Item No."] = df["Item No."].apply(pad_item_no)
+    
+    return df
+
+# ================= MIX-PACKING SEPARATOR =================
 def insert_mixpacking_separators(df):
     """
     Insert blank row BEFORE each mix-packing group.
@@ -76,7 +104,6 @@ def insert_mixpacking_separators(df):
 
     df = df.copy().reset_index(drop=True)
 
-    # hitung jumlah baris per PO + Packing Rule
     grp_size = (
         df.groupby(["PO No.", "Packing Rule No."], dropna=False)
         .size()
@@ -96,9 +123,7 @@ def insert_mixpacking_separators(df):
 
         key = (po, rule)
 
-        # === INSERT SEPARATOR BEFORE FIRST ROW OF EACH MIX-PACKING RULE ===
         if size > 1 and key not in seen_mix_rule:
-            # jangan taruh separator di baris paling atas
             if len(result) > 0:
                 result.append({c: "" for c in df.columns if c != "grp_size"})
             seen_mix_rule.add(key)
@@ -106,8 +131,6 @@ def insert_mixpacking_separators(df):
         result.append(row.drop(labels="grp_size").to_dict())
 
     return pd.DataFrame(result, columns=[c for c in df.columns if c != "grp_size"])
-
-
 
 # ============= HELPER FUNCTIONS =============
 
@@ -231,7 +254,6 @@ def extract_package_detail(file_bytes, filename, debug=False):
             continue
         found = find_col_precise(cols, cands, data, prefer_integer=prefer_int)
         mapping_log[outcol] = found
-        # KEEP AS STRING - NO CONVERSION
         out[outcol] = data[found].astype(str).replace(r'^\s*$', "", regex=True).replace('nan', '') if (found and found in data.columns) else ""
 
     # Pkg Count detection - 4-step approach
@@ -314,7 +336,6 @@ def extract_package_detail(file_bytes, filename, debug=False):
                 if debug:
                     st.info(f"✓ Pkg Count pattern: '{best_col}' ({best_score:.2f})")
     
-    # Store Pkg Count - KEEP AS STRING
     if pkg_count_col and pkg_count_col in data.columns:
         raw_pkg = data[pkg_count_col].astype(str).str.strip()
         out["_original_pkg_empty"] = (raw_pkg == '') | (raw_pkg == 'nan')
@@ -329,7 +350,6 @@ def extract_package_detail(file_bytes, filename, debug=False):
         if debug:
             st.warning("⚠️ Pkg Count not found")
 
-    # ALL COLUMNS AS STRING
     for c in out.columns:
         if c != "_original_pkg_empty":
             out[c] = out[c].astype(str).str.strip().replace('nan', '')
@@ -337,7 +357,6 @@ def extract_package_detail(file_bytes, filename, debug=False):
     return out.reset_index(drop=True)
 
 def group_packing_rules(df):
-    """Group rows without valid Packing Rule No. with last valid one."""
     df = df.copy()
     
     if "_is_separator" in df.columns:
@@ -369,7 +388,6 @@ def group_packing_rules(df):
     return result
 
 def apply_multirow_pack_rules(df, debug=False):
-    """Apply multi-row pack rules and insert separators."""
     df = df.copy()
     for c in ["PO No.","Packing Rule No.","Pkg Count","Gross Weight"]:
         if c not in df.columns:
@@ -385,7 +403,6 @@ def apply_multirow_pack_rules(df, debug=False):
     grp_keys = data_rows.groupby(["PO No.","Packing Rule No."], dropna=False).size().rename("grp_size")
     data_rows = data_rows.merge(grp_keys.reset_index(), on=["PO No.","Packing Rule No."], how="left")
 
-    # Clear Pkg Count & Gross for rows 2+ in multi-row groups
     for (po, pr), group in data_rows.groupby(["PO No.","Packing Rule No."], dropna=False, sort=False):
         if len(group) > 1:
             idxs = group.index.tolist()
@@ -393,7 +410,6 @@ def apply_multirow_pack_rules(df, debug=False):
                 data_rows.at[i, "Pkg Count"] = ""
                 data_rows.at[i, "Gross Weight"] = ""
 
-    # Mark first row of multi-row groups
     data_rows['_group_first'] = False
     for (po, pr), group in data_rows.groupby(["PO No.","Packing Rule No."], dropna=False, sort=False):
         if len(group) > 1:
@@ -402,26 +418,6 @@ def apply_multirow_pack_rules(df, debug=False):
 
     insert_indices = data_rows[data_rows['_group_first'] == True].index.tolist()
     data_rows = data_rows.drop(columns=["grp_size", "_group_first"])
-
-    # # Insert separator rows
-    # if insert_indices:
-    #     result_parts = []
-    #     last_idx = 0
-    #     separator_count = 0
-        
-    #     for insert_idx in insert_indices:
-    #         result_parts.append(data_rows.iloc[last_idx:insert_idx])
-    #         empty_row = pd.DataFrame([{col: "" for col in data_rows.columns}])
-    #         empty_row["_is_separator"] = True
-    #         result_parts.append(empty_row)
-    #         separator_count += 1
-    #         last_idx = insert_idx
-        
-    #     result_parts.append(data_rows.iloc[last_idx:])
-    #     data_rows = pd.concat(result_parts, ignore_index=True)
-        
-    #     if debug:
-    #         st.info(f"✓ Inserted {separator_count} separators")
 
     if not existing_separators.empty:
         for col in data_rows.columns:
@@ -466,7 +462,6 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
     status_text = st.empty()
     
     try:
-        # Extract
         status_text.text("📦 Extracting...")
         progress_bar.progress(10)
         
@@ -486,7 +481,6 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         
         df_final = pd.concat(results, ignore_index=True)
         
-        # Normalize
         status_text.text("🔄 Normalizing...")
         progress_bar.progress(35)
         
@@ -520,17 +514,14 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         cols_order = ["PO No.","Packing Rule No.","Style","Color","Size","Item No.","Qty per Pkg/Inner Pack","Pkg Count","Gross Weight","_original_pkg_empty","_is_separator"]
         df_norm = df_norm[[c for c in cols_order if c in df_norm.columns]]
         
-        # Group
         status_text.text("📋 Grouping...")
         progress_bar.progress(45)
         df_norm = group_packing_rules(df_norm)
         
-        # Multi-row rules BEFORE merge
         status_text.text("📊 Multi-row rules...")
         progress_bar.progress(50)
         df_norm = apply_multirow_pack_rules(df_norm, debug=debug_mode)
         
-        # Read lookup
         status_text.text("📖 Reading lookup...")
         progress_bar.progress(60)
         
@@ -557,7 +548,11 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         
         lookup_df = lookup_df.drop_duplicates(subset=["__Order_norm","__Size_norm"], keep="first")
         
-        # Merge
+        # === NORMALIZE LOOKUP UPC/EAN TO 13 DIGITS ===
+        lookup_df = lookup_df.rename(columns={"UPC/EAN (GTIN)": "Item No."})
+        lookup_df = normalize_item_no_13_digits(lookup_df)
+        lookup_df = lookup_df.rename(columns={"Item No.": "UPC/EAN (GTIN)"})
+        
         status_text.text("🔗 Merging...")
         progress_bar.progress(75)
         
@@ -605,7 +600,6 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             merged = pd.concat([merged, separator_rows], ignore_index=True)
             merged = merged.sort_index()
         
-        # KEEP AS STRING
         merged["Color"] = merged["Material Color Description"].where(
             (merged["Material Color Description"] != '') & (merged["Material Color Description"] != 'nan'),
             ""
@@ -619,14 +613,15 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         final_cols = [c for c in final_cols if c in merged.columns]
         df_final_with_lookup = merged[final_cols].copy()
         
-        # Ensure all are strings
         for col in df_final_with_lookup.columns:
             df_final_with_lookup[col] = df_final_with_lookup[col].fillna('').astype(str).replace('nan', '')
        
-        # === INSERT MIX-PACKING SEPARATORS (BLANK ROWS) ===
+        # === NORMALIZE ITEM NO IN FINAL OUTPUT TO 13 DIGITS ===
+        df_final_with_lookup = normalize_item_no_13_digits(df_final_with_lookup)
+        
+        # === INSERT MIX-PACKING SEPARATORS ===
         df_final_with_lookup = insert_mixpacking_separators(df_final_with_lookup)
 
-        # Unmatched
         status_text.text("🔍 Checking...")
         progress_bar.progress(90)
         
@@ -635,17 +630,14 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
             ((df_final_with_lookup["Color"] == '') | (df_final_with_lookup["Item No."] == ''))
         ].copy()
         
-        # Downloads (styled)
         status_text.text("💾 Preparing styled downloads...")
         progress_bar.progress(95)
 
-        # 1) Main report workbook (Rekap + Unmatched)
         sheets = {"Rekap": df_final_with_lookup}
         if not unmatched.empty:
             sheets["Unmatched"] = unmatched
         report_bio = write_workbook_bytes(sheets)
 
-        # 2) PO exports into ZIP
         po_country_map = lookup_df.set_index("__Order_norm")["Country/Region"].to_dict()
         unique_pos = [po for po in df_final_with_lookup["PO No."].unique() if po != '']
 
@@ -667,7 +659,7 @@ if st.button("🚀 Process Files", type="primary", disabled=not (packing_files a
         status_text.text("✅ Complete!")
         
         st.success("🎉 Processing completed!")
-        
+           
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Rows", len(df_final_with_lookup))
