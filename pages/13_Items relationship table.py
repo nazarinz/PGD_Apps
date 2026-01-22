@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import io
@@ -40,6 +39,8 @@ st.markdown(
     - `Country/Region`
 
     Semua kolom lain akan diabaikan.
+    
+    **Item No. yang 12 digit akan otomatis ditambahkan 0 di depan menjadi 13 digit.**
     """
 )
 
@@ -70,6 +71,16 @@ if uploaded_file is not None:
 
     # Rename to unified output format
     df = df.rename(columns=COLUMN_RENAME)
+
+    # Auto-pad Item No. yang 12 digit menjadi 13 digit
+    def pad_item_no(item):
+        item = str(item).strip()
+        # Hanya proses jika Item No. adalah angka dan panjangnya 12 digit
+        if item.isdigit() and len(item) == 12:
+            return "0" + item
+        return item
+    
+    df["Item No."] = df["Item No."].apply(pad_item_no)
 
     st.subheader("Preview data (strict columns only)")
     st.dataframe(df.head(10))
