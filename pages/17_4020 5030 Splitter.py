@@ -4,7 +4,7 @@ import io
 from openpyxl.styles import Font, Alignment, PatternFill
 
 st.set_page_config(page_title="SAP Material Splitter", page_icon="🧩", layout="wide")
-st.title("🧩 SAP Material Description Splitter + Auto Sheet Export")
+st.title("🧩 SAP (4020 & 5030) Material Description Splitter + Auto Sheet Export")
 
 
 # =========================
