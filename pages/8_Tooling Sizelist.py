@@ -1,5 +1,5 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v10 intelligent coloring)
+# 8_Tooling Sizelist.py — PGD Apps (v10 intelligent coloring + DEBUG)
 # ==========================================
 import re
 import pandas as pd
@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (Final vvv10)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v10 + Debug)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -30,16 +30,36 @@ Pastikan file memiliki kolom berikut:
 | **CRD**             | Customer Request Date                                       |
 | **PD**              | Planned Date                                                |
 | **LPD**             | Latest Planned Date                                         |
-| **Working Status**  | Status pengerjaan (wajib untuk deteksi “New”)               |
+| **Working Status**  | Status pengerjaan (wajib untuk deteksi "New")               |
 | **UK_***            | Kolom ukuran (size breakdown)                               |
 """)
 
 # Baca Excel
 df_sizelist = pd.read_excel(uploaded)
 
+# ================= 🔍 DEBUG MODE 1: Raw Data Info =================
+with st.expander("🔍 DEBUG 1: Info Data Mentah (sebelum filter)", expanded=False):
+    st.write(f"**Total rows awal:** {len(df_sizelist)}")
+    st.write(f"**Kolom yang ada:** {list(df_sizelist.columns)}")
+    
+    if "Article" in df_sizelist.columns:
+        st.write("**Sample Article:**")
+        st.write(df_sizelist["Article"].head(10).tolist())
+    
+    if "Working Status" in df_sizelist.columns:
+        st.write("**Working Status unik:**")
+        st.write(df_sizelist["Working Status"].value_counts())
+    
+    if "Document Date" in df_sizelist.columns:
+        st.write("**Document Date sample:**")
+        st.write(df_sizelist["Document Date"].head(10))
+
 # Filter Article hanya FG / HS
 if "Article" in df_sizelist.columns:
+    before_filter = len(df_sizelist)
     df_sizelist = df_sizelist[df_sizelist["Article"].astype(str).str.startswith(("FG", "HS"))]
+    after_filter = len(df_sizelist)
+    st.info(f"✅ Filter Article FG/HS: {before_filter} rows → {after_filter} rows")
 
 # Input tambahan dari user
 st.subheader("⚙️ Pengaturan Eksekusi")
@@ -54,10 +74,59 @@ if st.button("🚀 Execute Generate"):
     NEW_ORDER_DATE = pd.to_datetime(new_order_date)
     cancel_sos = [s.strip() for s in cancel_sos_input.split(",") if s.strip()]
 
+    st.success(f"✅ NEW_ORDER_DATE yang digunakan: **{NEW_ORDER_DATE.strftime('%Y-%m-%d')}**")
+    if cancel_sos:
+        st.warning(f"⚠️ Cancel SO yang akan ditandai: {', '.join(cancel_sos)}")
+
     # ================= Normalisasi tanggal =================
     for col in ["Document Date", "LPD", "CRD", "PD"]:
         if col in df_sizelist.columns:
             df_sizelist[col] = pd.to_datetime(df_sizelist[col], errors="coerce")
+
+    # ================= 🔍 DEBUG MODE 2: Sebelum Remark =================
+    with st.expander("🔍 DEBUG 2: Kondisi Sebelum Remark Dibuat", expanded=True):
+        st.write(f"**NEW_ORDER_DATE:** {NEW_ORDER_DATE}")
+        
+        if "Document Date" in df_sizelist.columns:
+            st.write("**Document Date unik:**")
+            st.write(df_sizelist["Document Date"].dropna().unique())
+        
+        if "LPD" in df_sizelist.columns:
+            lpd_null_count = df_sizelist["LPD"].isna().sum()
+            st.write(f"**LPD kosong (null):** {lpd_null_count} dari {len(df_sizelist)} rows")
+        
+        if "Working Status" in df_sizelist.columns:
+            st.write("**Working Status (dengan repr untuk cek spasi):**")
+            ws_unique = df_sizelist["Working Status"].astype(str).unique()
+            for ws in ws_unique:
+                st.write(f"  - repr: `{repr(ws)}` | stripped: `{ws.strip()}` | == '10': {ws.strip() == '10'}")
+
+        # Tampilkan detail per row
+        st.write("### 📋 Detail Kondisi Per Row (Sample 20 rows pertama):")
+        debug_check = pd.DataFrame({
+            'Sales Order': df_sizelist['Sales Order'],
+            'Doc Date': df_sizelist['Document Date'],
+            'Doc >= NEW?': df_sizelist["Document Date"] >= NEW_ORDER_DATE,
+            'LPD': df_sizelist["LPD"] if "LPD" in df_sizelist.columns else None,
+            'LPD null?': df_sizelist["LPD"].isna() if "LPD" in df_sizelist.columns else None,
+            'Working Status': df_sizelist.get("Working Status", ""),
+            'WS stripped': df_sizelist.get("Working Status", "").astype(str).str.strip(),
+            'WS == 10?': df_sizelist.get("Working Status", "").astype(str).str.strip() == "10",
+        })
+        st.dataframe(debug_check.head(20), use_container_width=True)
+        
+        # Hitung berapa yang memenuhi semua kondisi
+        cond1 = df_sizelist["Document Date"] >= NEW_ORDER_DATE
+        cond2 = df_sizelist["LPD"].isna() if "LPD" in df_sizelist.columns else pd.Series([True]*len(df_sizelist))
+        cond3 = df_sizelist.get("Working Status", "").astype(str).str.strip() == "10"
+        
+        all_conditions = cond1 & cond2 & cond3
+        
+        st.write("### 🎯 Ringkasan Kondisi:")
+        st.write(f"- Kondisi 1 (Doc Date >= NEW): **{cond1.sum()}** rows")
+        st.write(f"- Kondisi 2 (LPD null): **{cond2.sum()}** rows")
+        st.write(f"- Kondisi 3 (WS == '10'): **{cond3.sum()}** rows")
+        st.write(f"- **SEMUA kondisi terpenuhi (akan jadi 'New'): {all_conditions.sum()} rows**")
 
     # ================= Remark =================
     if "Remark" in df_sizelist.columns:
@@ -72,10 +141,21 @@ if st.button("🚀 Execute Generate"):
     ins_pos = df_sizelist.columns.get_loc("Document Date") + 1
     df_sizelist.insert(ins_pos, "Remark", remark)
 
+    # ================= 🔍 DEBUG MODE 3: Setelah Remark =================
+    with st.expander("🔍 DEBUG 3: Hasil Remark", expanded=True):
+        remark_counts = pd.Series(remark).value_counts()
+        st.write("**Distribusi Remark:**")
+        st.write(remark_counts)
+        
+        st.write("### 📋 Sample Data dengan Remark (20 rows pertama):")
+        st.dataframe(df_sizelist[['Sales Order', 'Document Date', 'LPD', 'Working Status', 'Remark']].head(20))
+
     # ================= Isi LPD kosong =================
     if {"CRD", "PD", "LPD"}.issubset(df_sizelist.columns):
         row_min = pd.concat([df_sizelist["CRD"], df_sizelist["PD"]], axis=1).min(axis=1, skipna=True)
+        lpd_filled = df_sizelist["LPD"].isna().sum()
         df_sizelist.loc[df_sizelist["LPD"].isna(), "LPD"] = row_min[df_sizelist["LPD"].isna()]
+        st.info(f"✅ LPD kosong diisi dengan min(CRD, PD): {lpd_filled} rows")
 
     # ================= Helpers =================
     def insert_after(df, after_col, new_col, values):
@@ -232,5 +312,7 @@ if st.button("🚀 Execute Generate"):
 
     excel_bytes = build_excel()
     st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v10.xlsx",
+                       file_name="Tooling_Sizelist_v10_debug.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    st.success("✅ Processing selesai! Silakan cek debug info di atas dan download Excel.")
