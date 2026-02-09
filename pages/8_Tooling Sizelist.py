@@ -1,5 +1,5 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v10 intelligent coloring + DEBUG)
+# 8_Tooling Sizelist.py — PGD Apps (v11 FIX Working Status)
 # ==========================================
 import re
 import pandas as pd
@@ -8,7 +8,7 @@ import streamlit as st
 from io import BytesIO
 
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v10 + Debug)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v11 FIXED)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -47,7 +47,8 @@ with st.expander("🔍 DEBUG 1: Info Data Mentah (sebelum filter)", expanded=Fal
         st.write(df_sizelist["Article"].head(10).tolist())
     
     if "Working Status" in df_sizelist.columns:
-        st.write("**Working Status unik:**")
+        st.write("**Working Status unik (raw type):**")
+        st.write(f"Type: {df_sizelist['Working Status'].dtype}")
         st.write(df_sizelist["Working Status"].value_counts())
     
     if "Document Date" in df_sizelist.columns:
@@ -96,46 +97,60 @@ if st.button("🚀 Execute Generate"):
             st.write(f"**LPD kosong (null):** {lpd_null_count} dari {len(df_sizelist)} rows")
         
         if "Working Status" in df_sizelist.columns:
-            st.write("**Working Status (dengan repr untuk cek spasi):**")
-            ws_unique = df_sizelist["Working Status"].astype(str).unique()
-            for ws in ws_unique:
-                st.write(f"  - repr: `{repr(ws)}` | stripped: `{ws.strip()}` | == '10': {ws.strip() == '10'}")
+            st.write("**Working Status (raw type dan unique values):**")
+            st.write(f"Type: {df_sizelist['Working Status'].dtype}")
+            ws_unique = df_sizelist["Working Status"].unique()
+            st.write(f"Unique values: {ws_unique}")
+            
+            # Test konversi
+            st.write("**Test konversi Working Status:**")
+            ws_test = df_sizelist["Working Status"].head(5)
+            for idx, val in ws_test.items():
+                as_float = float(val) if pd.notna(val) else None
+                st.write(f"  - Raw: `{val}` (type: {type(val).__name__}) | as float: {as_float} | == 10: {as_float == 10 if as_float else False}")
 
         # Tampilkan detail per row
         st.write("### 📋 Detail Kondisi Per Row (Sample 20 rows pertama):")
+        
+        # PERBAIKAN: Konversi Working Status ke numeric
+        ws_numeric = pd.to_numeric(df_sizelist.get("Working Status", ""), errors='coerce').fillna(-1)
+        
         debug_check = pd.DataFrame({
             'Sales Order': df_sizelist['Sales Order'],
             'Doc Date': df_sizelist['Document Date'],
             'Doc >= NEW?': df_sizelist["Document Date"] >= NEW_ORDER_DATE,
             'LPD': df_sizelist["LPD"] if "LPD" in df_sizelist.columns else None,
             'LPD null?': df_sizelist["LPD"].isna() if "LPD" in df_sizelist.columns else None,
-            'Working Status': df_sizelist.get("Working Status", ""),
-            'WS stripped': df_sizelist.get("Working Status", "").astype(str).str.strip(),
-            'WS == 10?': df_sizelist.get("Working Status", "").astype(str).str.strip() == "10",
+            'Working Status (raw)': df_sizelist.get("Working Status", ""),
+            'WS numeric': ws_numeric,
+            'WS == 10?': ws_numeric == 10,
         })
         st.dataframe(debug_check.head(20), use_container_width=True)
         
         # Hitung berapa yang memenuhi semua kondisi
         cond1 = df_sizelist["Document Date"] >= NEW_ORDER_DATE
         cond2 = df_sizelist["LPD"].isna() if "LPD" in df_sizelist.columns else pd.Series([True]*len(df_sizelist))
-        cond3 = df_sizelist.get("Working Status", "").astype(str).str.strip() == "10"
+        cond3 = ws_numeric == 10  # FIXED: gunakan numeric comparison
         
         all_conditions = cond1 & cond2 & cond3
         
         st.write("### 🎯 Ringkasan Kondisi:")
         st.write(f"- Kondisi 1 (Doc Date >= NEW): **{cond1.sum()}** rows")
         st.write(f"- Kondisi 2 (LPD null): **{cond2.sum()}** rows")
-        st.write(f"- Kondisi 3 (WS == '10'): **{cond3.sum()}** rows")
+        st.write(f"- Kondisi 3 (WS == 10): **{cond3.sum()}** rows")
         st.write(f"- **SEMUA kondisi terpenuhi (akan jadi 'New'): {all_conditions.sum()} rows**")
 
-    # ================= Remark =================
+    # ================= Remark (FIXED) =================
     if "Remark" in df_sizelist.columns:
         df_sizelist.drop(columns=["Remark"], inplace=True)
 
+    # PERBAIKAN: Gunakan numeric comparison untuk Working Status
+    ws_numeric = pd.to_numeric(df_sizelist.get("Working Status", ""), errors='coerce').fillna(-1)
+    
     remark = np.where(
         (df_sizelist["Document Date"] >= NEW_ORDER_DATE)
         & (df_sizelist["LPD"].isna())
-        & (df_sizelist.get("Working Status", "").astype(str).str.strip() == "10"),
+        & (ws_numeric == 10),  # FIXED!
         "New", "cfm"
     )
     ins_pos = df_sizelist.columns.get_loc("Document Date") + 1
@@ -312,7 +327,7 @@ if st.button("🚀 Execute Generate"):
 
     excel_bytes = build_excel()
     st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v10_debug.xlsx",
+                       file_name="Tooling_Sizelist_v11_FIXED.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     
-    st.success("✅ Processing selesai! Silakan cek debug info di atas dan download Excel.")
+    st.success("✅ Processing selesai! Bug Working Status sudah diperbaiki.")
