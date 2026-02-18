@@ -49,7 +49,7 @@ DATE_COLS_SAP   = ["Document Date","FPD","LPD","PSDD","PODD","FCR Date","PO Date
 DESIRED_ORDER = [
     "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
     "PO No.(Full)","infor Order Status","Customer PO item","Line Aggregator","PO No.(Short)",
-    "infor Customer PO item","Infor Customer PO item",   # <-- new combined column placed right after
+    "Infor Customer PO item",   # combined: Line Aggregator + Segment Attribute + Segment Attribute Desc (normalized)
     "Merchandise Category 2","Quanity","infor Quantity","Result_Quantity",
     "Model Name","Article No","infor Article No","Result Article No","SAP Material",
     "Pattern Code(Up.No.)","Model No","Outsole Mold","Gender","Category 1","Category 2","Category 3",
@@ -488,11 +488,15 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
             val = row.get(col, np.nan)
             if pd.notna(val) and str(val).strip() not in BLANKS:
                 parts.append(str(val).strip())
-        return "-".join(parts) if parts else np.nan
+        return "".join(parts) if parts else np.nan
 
     combined_cols_exist = any(c in df.columns for c in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"])
     if combined_cols_exist:
         df["Infor Customer PO item"] = df.apply(build_combined_customer_po_item, axis=1)
+
+    # Drop prefixed infor Customer PO item to avoid duplicate with the new combined column
+    if "infor Customer PO item" in df.columns:
+        df = df.drop(columns=["infor Customer PO item"])
 
     present = [c for c in DESIRED_ORDER if c in df.columns]
     rest     = [c for c in df.columns if c not in present]
@@ -523,6 +527,22 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
             fmt_bool_T = wb.add_format({"bg_color": "#C6EFCE", "font_color": "#006100"})
             fmt_bool_F = wb.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"})
             fmt_date   = wb.add_format({"num_format": DATE_FMT})
+
+            # Header color formats
+            fmt_hdr_infor  = wb.add_format({"bg_color": "#F9F16D", "bold": True, "font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "border": 1})
+            fmt_hdr_result = wb.add_format({"bg_color": "#C6EFCE", "bold": True, "font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "border": 1})
+            fmt_hdr_other  = wb.add_format({"bg_color": "#D9D9D9", "bold": True, "font_name": "Calibri", "font_size": 9, "align": "center", "valign": "vcenter", "border": 1})
+
+            # Write header row with colors
+            for cidx, col in enumerate(df_final.columns):
+                col_lower = col.lower()
+                if col_lower.startswith("infor ") or col == "Infor Customer PO item":
+                    fmt = fmt_hdr_infor
+                elif col.startswith("Result ") or col.startswith("Result_"):
+                    fmt = fmt_hdr_result
+                else:
+                    fmt = fmt_hdr_other
+                ws.write(0, cidx, col, fmt)
 
             nrows, ncols = df_final.shape
             for cidx, col in enumerate(df_final.columns):
