@@ -48,8 +48,8 @@ DATE_COLS_SAP   = ["Document Date","FPD","LPD","PSDD","PODD","FCR Date","PO Date
 
 DESIRED_ORDER = [
     "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
-    "PO No.(Full)","infor Order Status","Customer PO item","Line Aggregator","PO No.(Short)",
-    "Infor Customer PO item",   # combined: Line Aggregator + Segment Attribute + Segment Attribute Desc (normalized)
+    "PO No.(Full)","infor Order Status","Customer PO item","Infor Customer PO item","Result_Customer PO item",
+    "Line Aggregator","PO No.(Short)",
     "Merchandise Category 2","Quanity","infor Quantity","Result_Quantity",
     "Model Name","Article No","infor Article No","Result Article No","SAP Material",
     "Pattern Code(Up.No.)","Model No","Outsole Mold","Gender","Category 1","Category 2","Category 3",
@@ -497,6 +497,20 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     # Drop prefixed infor Customer PO item to avoid duplicate with the new combined column
     if "infor Customer PO item" in df.columns:
         df = df.drop(columns=["infor Customer PO item"])
+
+    # --- Compare Customer PO item (SAP) vs Infor Customer PO item (combined) ---
+    if "Customer PO item" in df.columns and "Infor Customer PO item" in df.columns:
+        def norm_str_single(s):
+            s2 = pd.Series([s])
+            s2 = s2.astype(str).str.strip().replace(list(BLANKS), np.nan)
+            return s2.iloc[0]
+        df["Result_Customer PO item"] = df.apply(
+            lambda row: (
+                True if pd.isna(row.get("Customer PO item")) and pd.isna(row.get("Infor Customer PO item"))
+                else False if pd.isna(row.get("Customer PO item")) or pd.isna(row.get("Infor Customer PO item"))
+                else str(row["Customer PO item"]).strip() == str(row["Infor Customer PO item"]).strip()
+            ), axis=1
+        )
 
     present = [c for c in DESIRED_ORDER if c in df.columns]
     rest     = [c for c in df.columns if c not in present]
