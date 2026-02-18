@@ -6,6 +6,8 @@ Updates:
 - Compare SAP 'Ship-to-Sort1' with Infor 'Customer Number'
 - Normalize Infor 'Customer Number' value '--' -> 'ZA30' before grouping
 - Styled export visibility improvements
+- Normalize 'Segment Attribute Desc' using mapping table
+- Add combined 'Infor Customer PO item' column (Line Aggregator + Segment Attribute + normalized Segment Attribute Desc)
 """
 
 import re
@@ -47,6 +49,7 @@ DATE_COLS_SAP   = ["Document Date","FPD","LPD","PSDD","PODD","FCR Date","PO Date
 DESIRED_ORDER = [
     "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
     "PO No.(Full)","infor Order Status","Customer PO item","Line Aggregator","PO No.(Short)",
+    "infor Customer PO item","Infor Customer PO item",   # <-- new combined column placed right after
     "Merchandise Category 2","Quanity","infor Quantity","Result_Quantity",
     "Model Name","Article No","infor Article No","Result Article No","SAP Material",
     "Pattern Code(Up.No.)","Model No","Outsole Mold","Gender","Category 1","Category 2","Category 3",
@@ -56,7 +59,7 @@ DESIRED_ORDER = [
     "Delay - PO PSDD Update","infor Delay - PO PSDD Update","Result Delay - PO PSDD Update",
     "Delay - PO PD Update","infor Delay - PO PD Update","Result Delay - PO PD Update",
     "MDP","PDP","SDP","Article Lead time",
-    # Ship-to / Customer Number comparison added here
+    # Ship-to / Customer Number comparison
     "Ship-to-Sort1","infor Customer Number","Result_Ship-to-Sort1",
     "Ship-to Country","Ship to Name","infor Shipment Method",
     "Document Date","FPD","infor FPD","Result FPD","LPD","infor LPD","Result LPD",
@@ -71,6 +74,34 @@ OTHER_COLOR  = "FFD9D9D9"
 DATE_FMT_OPENPYXL = "m/d/yyyy"
 
 BLANKS = {"(blank)", "blank", "", "--", " -- ", " --"}
+
+# -------------------
+# Segment Attribute Desc normalization mapping
+# -------------------
+SEGMENT_ATTR_DESC_MAP = {
+    "Launch":                   "10",
+    "Launch - Soft Launch":     "13",
+    "Launch - Brand Priority":  "11",
+    "Launch - Hard Launch":     "12",
+    "Flex Track":               "20",
+    "Flex Track - LockerRoom":  "21",
+    "Responsiveness":           "30",
+    "Responsiveness - PR":      "31",
+    "Responsiveness - NOS":     "32",
+    "Responsiveness - ISC":     "33",
+    "Core":                     "40",
+    "Core - Control":           "41",
+}
+
+def normalize_segment_attr_desc(series: pd.Series) -> pd.Series:
+    """Map Segment Attribute Desc values to their numeric code using SEGMENT_ATTR_DESC_MAP.
+    Strips whitespace and trailing colons before lookup. Returns original value if not found."""
+    def _map(val):
+        if pd.isna(val):
+            return np.nan
+        cleaned = str(val).strip().rstrip(":")
+        return SEGMENT_ATTR_DESC_MAP.get(cleaned, cleaned)
+    return series.apply(_map)
 
 # -------------------
 # Helpers (kept)
@@ -193,7 +224,7 @@ def match_qty_nearest(df_sap, df_infor, key="PO No.(Full)", qty_col="Quanity", i
     return pd.DataFrame(out_rows)
 
 # -------------------
-# Core pipeline (same as before) with Customer Number normalization and comparison
+# Core pipeline
 # -------------------
 def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                      prefer_strict_join=True,
@@ -224,17 +255,19 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         'Grand Total': 'Quantity',
         'Delivery Delay Pd': 'Delay - PO PD Update',
         'Shipment Method': 'Shipment Method',
-        # NOTE: do not rename Customer Number here so we can detect it explicitly
     }
     df_infor = df_infor.rename(columns=rename_cols)
 
     # --- Normalization: replace '--' in Customer Number with 'ZA30' ---
     if "Customer Number" in df_infor.columns:
         df_infor["Customer Number"] = df_infor["Customer Number"].replace("--", "ZA30")
-        
     if "infor Customer Number" in df_infor.columns:
         df_infor["infor Customer Number"] = df_infor["infor Customer Number"].replace("--", "ZA30")
-                                                  
+
+    # --- Normalization: Segment Attribute Desc -> numeric code ---
+    if "Segment Attribute Desc" in df_infor.columns:
+        df_infor["Segment Attribute Desc"] = normalize_segment_attr_desc(df_infor["Segment Attribute Desc"])
+
     if "Confirmation Delay Pd" in df_infor.columns and "Delay/Early - Confirmation PD" not in df_infor.columns:
         df_infor = df_infor.rename(columns={"Confirmation Delay Pd": "Delay/Early - Confirmation PD"})
 
@@ -281,12 +314,20 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
 
     # Ensure Customer Number (if present) is carried over to grouped table
     if "Customer Number" in df_infor.columns and "Customer Number" not in df_infor_grouped.columns:
-        # use keep_or_join grouping of original column by PO No.(Full)
         if "PO No.(Full)" in df_infor.columns:
             df_infor_grouped = df_infor_grouped.merge(
-                df_infor.groupby("PO No.(Full)", dropna=False)["Customer Number"].agg(keep_or_join).reset_index().rename(columns={"Customer Number":"Customer Number"}),
+                df_infor.groupby("PO No.(Full)", dropna=False)["Customer Number"].agg(keep_or_join).reset_index(),
                 on="PO No.(Full)", how="left"
             )
+
+    # Ensure Segment Attribute and Segment Attribute Desc carried over to grouped table
+    for seg_col in ["Segment Attribute", "Segment Attribute Desc"]:
+        if seg_col in df_infor.columns and seg_col not in df_infor_grouped.columns:
+            if "PO No.(Full)" in df_infor.columns:
+                df_infor_grouped = df_infor_grouped.merge(
+                    df_infor.groupby("PO No.(Full)", dropna=False)[seg_col].agg(keep_or_join).reset_index(),
+                    on="PO No.(Full)", how="left"
+                )
 
     # make keys
     if "CRD" in df_infor_grouped.columns:
@@ -306,27 +347,29 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     df_sap["CRD_key"] = to_dt_series(df_sap["CRD"]) if "CRD" in df_sap.columns else pd.NaT
     df_sap["PD_key"]  = to_dt_series(df_sap["PD"]) if "PD" in df_sap.columns else pd.NaT
 
-    # prepare infor pick; include Customer Number if present
+    # prepare infor pick; include Customer Number, Segment Attribute, Segment Attribute Desc if present
     infor_cols_for_merge = [
         "Order Status","Article No","LPD","PODD","PSDD","FPD","CRD","PD",
         "Delay/Early - Confirmation CRD","Delay - PO PSDD Update","Delay - PO PD Update",
         "Quantity","Shipment Method","Issue Date",
         "Customer PO item","Line Aggregator"
     ]
-    # add Customer Number to pick if exists
     if "Customer Number" in df_infor_grouped.columns:
         infor_cols_for_merge.append("Customer Number")
+
+    # Add Segment Attribute and Segment Attribute Desc if present
+    for seg_col in ["Segment Attribute", "Segment Attribute Desc"]:
+        if seg_col in df_infor_grouped.columns:
+            infor_cols_for_merge.append(seg_col)
 
     if "Delay/Early - Confirmation PD" in df_infor_grouped.columns:
         infor_cols_for_merge = ["Delay/Early - Confirmation PD"] + infor_cols_for_merge
 
     inf_pick_cols = [c for c in infor_cols_for_merge if c in df_infor_grouped.columns]
     inf_pick = df_infor_grouped[["PO No.(Full)","CRD_key","PD_key"] + inf_pick_cols].copy()
-    # prefix
     pref_map = {c: f"infor {c}" for c in inf_pick_cols}
     inf_pick = inf_pick.rename(columns=pref_map)
 
-    # if customer number was included, rename prefixed column to 'infor Customer Number' (no extra changes)
     # Try strict join
     df_join = None
     if prefer_strict_join:
@@ -429,13 +472,27 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Shipment Method" in df.columns and "infor Shipment Method" in df.columns:
         df["Result Shipment Method"] = equal_series(norm_str(df["Shipment Method"]), norm_str(df["infor Shipment Method"])).fillna(False)
 
-    # --- NEW: compare Ship-to-Sort1 (SAP) with infor Customer Number ---
-    # ensure prefixed column name exists: 'infor Customer Number'
+    # --- Compare Ship-to-Sort1 (SAP) with infor Customer Number ---
     if "Ship-to-Sort1" in df.columns and "infor Customer Number" in df.columns:
         df["Result_Ship-to-Sort1"] = equal_series(norm_str(df["Ship-to-Sort1"]), norm_str(df["infor Customer Number"])).fillna(False)
 
     if "Line Aggregator" not in df.columns and "infor Line Aggregator" in df.columns:
         df["Line Aggregator"] = df["infor Line Aggregator"]
+
+    # --- Build combined 'Infor Customer PO item' column ---
+    # Format: {Line Aggregator}-{infor Segment Attribute}-{infor Segment Attribute Desc (normalized)}
+    # Each part is included only if it exists and is not null/blank.
+    def build_combined_customer_po_item(row):
+        parts = []
+        for col in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"]:
+            val = row.get(col, np.nan)
+            if pd.notna(val) and str(val).strip() not in BLANKS:
+                parts.append(str(val).strip())
+        return "-".join(parts) if parts else np.nan
+
+    combined_cols_exist = any(c in df.columns for c in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"])
+    if combined_cols_exist:
+        df["Infor Customer PO item"] = df.apply(build_combined_customer_po_item, axis=1)
 
     present = [c for c in DESIRED_ORDER if c in df.columns]
     rest     = [c for c in df.columns if c not in present]
@@ -522,10 +579,13 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                 idx_by_name = {c.value: i+1 for i, c in enumerate(header_cells)}
                 for cell in header_cells:
                     col_name = str(cell.value) if cell.value is not None else ""
-                    if col_name.lower().startswith("infor ") or col_name.startswith("Infor "):
+                    if col_name.lower().startswith("infor "):
                         cell.fill = PatternFill("solid", fgColor=INFOR_COLOR)
                     elif col_name.startswith("Result ") or col_name.startswith("Result_"):
                         cell.fill = PatternFill("solid", fgColor=RESULT_COLOR)
+                    # "Infor Customer PO item" (capital I) treated as infor-origin column
+                    elif col_name == "Infor Customer PO item":
+                        cell.fill = PatternFill("solid", fgColor=INFOR_COLOR)
                     else:
                         cell.fill = PatternFill("solid", fgColor=OTHER_COLOR)
                     cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -634,11 +694,9 @@ if sap_file and infor_files:
             st.subheader("Preview result (top 200 rows)")
             st.dataframe(df_final.head(200), use_container_width=True)
 
-            # primary download
             st.download_button("⬇️ Download Excel (xlsxwriter, per-cell dates)", data=bytes_xlsx.getvalue(),
                                file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            # styled download only if styled_bytes produced
             if EXCEL_STYLED_AVAILABLE and styled_bytes is not None:
                 st.download_button("⬇️ Download Excel (styled, openpyxl)", data=styled_bytes.getvalue(),
                                    file_name=out_name.replace(".xlsx","_styled.xlsx"),
@@ -653,15 +711,14 @@ if sap_file and infor_files:
             csv_name = out_name.replace(".xlsx", ".csv")
             st.download_button("⬇️ Download CSV (basic)", data=df_final.to_csv(index=False).encode("utf-8"), file_name=csv_name, mime="text/csv")
 
-            # summary Result*
             st.markdown("### Summary Result*")
             res_bool_cols = [c for c in df_final.columns if c.startswith("Result " ) or c.startswith("Result_")]
             if res_bool_cols:
                 summary = {}
                 for c in res_bool_cols:
                     col = df_final[c]
-                    true_count = int(col.eq(True).sum()) if col.dtype == bool else int(col.eq("TRUE").sum()) if col.dtype == object else int(col.eq(True).sum())
-                    false_count = int(col.eq(False).sum()) if col.dtype == bool else int(col.eq("FALSE").sum()) if col.dtype == object else int(col.eq(False).sum())
+                    true_count  = int(col.eq(True).sum())
+                    false_count = int(col.eq(False).sum())
                     summary[c] = {"TRUE": true_count, "FALSE": false_count}
                 st.json(summary)
             else:
@@ -672,7 +729,6 @@ if sap_file and infor_files:
 else:
     st.info("Unggah SAP file dan minimal 1 Infor file di sidebar untuk mulai.")
 
-# debug
 with st.expander("🛠 Debug info"):
     try:
         import platform
