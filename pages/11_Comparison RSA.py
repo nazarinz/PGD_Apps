@@ -487,6 +487,15 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         for col in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"]:
             val = row.get(col, np.nan)
             if pd.notna(val) and str(val).strip() not in BLANKS:
+                # Convert float like 40.0 -> "40", keep strings as-is
+                try:
+                    f = float(val)
+                    if f == int(f):
+                        val = str(int(f))
+                    else:
+                        val = str(f)
+                except (ValueError, TypeError):
+                    val = str(val).strip()
                 parts.append(str(val).strip())
         return "".join(parts) if parts else np.nan
 
