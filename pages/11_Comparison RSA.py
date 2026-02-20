@@ -69,9 +69,6 @@ DESIRED_ORDER = [
     "CRD","infor CRD","Result CRD","PSDD","infor PSDD","Result PSDD",
     "PODD","infor PODD","Result PODD","FCR Date","PD","infor PD","Result PD",
     "PO Date","Actual PGI",
-    # Segment Attribute Desc comparison (both from Infor)
-    "infor Segment Attribute","infor Segment Attribute Desc","Result_Segment Attribute Desc",
-    "infor SC Segmentation",
     "Segment","S&P LPD","Currency"
 ]
 
