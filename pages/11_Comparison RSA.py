@@ -50,25 +50,28 @@ DATE_COLS_SAP   = ["Document Date","FPD","LPD","PSDD","PODD","FCR Date","PO Date
 DESIRED_ORDER = [
     "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
     "PO No.(Full)","infor Order Status","Customer PO item","Infor Customer PO item","Result_Customer PO item",
-    "Line Aggregator","PO No.(Short)",
+    "Line Aggregator","Cust Ord No","infor Market PO Number","Result_Cust Ord No","PO No.(Short)",
     "Merchandise Category 2","Quanity","infor Quantity","Result_Quantity",
     "Model Name","Article No","infor Article No","Result Article No","SAP Material",
     "Pattern Code(Up.No.)","Model No","Outsole Mold","Gender","Category 1","Category 2","Category 3",
     "Unit Price","Classification Code","DRC",
     "Delay/Early - Confirmation PD","infor Delay/Early - Confirmation PD","Result Delay/Early - Confirmation PD",
     "Delay/Early - Confirmation CRD","infor Delay/Early - Confirmation CRD","Result Delay/Early - Confirmation CRD",
+    "MDP","PDP","SDP","Article Lead time",
+    "Ship-to-Sort1","infor Customer Number","Result_Ship-to-Sort1",
+    "Ship-to Country","Ship to Name","Shipment Method","infor Shipment Method","Result Shipment Method",
     "Delay - PO PSDD Update","infor Delay - PO PSDD Update","Result Delay - PO PSDD Update",
     "Delay - PO PD Update","infor Delay - PO PD Update","Result Delay - PO PD Update",
-    "MDP","PDP","SDP","Article Lead time",
-    # Ship-to / Customer Number comparison
-    "Ship-to-Sort1","infor Customer Number","Result_Ship-to-Sort1",
-    # Cust Ord No / Market PO Number comparison
-    "Cust Ord No","Market PO Number","Result_Cust Ord No",
-    "Ship-to Country","Ship to Name","infor Shipment Method",
-    "Document Date","FPD","infor FPD","Result FPD","LPD","infor LPD","Result LPD",
-    "CRD","infor CRD","Result CRD","PSDD","infor PSDD","Result PSDD",
-    "PODD","infor PODD","Result PODD","FCR Date","PD","infor PD","Result PD",
-    "PO Date","Actual PGI",
+    "Document Date","PODD","infor PODD","Result PODD",
+    "LPD","infor LPD","Result LPD",
+    "PSDD","infor PSDD","Result PSDD",
+    "FPD","infor FPD","Result FPD",
+    "CRD","infor CRD","Result CRD",
+    "PD","infor PD","Result PD",
+    "FCR Date","PO Date","Actual PGI",
+    # Segment Attribute Desc comparison (both from Infor)
+    "infor Segment Attribute","infor Segment Attribute Desc","Result_Segment Attribute Desc",
+    "infor SC Segmentation",
     "Segment","S&P LPD","Currency"
 ]
 
@@ -399,9 +402,8 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     inf_pick_cols = [c for c in infor_cols_for_merge if c in df_infor_grouped.columns]
     inf_pick = df_infor_grouped[["PO No.(Full)","CRD_key","PD_key"] + inf_pick_cols].copy()
     pref_map = {c: f"infor {c}" for c in inf_pick_cols}
-    # Keep these columns without the "infor " prefix (already named correctly)
-    for _no_prefix in ("Infor Customer PO item", "Market PO Number"):
-        pref_map.pop(_no_prefix, None)
+    # Keep 'Infor Customer PO item' without the "infor " prefix (already named correctly)
+    pref_map.pop("Infor Customer PO item", None)
     inf_pick = inf_pick.rename(columns=pref_map)
 
     # Try strict join
@@ -511,8 +513,8 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         df["Result_Ship-to-Sort1"] = equal_series(norm_str(df["Ship-to-Sort1"]), norm_str(df["infor Customer Number"])).fillna(False)
 
     # --- Compare SAP 'Cust Ord No' vs Infor 'Market PO Number' ---
-    if "Cust Ord No" in df.columns and "Market PO Number" in df.columns:
-        df["Result_Cust Ord No"] = equal_series(norm_str(df["Cust Ord No"]), norm_str(df["Market PO Number"])).fillna(False)
+    if "Cust Ord No" in df.columns and "infor Market PO Number" in df.columns:
+        df["Result_Cust Ord No"] = equal_series(norm_str(df["Cust Ord No"]), norm_str(df["infor Market PO Number"])).fillna(False)
 
     if "Line Aggregator" not in df.columns and "infor Line Aggregator" in df.columns:
         df["Line Aggregator"] = df["infor Line Aggregator"]
@@ -546,6 +548,12 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                 else str(row["infor Segment Attribute"]).strip() == str(row["infor Segment Attribute Desc"]).strip()
             ), axis=1
         )
+
+    # --- Add empty placeholder columns for Shipment Method and Result Shipment Method ---
+    if "Shipment Method" not in df.columns:
+        df["Shipment Method"] = np.nan
+    if "Result Shipment Method" not in df.columns:
+        df["Result Shipment Method"] = np.nan
 
     present = [c for c in DESIRED_ORDER if c in df.columns]
     rest     = [c for c in df.columns if c not in present]
