@@ -7,7 +7,8 @@ Updates:
 - Normalize Infor 'Customer Number' value '--' -> 'ZA30' before grouping
 - Styled export visibility improvements
 - Normalize 'Segment Attribute Desc' using mapping table
-- Add combined 'Infor Customer PO item' column (Line Aggregator + Segment Attribute + normalized Segment Attribute Desc)
+- Add combined 'Infor Customer PO item' column (Line Aggregator + SC Segmentation + normalized Segment Attribute Desc)
+- Add combined 'infor SC Segmentation' column (Segment Attribute + normalized Segment Attribute Desc) and compare with SAP 'Segment Attribute'
 """
 
 import re
@@ -65,7 +66,11 @@ DESIRED_ORDER = [
     "Document Date","FPD","infor FPD","Result FPD","LPD","infor LPD","Result LPD",
     "CRD","infor CRD","Result CRD","PSDD","infor PSDD","Result PSDD",
     "PODD","infor PODD","Result PODD","FCR Date","PD","infor PD","Result PD",
-    "PO Date","Actual PGI","Segment","S&P LPD","Currency"
+    "PO Date","Actual PGI",
+    # SC Segmentation comparison
+    "Segment Attribute","infor Segment Attribute","Segment Attribute Desc","infor Segment Attribute Desc",
+    "infor SC Segmentation","Result_SC Segmentation",
+    "Segment","S&P LPD","Currency"
 ]
 
 INFOR_COLOR  = "FFF9F16D"
@@ -479,24 +484,33 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Line Aggregator" not in df.columns and "infor Line Aggregator" in df.columns:
         df["Line Aggregator"] = df["infor Line Aggregator"]
 
-    # --- Build combined 'Infor Customer PO item' column ---
-    # Format: {Line Aggregator}-{infor Segment Attribute}-{infor Segment Attribute Desc (normalized)}
-    # Each part is included only if it exists and is not null/blank.
+    # -------------------------------------------------------------------
+    # Build combined 'Infor Customer PO item' column
+    # Format: {Line Aggregator}{infor Segment Attribute}{infor Segment Attribute Desc (normalized)}
+    # (SC Segmentation = Segment Attribute + normalized Segment Attribute Desc)
+    # -------------------------------------------------------------------
+    def _val_to_str(val) -> str | None:
+        """Convert a cell value to a clean string, or None if blank/null."""
+        if pd.isna(val):
+            return None
+        s = str(val).strip()
+        if s in BLANKS:
+            return None
+        # Convert float-like strings: 40.0 -> "40"
+        try:
+            f = float(s)
+            if f == int(f):
+                return str(int(f))
+            return str(f)
+        except (ValueError, TypeError):
+            return s
+
     def build_combined_customer_po_item(row):
         parts = []
         for col in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"]:
-            val = row.get(col, np.nan)
-            if pd.notna(val) and str(val).strip() not in BLANKS:
-                # Convert float like 40.0 -> "40", keep strings as-is
-                try:
-                    f = float(val)
-                    if f == int(f):
-                        val = str(int(f))
-                    else:
-                        val = str(f)
-                except (ValueError, TypeError):
-                    val = str(val).strip()
-                parts.append(str(val).strip())
+            v = _val_to_str(row.get(col, np.nan))
+            if v is not None:
+                parts.append(v)
         return "".join(parts) if parts else np.nan
 
     combined_cols_exist = any(c in df.columns for c in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"])
@@ -509,10 +523,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
 
     # --- Compare Customer PO item (SAP) vs Infor Customer PO item (combined) ---
     if "Customer PO item" in df.columns and "Infor Customer PO item" in df.columns:
-        def norm_str_single(s):
-            s2 = pd.Series([s])
-            s2 = s2.astype(str).str.strip().replace(list(BLANKS), np.nan)
-            return s2.iloc[0]
         df["Result_Customer PO item"] = df.apply(
             lambda row: (
                 True if pd.isna(row.get("Customer PO item")) and pd.isna(row.get("Infor Customer PO item"))
@@ -520,6 +530,33 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                 else str(row["Customer PO item"]).strip() == str(row["Infor Customer PO item"]).strip()
             ), axis=1
         )
+
+    # -------------------------------------------------------------------
+    # Build 'infor SC Segmentation' column
+    # = infor Segment Attribute + infor Segment Attribute Desc (normalized)
+    # Then compare with SAP 'Segment Attribute' -> Result_SC Segmentation
+    # -------------------------------------------------------------------
+    sc_seg_cols_exist = any(c in df.columns for c in ["infor Segment Attribute", "infor Segment Attribute Desc"])
+    if sc_seg_cols_exist:
+        def build_sc_segmentation(row):
+            parts = []
+            for col in ["infor Segment Attribute", "infor Segment Attribute Desc"]:
+                v = _val_to_str(row.get(col, np.nan))
+                if v is not None:
+                    parts.append(v)
+            return "".join(parts) if parts else np.nan
+
+        df["infor SC Segmentation"] = df.apply(build_sc_segmentation, axis=1)
+
+        # Compare SAP 'Segment Attribute' with 'infor SC Segmentation'
+        if "Segment Attribute" in df.columns:
+            df["Result_SC Segmentation"] = df.apply(
+                lambda row: (
+                    True  if pd.isna(row.get("Segment Attribute")) and pd.isna(row.get("infor SC Segmentation"))
+                    else False if pd.isna(row.get("Segment Attribute")) or pd.isna(row.get("infor SC Segmentation"))
+                    else str(row["Segment Attribute"]).strip() == str(row["infor SC Segmentation"]).strip()
+                ), axis=1
+            )
 
     present = [c for c in DESIRED_ORDER if c in df.columns]
     rest     = [c for c in df.columns if c not in present]
