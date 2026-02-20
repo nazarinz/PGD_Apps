@@ -7,8 +7,8 @@ Updates:
 - Normalize Infor 'Customer Number' value '--' -> 'ZA30' before grouping
 - Styled export visibility improvements
 - Normalize 'Segment Attribute Desc' using mapping table
-- Add combined 'Infor Customer PO item' column (Line Aggregator + SC Segmentation + normalized Segment Attribute Desc)
-- Add combined 'infor SC Segmentation' column (Segment Attribute + normalized Segment Attribute Desc) and compare with SAP 'Segment Attribute'
+- Add combined 'Infor Customer PO item' column (Line Aggregator + SC Segmentation (new Infor column) + normalized Segment Attribute Desc)
+- Add compare: SAP 'Segment Attribute' vs Infor normalized 'Segment Attribute Desc' -> Result_Segment Attribute Desc
 """
 
 import re
@@ -67,9 +67,9 @@ DESIRED_ORDER = [
     "CRD","infor CRD","Result CRD","PSDD","infor PSDD","Result PSDD",
     "PODD","infor PODD","Result PODD","FCR Date","PD","infor PD","Result PD",
     "PO Date","Actual PGI",
-    # SC Segmentation comparison
-    "Segment Attribute","infor Segment Attribute","Segment Attribute Desc","infor Segment Attribute Desc",
-    "infor SC Segmentation","Result_SC Segmentation",
+    # Segment Attribute Desc comparison (both from Infor)
+    "infor Segment Attribute","infor Segment Attribute Desc","Result_Segment Attribute Desc",
+    "infor SC Segmentation",
     "Segment","S&P LPD","Currency"
 ]
 
@@ -325,8 +325,8 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                 on="PO No.(Full)", how="left"
             )
 
-    # Ensure Segment Attribute and Segment Attribute Desc carried over to grouped table
-    for seg_col in ["Segment Attribute", "Segment Attribute Desc"]:
+    # Ensure SC Segmentation, Segment Attribute and Segment Attribute Desc carried over to grouped table
+    for seg_col in ["SC Segmentation", "Segment Attribute", "Segment Attribute Desc"]:
         if seg_col in df_infor.columns and seg_col not in df_infor_grouped.columns:
             if "PO No.(Full)" in df_infor.columns:
                 df_infor_grouped = df_infor_grouped.merge(
@@ -362,8 +362,8 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Customer Number" in df_infor_grouped.columns:
         infor_cols_for_merge.append("Customer Number")
 
-    # Add Segment Attribute and Segment Attribute Desc if present
-    for seg_col in ["Segment Attribute", "Segment Attribute Desc"]:
+    # Add SC Segmentation, Segment Attribute and Segment Attribute Desc if present
+    for seg_col in ["SC Segmentation", "Segment Attribute", "Segment Attribute Desc"]:
         if seg_col in df_infor_grouped.columns:
             infor_cols_for_merge.append(seg_col)
 
@@ -507,13 +507,13 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
 
     def build_combined_customer_po_item(row):
         parts = []
-        for col in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"]:
+        for col in ["Line Aggregator", "infor SC Segmentation", "infor Segment Attribute Desc"]:
             v = _val_to_str(row.get(col, np.nan))
             if v is not None:
                 parts.append(v)
         return "".join(parts) if parts else np.nan
 
-    combined_cols_exist = any(c in df.columns for c in ["Line Aggregator", "infor Segment Attribute", "infor Segment Attribute Desc"])
+    combined_cols_exist = any(c in df.columns for c in ["Line Aggregator", "infor SC Segmentation", "infor Segment Attribute Desc"])
     if combined_cols_exist:
         df["Infor Customer PO item"] = df.apply(build_combined_customer_po_item, axis=1)
 
@@ -531,32 +531,21 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
             ), axis=1
         )
 
-    # -------------------------------------------------------------------
-    # Build 'infor SC Segmentation' column
-    # = infor Segment Attribute + infor Segment Attribute Desc (normalized)
-    # Then compare with SAP 'Segment Attribute' -> Result_SC Segmentation
-    # -------------------------------------------------------------------
-    sc_seg_cols_exist = any(c in df.columns for c in ["infor Segment Attribute", "infor Segment Attribute Desc"])
-    if sc_seg_cols_exist:
-        def build_sc_segmentation(row):
-            parts = []
-            for col in ["infor Segment Attribute", "infor Segment Attribute Desc"]:
-                v = _val_to_str(row.get(col, np.nan))
-                if v is not None:
-                    parts.append(v)
-            return "".join(parts) if parts else np.nan
+    # --- Compare Infor 'Segment Attribute' vs Infor normalized 'Segment Attribute Desc' ---
+    if "infor Segment Attribute" in df.columns and "infor Segment Attribute Desc" in df.columns:
+        def _norm_single(val):
+            if pd.isna(val):
+                return np.nan
+            s = str(val).strip()
+            return np.nan if s in BLANKS else s
 
-        df["infor SC Segmentation"] = df.apply(build_sc_segmentation, axis=1)
-
-        # Compare SAP 'Segment Attribute' with 'infor SC Segmentation'
-        if "Segment Attribute" in df.columns:
-            df["Result_SC Segmentation"] = df.apply(
-                lambda row: (
-                    True  if pd.isna(row.get("Segment Attribute")) and pd.isna(row.get("infor SC Segmentation"))
-                    else False if pd.isna(row.get("Segment Attribute")) or pd.isna(row.get("infor SC Segmentation"))
-                    else str(row["Segment Attribute"]).strip() == str(row["infor SC Segmentation"]).strip()
-                ), axis=1
-            )
+        df["Result_Segment Attribute Desc"] = df.apply(
+            lambda row: (
+                True  if pd.isna(_norm_single(row.get("infor Segment Attribute"))) and pd.isna(_norm_single(row.get("infor Segment Attribute Desc")))
+                else False if pd.isna(_norm_single(row.get("infor Segment Attribute"))) or pd.isna(_norm_single(row.get("infor Segment Attribute Desc")))
+                else str(row["infor Segment Attribute"]).strip() == str(row["infor Segment Attribute Desc"]).strip()
+            ), axis=1
+        )
 
     present = [c for c in DESIRED_ORDER if c in df.columns]
     rest     = [c for c in df.columns if c not in present]
