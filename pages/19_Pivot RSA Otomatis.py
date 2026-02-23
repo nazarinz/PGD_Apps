@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+from datetime import datetime
 
+today_str = datetime.now().strftime("%Y%m%d")
+file_base = f"RSA Pivot - {today_str}"
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Pivot Report Generator",
@@ -75,6 +78,7 @@ DEFAULT_ROW_FIELDS = [
     "Delay - PO Del Update", "Production Lead Time", "Shipment Method",
     "Segment Attribute", "Segment Attribute Desc",
     "Sales Channel", "Sales Channel Description", "Storage Location",
+    "SC Segmentation",	"Market PO Number",
 ]
 
 # ── Session state ──────────────────────────────────────────────────────────────
@@ -352,7 +356,7 @@ if st.session_state.pivot_df is not None:
     with d1:
         csv_bytes = pivot.to_csv(index=False).encode("utf-8-sig")
         st.download_button("⬇️ Download CSV", data=csv_bytes,
-            file_name="pivot_report.csv", mime="text/csv", use_container_width=True)
+            file_name=f"{file_base}.csv", mime="text/csv", use_container_width=True)
     with d2:
         buf = BytesIO()
         try:
@@ -396,7 +400,7 @@ if st.session_state.pivot_df is not None:
 
             buf.seek(0)
             st.download_button("⬇️ Download Excel", data=buf,
-                file_name="pivot_report.xlsx",
+                file_name=f"{file_base}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
         except Exception as e:
