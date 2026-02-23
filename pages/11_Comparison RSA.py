@@ -9,6 +9,7 @@ Updates:
 - Normalize 'Segment Attribute Desc' using mapping table
 - Add combined 'Infor Customer PO item' column (Line Aggregator + SC Segmentation (new Infor column) + normalized Segment Attribute Desc)
 - Add compare: SAP 'Segment Attribute' vs Infor normalized 'Segment Attribute Desc' -> Result_Segment Attribute Desc
+- FIX: Delay comparison now normalizes both SAP (XX-XXXX) and Infor (XXXX) to canonical form before comparing
 """
 
 import re
@@ -109,6 +110,93 @@ def normalize_segment_attr_desc(series: pd.Series) -> pd.Series:
         cleaned = str(val).strip().rstrip(":")
         return SEGMENT_ATTR_DESC_MAP.get(cleaned, cleaned)
     return series.apply(_map)
+
+# -------------------
+# Delay code mapping (with zero-padded variants)
+# -------------------
+# fmt: off
+DELAY_CODE_MAPPING = {
+    # numeric string (no padding) -> canonical
+    '161':  '01-0161', '0161': '01-0161',
+    '84':   '03-0084', '0084': '03-0084',
+    '68':   '02-0068', '0068': '02-0068',
+    '64':   '04-0064', '0064': '04-0064',
+    '62':   '02-0062', '0062': '02-0062',
+    '61':   '01-0061', '0061': '01-0061',
+    '51':   '03-0051', '0051': '03-0051',
+    '46':   '03-0046', '0046': '03-0046',
+    '7':    '02-0007', '0007': '02-0007',
+    '3':    '03-0003', '0003': '03-0003',
+    '2':    '01-0002', '0002': '01-0002',
+    '1':    '01-0001', '0001': '01-0001',
+    '4':    '04-0004', '0004': '04-0004',
+    '8':    '02-0008', '0008': '02-0008',
+    '10':   '04-0010', '0010': '04-0010',
+    '49':   '03-0049', '0049': '03-0049',
+    '90':   '04-0090', '0090': '04-0090',
+    '63':   '03-0063', '0063': '03-0063',
+    '27':   '04-0027', '0027': '04-0027',
+    # treat as "no value" -> compare as NaN
+    '0':    None,
+    '0000': None,
+    '':     None,
+}
+# fmt: on
+
+# Also register the canonical XX-XXXX strings as self-referencing keys
+# so that SAP values already in that form can be looked up directly.
+for _v in list(DELAY_CODE_MAPPING.values()):
+    if _v and _v not in DELAY_CODE_MAPPING:
+        DELAY_CODE_MAPPING[_v] = _v
+
+
+def _extract_delay_lookup_key(val) -> str | None:
+    """
+    Extract the lookup key for DELAY_CODE_MAPPING from any delay value format:
+      - already canonical  "03-0063"  → "03-0063"  (direct match in mapping)
+      - zero-padded suffix "0063"     → "0063"
+      - bare number        "63"       → "63"
+      - blank / NaN / "0000"         → None
+    """
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in {b.lower() for b in BLANKS}:
+        return None
+    # canonical format XX-XXXX: try direct lookup first
+    if re.match(r'^\d{2}-\d{4}$', s):
+        return s
+    # any digit-only string (with or without leading zeros)
+    digits_only = re.sub(r'\D', '', s)
+    return digits_only if digits_only else None
+
+
+def normalize_delay_to_canonical(series: pd.Series) -> pd.Series:
+    """
+    Map any delay value to its canonical 'XX-XXXX' form using DELAY_CODE_MAPPING.
+    Returns np.nan for blanks, zeros, or unmapped values → comparison treats as missing.
+    """
+    def _norm(val):
+        key = _extract_delay_lookup_key(val)
+        if key is None:
+            return np.nan
+        result = DELAY_CODE_MAPPING.get(key)
+        # result == None means "treat as no-value"
+        if result is None:
+            return np.nan
+        # not in mapping at all → keep original key so mismatch is visible
+        return result if result is not None else key
+    return series.apply(_norm)
+
+
+def map_delay_series_for_display(s: pd.Series) -> pd.Series:
+    """
+    Used to overwrite the infor delay columns with their canonical form
+    so the Excel output shows 'XX-XXXX' rather than raw digits.
+    (SAP columns are already in XX-XXXX form.)
+    """
+    return normalize_delay_to_canonical(s).fillna("")
+
 
 # -------------------
 # Helpers (kept)
@@ -282,8 +370,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         df_infor = df_infor[df_infor["Quantity"].fillna(0) != 0].copy()
 
     # --- Build 'Infor Customer PO item' per row BEFORE groupby ---
-    # Format: {Customer PO item}{SC Segmentation}{Segment Attribute Desc (normalized)}
-    # Blank/null values are kept as literal "(blank)" so each row is always fully represented.
     def _build_infor_po_item_pre(row):
         parts = []
         for col in ["Customer PO item", "SC Segmentation", "Segment Attribute Desc"]:
@@ -381,7 +467,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     df_sap["CRD_key"] = to_dt_series(df_sap["CRD"]) if "CRD" in df_sap.columns else pd.NaT
     df_sap["PD_key"]  = to_dt_series(df_sap["PD"]) if "PD" in df_sap.columns else pd.NaT
 
-    # prepare infor pick; include Customer Number, Segment Attribute, Segment Attribute Desc if present
+    # prepare infor pick
     infor_cols_for_merge = [
         "Order Status","Article No","LPD","PODD","PSDD","FPD","CRD","PD",
         "Delay/Early - Confirmation CRD","Delay - PO PSDD Update","Delay - PO PD Update",
@@ -391,7 +477,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Customer Number" in df_infor_grouped.columns:
         infor_cols_for_merge.append("Customer Number")
 
-    # Add SC Segmentation, Segment Attribute and Segment Attribute Desc if present
     for seg_col in ["SC Segmentation", "Segment Attribute", "Segment Attribute Desc"]:
         if seg_col in df_infor_grouped.columns:
             infor_cols_for_merge.append(seg_col)
@@ -402,7 +487,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     inf_pick_cols = [c for c in infor_cols_for_merge if c in df_infor_grouped.columns]
     inf_pick = df_infor_grouped[["PO No.(Full)","CRD_key","PD_key"] + inf_pick_cols].copy()
     pref_map = {c: f"infor {c}" for c in inf_pick_cols}
-    # Keep 'Infor Customer PO item' without the "infor " prefix (already named correctly)
     pref_map.pop("Infor Customer PO item", None)
     inf_pick = inf_pick.rename(columns=pref_map)
 
@@ -430,36 +514,28 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if df_join is None:
         raise RuntimeError("Merge failed — no join result produced.")
 
-    # mapping delay codes
-    code_mapping = {
-        '161':'01-0161','84':'03-0084','68':'02-0068','64':'04-0064','62':'02-0062','61':'01-0061',
-        '51':'03-0051','46':'03-0046','7':'02-0007','3':'03-0003','2':'01-0002','1':'01-0001',
-        '4':'04-0004','8':'02-0008','10':'04-0010','49':'03-0049','90':'04-0090','63':'03-0063','27':'04-0027', '0':''
-    }
-
-    def map_delay_series_to_code(s: pd.Series, code_mapping: dict) -> pd.Series:
-        base = s.apply(extract_digits)
-        mapped = base.map(code_mapping)
-        return mapped.where(mapped.notna(), base)
-
-    for col in ["infor Delay/Early - Confirmation PD",
-                "infor Delay/Early - Confirmation CRD",
-                "infor Delay - PO PSDD Update",
-                "infor Delay - PO PD Update"]:
+    # ----------------------------------------------------------------
+    # Map infor delay columns to canonical XX-XXXX form (for display)
+    # NOTE: SAP columns already contain XX-XXXX values.
+    # ----------------------------------------------------------------
+    for col in [
+        "infor Delay/Early - Confirmation PD",
+        "infor Delay/Early - Confirmation CRD",
+        "infor Delay - PO PSDD Update",
+        "infor Delay - PO PD Update",
+    ]:
         if col in df_join.columns:
-            mapped_col = f"{col} (Mapped)"
-            df_join[mapped_col] = map_delay_series_to_code(df_join[col], code_mapping)
-            df_join[col] = df_join[mapped_col]
-            df_join.drop(columns=[mapped_col], inplace=True)
+            df_join[col] = normalize_delay_to_canonical(df_join[col]).fillna("")
 
+    # ----------------------------------------------------------------
     # compare logic
+    # ----------------------------------------------------------------
     def norm_num(s): return pd.to_numeric(s, errors="coerce")
     def norm_str(s):
         s = s.astype(str).str.strip()
         s = s.replace(list(BLANKS), np.nan)
         return s
-    def norm_delay(s): return s.apply(extract_digits)
-    def equal_series(a,b): return a.eq(b) | (a.isna() & b.isna())
+    def equal_series(a, b): return a.eq(b) | (a.isna() & b.isna())
     def compare_dates_as_sets(s_left, s_right):
         left_sets  = s_left.apply(split_date_set)
         right_sets = s_right.apply(split_date_set)
@@ -473,25 +549,22 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     if "Article No" in df.columns and "infor Article No" in df.columns:
         df["Result Article No"] = equal_series(norm_str(df["Article No"]), norm_str(df["infor Article No"])).fillna(False)
 
-    if "Delay/Early - Confirmation PD" in df.columns and "infor Delay/Early - Confirmation PD" in df.columns:
-        df["Result Delay/Early - Confirmation PD"] = equal_series(
-            norm_delay(df["Delay/Early - Confirmation PD"]), norm_delay(df["infor Delay/Early - Confirmation PD"])
-        ).fillna(False)
-
-    if "Delay/Early - Confirmation CRD" in df.columns and "infor Delay/Early - Confirmation CRD" in df.columns:
-        df["Result Delay/Early - Confirmation CRD"] = equal_series(
-            norm_delay(df["Delay/Early - Confirmation CRD"]), norm_delay(df["infor Delay/Early - Confirmation CRD"])
-        ).fillna(False)
-
-    if "Delay - PO PSDD Update" in df.columns and "infor Delay - PO PSDD Update" in df.columns:
-        df["Result Delay - PO PSDD Update"] = equal_series(
-            norm_delay(df["Delay - PO PSDD Update"]), norm_delay(df["infor Delay - PO PSDD Update"])
-        ).fillna(False)
-
-    if "Delay - PO PD Update" in df.columns and "infor Delay - PO PD Update" in df.columns:
-        df["Result Delay - PO PD Update"] = equal_series(
-            norm_delay(df["Delay - PO PD Update"]), norm_delay(df["infor Delay - PO PD Update"])
-        ).fillna(False)
+    # ----------------------------------------------------------------
+    # Delay comparisons — both sides normalized to canonical XX-XXXX
+    # using normalize_delay_to_canonical so format differences (03-0063
+    # vs 0063 vs 63) all resolve to the same canonical string.
+    # ----------------------------------------------------------------
+    delay_pairs = [
+        ("Delay/Early - Confirmation PD",  "infor Delay/Early - Confirmation PD",  "Result Delay/Early - Confirmation PD"),
+        ("Delay/Early - Confirmation CRD", "infor Delay/Early - Confirmation CRD", "Result Delay/Early - Confirmation CRD"),
+        ("Delay - PO PSDD Update",         "infor Delay - PO PSDD Update",         "Result Delay - PO PSDD Update"),
+        ("Delay - PO PD Update",           "infor Delay - PO PD Update",           "Result Delay - PO PD Update"),
+    ]
+    for sap_col, infor_col, result_col in delay_pairs:
+        if sap_col in df.columns and infor_col in df.columns:
+            sap_norm   = normalize_delay_to_canonical(df[sap_col])
+            infor_norm = normalize_delay_to_canonical(df[infor_col])
+            df[result_col] = equal_series(sap_norm, infor_norm).fillna(False)
 
     date_pairs = [
         ("FPD","infor FPD","Result FPD"),
@@ -660,7 +733,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                         cell.fill = PatternFill("solid", fgColor=INFOR_COLOR)
                     elif col_name.startswith("Result ") or col_name.startswith("Result_"):
                         cell.fill = PatternFill("solid", fgColor=RESULT_COLOR)
-                    # "Infor Customer PO item" (capital I) treated as infor-origin column
                     elif col_name == "Infor Customer PO item":
                         cell.fill = PatternFill("solid", fgColor=INFOR_COLOR)
                     else:
@@ -674,7 +746,7 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                         cell.alignment = Alignment(horizontal="center", vertical="center")
                         cell.font = Font(name="Calibri", size=9)
 
-                # date columns: convert strings to datetimes and set number_format
+                # date columns
                 for date_col in date_display_cols:
                     if date_col in idx_by_name:
                         cidx = idx_by_name[date_col]
