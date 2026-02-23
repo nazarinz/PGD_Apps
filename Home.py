@@ -342,9 +342,39 @@ header("🤖 PGD Apps — Home")
 # ============================================================
 st.markdown("""
 <div class="hero-section">
-    <div class="hero-badge">✨ Version 1.1.0 — December 2025</div>
+    <div style="display:flex; justify-content:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem;">
+        <div class="hero-badge">✨ Version 1.1.0 — December 2025</div>
+        <div class="hero-badge" style="background:rgba(251,191,36,0.25); border-color:rgba(251,191,36,0.5);">⚠️ Unofficial — Bukan Produk Resmi</div>
+    </div>
     <h1>🚀 Selamat Datang di PGD Apps</h1>
     <p>Kumpulan 13 tools otomasi harian untuk tim PGD — cepat, akurat, dan user-friendly</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# Unofficial Disclaimer Banner
+# ============================================================
+st.markdown("""
+<div style="
+    background: rgba(251,191,36,0.1);
+    border: 1px solid rgba(251,191,36,0.4);
+    border-left: 4px solid #f59e0b;
+    border-radius: 8px;
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+">
+    <span style="font-size:1.1rem;">⚠️</span>
+    <div>
+        <strong style="color:#b45309 !important; font-size:0.9rem;">Aplikasi Tidak Resmi (Unofficial)</strong>
+        <p style="margin:0.2rem 0 0; font-size:0.85rem; color:#92400e !important; line-height:1.5;">
+            PGD Apps adalah tools pribadi yang dibuat untuk membantu efisiensi kerja tim,
+            bukan merupakan produk resmi dari perusahaan. Penggunaan sepenuhnya menjadi
+            tanggung jawab pengguna. Selalu verifikasi hasil dengan data sumber asli.
+        </p>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -483,7 +513,14 @@ TOOL_INFO = {
 pages_dir = Path(__file__).resolve().parent / "pages"
 
 if pages_dir.exists():
-    items = sorted(pages_dir.glob("*.py"))
+    # Sort NUMERIK berdasarkan angka di awal nama file (1, 2, 3 ... 10, 11, dst)
+    def _sort_key(p):
+        try:
+            return int(p.stem.split("_")[0])
+        except ValueError:
+            return 9999
+
+    items = sorted(pages_dir.glob("*.py"), key=_sort_key)
 
     # Render 2 kolom
     left_items = []
@@ -504,13 +541,16 @@ if pages_dir.exists():
             title = info["title"]
             desc  = info["desc"]
         else:
-            # Fallback: gunakan nama file sebagai judul
+            # Fallback: bersihkan nama file menjadi judul yang rapi
             icon  = "🛠️"
-            title = name.split("_", 1)[-1].replace("_", " ")
-            desc  = f"Tool untuk kebutuhan: {title}"
+            parts = name.split("_")
+            # Buang bagian angka di depan
+            title_parts = parts[1:] if parts[0].isdigit() else parts
+            title = " ".join(title_parts)
+            desc  = "Klik tool ini di sidebar untuk melihat detail fitur dan cara penggunaannya."
 
         # Ambil nomor dari awal nama file
-        num = name.split("_")[0] if name[0].isdigit() else "–"
+        num = name.split("_")[0] if name and name[0].isdigit() else "–"
 
         with col:
             st.markdown(f"""
