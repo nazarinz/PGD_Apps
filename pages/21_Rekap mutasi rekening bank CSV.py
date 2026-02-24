@@ -314,6 +314,10 @@ def _tx_sheet(ws, rows, filename, label, filter_info="", tipe_filter=None):
                 cell.fill = PatternFill('solid', start_color=bg)
     for col, w in zip('ABCDEFG', [6, 12, 20, 30, 16, 16, 18]):
         ws.column_dimensions[col].width = w
+
+    # Auto filter pada header row (row 3, kolom A–G)
+    ws.auto_filter.ref = f"A3:G{3 + len(filtered)}"
+
     return len(filtered)
 
 def _ringkasan_sheet(ws, transactions, summary, filename, filter_info=""):
@@ -617,35 +621,38 @@ db_total = df[df['Tipe']=='DB']['Jumlah'].sum()
 cr_cnt   = int((df['Tipe']=='CR').sum())
 db_cnt   = int((df['Tipe']=='DB').sum())
 
-# Tambahkan badge "terfilter" jika filter aktif
-filtered_badge = ' <span style="font-size:0.6rem;background:rgba(59,130,246,0.25);color:#93c5fd;border-radius:999px;padding:0.1rem 0.5rem;vertical-align:middle;">terfilter</span>' if is_filtered else ''
+# Pre-compute semua string HTML dulu (hindari nested f-string bug)
+badge        = '<span style="font-size:0.6rem;background:rgba(59,130,246,0.25);color:#93c5fd;border-radius:999px;padding:0.1rem 0.5rem;vertical-align:middle;margin-left:4px;">terfilter</span>' if is_filtered else ''
+cr_asli_html = '<div class="metric-filtered">Asli: ' + fmt_rp(cr_total_raw) + '</div>' if is_filtered else ''
+db_asli_html = '<div class="metric-filtered">Asli: ' + fmt_rp(db_total_raw) + '</div>' if is_filtered else ''
 
-st.markdown(f"""
-<div class="metric-grid">
-    <div class="metric-card saldo-awal">
-        <div class="metric-label">Saldo Awal</div>
-        <div class="metric-value">{fmt_rp(sa)}</div>
-        <div class="metric-sub">Dari file asli</div>
-    </div>
-    <div class="metric-card kredit">
-        <div class="metric-label">Total Masuk{filtered_badge}</div>
-        <div class="metric-value kredit">{fmt_rp(cr_total)}</div>
-        <div class="metric-sub">{cr_cnt} transaksi kredit</div>
-        {"" if not is_filtered else f'<div class="metric-filtered">Asli: {fmt_rp(cr_total_raw)}</div>'}
-    </div>
-    <div class="metric-card debet">
-        <div class="metric-label">Total Keluar{filtered_badge}</div>
-        <div class="metric-value debet">{fmt_rp(db_total)}</div>
-        <div class="metric-sub">{db_cnt} transaksi debet</div>
-        {"" if not is_filtered else f'<div class="metric-filtered">Asli: {fmt_rp(db_total_raw)}</div>'}
-    </div>
-    <div class="metric-card saldo-akhir">
-        <div class="metric-label">Saldo Akhir</div>
-        <div class="metric-value saldo-akhir">{fmt_rp(se)}</div>
-        <div class="metric-sub">Dari file asli</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    '<div class="metric-grid">'
+    '<div class="metric-card saldo-awal">'
+    '<div class="metric-label">Saldo Awal</div>'
+    '<div class="metric-value">' + fmt_rp(sa) + '</div>'
+    '<div class="metric-sub">Dari file asli</div>'
+    '</div>'
+    '<div class="metric-card kredit">'
+    '<div class="metric-label">Total Masuk ' + badge + '</div>'
+    '<div class="metric-value kredit">' + fmt_rp(cr_total) + '</div>'
+    '<div class="metric-sub">' + str(cr_cnt) + ' transaksi kredit</div>'
+    + cr_asli_html +
+    '</div>'
+    '<div class="metric-card debet">'
+    '<div class="metric-label">Total Keluar ' + badge + '</div>'
+    '<div class="metric-value debet">' + fmt_rp(db_total) + '</div>'
+    '<div class="metric-sub">' + str(db_cnt) + ' transaksi debet</div>'
+    + db_asli_html +
+    '</div>'
+    '<div class="metric-card saldo-akhir">'
+    '<div class="metric-label">Saldo Akhir</div>'
+    '<div class="metric-value saldo-akhir">' + fmt_rp(se) + '</div>'
+    '<div class="metric-sub">Dari file asli</div>'
+    '</div>'
+    '</div>',
+    unsafe_allow_html=True
+)
 
 # ── Active filter chips ──
 if is_filtered:
