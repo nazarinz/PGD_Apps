@@ -33,8 +33,112 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .stDownloadButton > button { background:#1a4a2a !important; color:#4caf7d !important; border:1px solid #2a6a3a !important; border-radius:8px !important; font-family:'DM Mono',monospace !important; }
 hr { border-color:#2a3040 !important; }
 [data-testid="stExpander"] { background:#151921 !important; border:1px solid #2a3040 !important; border-radius:8px !important; }
+.section-label { font-family:'DM Mono',monospace; font-size:0.7rem; color:#3a5a7a; letter-spacing:1px; text-transform:uppercase; padding:6px 12px; background:#0d1520; border-left:2px solid #2a4060; margin-bottom:0; }
 </style>
 """, unsafe_allow_html=True)
+
+# ── CONSTANTS ─────────────────────────────────
+
+COUNTRY_NORM = {
+    'usa': 'United States', 'united states': 'United States', 'us': 'United States',
+    'uk': 'United Kingdom', 'united kingdom': 'United Kingdom', 'united': 'United Kingdom',
+    'germany': 'Germany', 'deutschland': 'Germany',
+    'italy': 'Italy', 'italia': 'Italy',
+    'france': 'France', 'netherlands': 'Netherlands', 'spain': 'Spain',
+    'singapore': 'Singapore', 'malaysia': 'Malaysia', 'vietnam': 'Vietnam',
+    'india': 'India', 'taiwan': 'Taiwan', 'indonesia': 'Indonesia',
+    'macao': 'Macao', 'china': 'China', 'japan': 'Japan', 'korea': 'Korea',
+    'thailand': 'Thailand', 'philippines': 'Philippines',
+    'australia': 'Australia', 'new zealand': 'New Zealand',
+    'canada': 'Canada', 'mexico': 'Mexico', 'brazil': 'Brazil',
+    'austria': 'Austria', 'belgium': 'Belgium', 'switzerland': 'Switzerland',
+    'poland': 'Poland', 'turkey': 'Turkey', 'ireland': 'Ireland',
+    'portugal': 'Portugal', 'sweden': 'Sweden', 'norway': 'Norway',
+    'denmark': 'Denmark', 'finland': 'Finland', 'greece': 'Greece',
+    'hungary': 'Hungary', 'romania': 'Romania',
+}
+
+# Multi-word countries — checked first as substrings
+MULTI_WORD_COUNTRIES = ['united kingdom', 'united states', 'new zealand']
+
+# Single-word countries — length > 4 to avoid matching short tokens
+SINGLE_WORD_COUNTRIES = {
+    k: v for k, v in COUNTRY_NORM.items()
+    if ' ' not in k and len(k) > 4 and k not in ('united',)
+}
+
+def normalize_country(raw):
+    if not raw: return None
+    key = str(raw).strip().lower()
+    if key in COUNTRY_NORM:
+        return COUNTRY_NORM[key]
+    for k, v in COUNTRY_NORM.items():
+        if len(k) > 3 and k in key:
+            return v
+    return str(raw).strip().title()
+
+
+# ── COUNTRY DETECTION (Infor) ─────────────────
+#
+# Key insight from PDF structure (page 1):
+#
+#   [ship-to address]        ← e.g. "FORT WORTH, TX, 76177"
+#   [COUNTRY]                ← e.g. "United states"   ← THIS is what we want
+#   adidas                   ← customs consignee, always present
+#   International
+#   Trading AG
+#   Ocean or as...
+#
+# The ship-to country ALWAYS appears immediately before "adidas international
+# trading ag" in the extracted text. We just look for the last country name
+# in the text that comes before that anchor phrase.
+#
+def extract_shipto_country(text):
+    t = text.lower()
+
+    # KEY INSIGHT from actual pdfplumber output:
+    # Multi-column PDF table causes character interleaving, e.g.:
+    #   "a d i d a s O cean or as" — spaces between letters from adjacent columns!
+    # So searching for "ocean or as" or "adidas international trading" is UNRELIABLE.
+    #
+    # What IS reliable: "PO Line Details" is a section header below the table,
+    # outside the multi-column area, so it always appears clean in extracted text.
+    #
+    # Actual extracted text structure (page 1):
+    #   ...FORT WORTH, TX, 76177
+    #   United states          ← ship-to country, last clean line before section header
+    #   PO Line Details        ← reliable anchor ✓
+    #
+    # Strategy: find "po line details", look 300 chars before it,
+    # pick the LAST (rightmost) country name = ship-to country.
+
+    anchor_pos = t.find('po line details')
+    if anchor_pos == -1:
+        m = re.search(r'po line\s+details', t)
+        anchor_pos = m.start() if m else -1
+    if anchor_pos == -1:
+        return None
+
+    window_start = max(0, anchor_pos - 300)
+    window = t[window_start:anchor_pos]
+
+    # Build country pattern: multi-word first (longest first to avoid partial match)
+    all_candidates = sorted(
+        list(MULTI_WORD_COUNTRIES) + list(SINGLE_WORD_COUNTRIES.keys()),
+        key=len, reverse=True
+    )
+    country_pattern = '|'.join(r'\b' + re.escape(c) + r'\b' for c in all_candidates)
+
+    best_pos = -1
+    best_country = None
+    for m in re.finditer(country_pattern, window):
+        if m.start() > best_pos:
+            best_pos = m.start()
+            raw = m.group(0).strip()
+            best_country = COUNTRY_NORM.get(raw, raw.title())
+
+    return best_country
+
 
 # ── PARSERS ──────────────────────────────────
 
@@ -61,12 +165,39 @@ def split_infor_pages(pdf_bytes):
 
 def parse_infor_block(text, filename):
     data = {'filename': filename}
+
+    # PO Number
     header = text[:600]
     m = re.search(r'Phone: \+41.*?(\d{10})\s+\d+', header, re.DOTALL)
     if not m: m = re.search(r'SWITZERLAND\s+(\d{10})\s+\d+', text)
     data['po_number'] = m.group(1) if m else None
+
+    # Article Number
+    m = re.search(r'Article Number\s*\n\S+\s+\S+\s+(\S+)', text)
+    data['article_number'] = m.group(1).strip() if m else None
+
+    # Short Description + GPS Customer Number (same line)
+    m = re.search(r'Gps Customer Number\s*\n(.+?)\s+(\d{6})\s*\n', text)
+    data['short_desc']   = m.group(1).strip() if m else None
+    data['gps_customer'] = m.group(2) if m else None
+
+    # Ship Mode
+    m = re.search(r'(Ocean|Air) or as', text)
+    data['ship_mode'] = m.group(1) if m else None
+
+    # Latest Date
+    m = re.search(r'Ocean or as\s+(\d{4}-\d{2}-\d{2})', text)
+    if not m: m = re.search(r'(\d{4}-\d{2}-\d{2})\s+ID\w+\s+\d{3}', text)
+    data['latest_date'] = m.group(1) if m else None
+
+    # Destination Country — zone-based rfind approach
+    data['dest_country'] = extract_shipto_country(text)
+
+    # Total Qty
     m = re.search(r'Total Item Quantity\s+([\d.]+)', text)
     data['total_qty'] = float(m.group(1)) if m else None
+
+    # Qty by Sourcing/Mfg Size
     qty = {}
     for m in re.finditer(r'1\s+\d+\s+\S+\s+(?:\S+\s+)?([\d\-]+)\s+([\d\-]+)\s+\S+\s+T1\s+\d{10,13}\s+([\d.]+)', text):
         qty[m.group(2).strip()] = float(m.group(3))
@@ -82,8 +213,36 @@ def parse_infor_pdf(pdf_bytes, filename):
 
 def parse_sap_page(text, filename):
     data = {'filename': filename}
+
+    # PO Number
     m = re.search(r'Cust\.PO\s*:\s*(\d+)', text)
     data['po_number'] = m.group(1) if m else None
+
+    # Article / Cust.Mat
+    m = re.search(r'Cust\.Mat:\s*(\S+)', text)
+    data['cust_mat'] = m.group(1) if m else None
+
+    # Model name
+    m = re.search(r'Model\s*:\s*(.+?)(?:\s{2,}|Arr\.Po)', text)
+    data['model'] = m.group(1).strip() if m else None
+
+    # Ship-to code (number in parentheses)
+    m = re.search(r'Ship-to:\s*.+?\((\d+)\)', text)
+    data['ship_to_code'] = m.group(1) if m else None
+
+    # Destination country
+    m = re.search(r'Coun:\s*(\S+)', text)
+    data['country'] = m.group(1) if m else None
+
+    # Ship Type
+    m = re.search(r'ShipType:\s*\d+\s+(\w+)', text)
+    data['ship_type'] = m.group(1) if m else None
+
+    # PODD
+    m = re.search(r'PODD\s*:\s*(\d{4}/\d{2}/\d{2})', text)
+    data['podd'] = m.group(1).replace('/', '-') if m else None
+
+    # Qty by size (SSP + MSP with continuation lines)
     lines = text.split('\n')
     merged = []
     for line in lines:
@@ -125,26 +284,76 @@ def compare_po(infor, sap_list):
         sap_filenames.append(sap['filename'])
     total_sap = sum(merged_sap_qty.values())
     sap_str = ', '.join(dict.fromkeys(sap_filenames))
+    sap0 = sap_list[0] if sap_list else {}
 
-    def row(field, iv, sv, size=''):
+    def hrow(field, iv, sv, section='header', custom_ok=None):
+        if custom_ok is not None:
+            ok = custom_ok
+        else:
+            ok = bool(iv and sv and str(iv).strip().lower() == str(sv).strip().lower())
+        return {
+            'PO Number': po, 'Infor File': infor['filename'], 'SAP File(s)': sap_str,
+            'Field': field, 'Section': section,
+            'Infor Value': str(iv) if iv else '-',
+            'SAP Value':   str(sv) if sv else '-',
+            'Status': "✅ MATCH" if ok else "❌ MISMATCH", 'Size': ''
+        }
+
+    def qrow(field, iv, sv, size=''):
         try: ok = abs(float(iv or 0) - float(sv or 0)) < 0.01
         except: ok = False
-        return {'PO Number': po, 'Infor File': infor['filename'], 'SAP File(s)': sap_str,
-                'Field': field, 'Infor Value': iv if iv is not None else '-',
-                'SAP Value': sv if sv is not None else '-',
-                'Status': "✅ MATCH" if ok else "❌ MISMATCH", 'Size': size}
+        return {
+            'PO Number': po, 'Infor File': infor['filename'], 'SAP File(s)': sap_str,
+            'Field': field, 'Section': 'qty',
+            'Infor Value': iv if iv is not None else '-',
+            'SAP Value':   sv if sv is not None else '-',
+            'Status': "✅ MATCH" if ok else "❌ MISMATCH", 'Size': size
+        }
 
-    rows.append(row("Total Qty (Pairs)", infor.get('total_qty'), total_sap))
-    all_sizes = sorted(set(list(infor['qty_by_size'].keys()) + list(merged_sap_qty.keys())),
-                       key=lambda x: float(x.replace('-', '.5')) if re.match(r'^\d+\-?$', x) else 99)
+    # ── 1. Article Number ──────────────────────
+    rows.append(hrow("Article Number", infor.get('article_number'), sap0.get('cust_mat')))
+
+    # ── 2. Model / Short Description ───────────
+    infor_desc = (infor.get('short_desc') or '').upper()
+    sap_model  = (sap0.get('model') or '').strip().upper()
+    model_ok   = bool(sap_model and infor_desc.startswith(sap_model))
+    rows.append(hrow("Model / Short Desc", infor.get('short_desc'), sap0.get('model'), custom_ok=model_ok))
+
+    # ── 3. GPS Customer Code ───────────────────
+    rows.append(hrow("GPS Customer Code", infor.get('gps_customer'), sap0.get('ship_to_code')))
+
+    # ── 4. Destination Country ─────────────────
+    infor_ctr = normalize_country(infor.get('dest_country'))
+    sap_ctr   = normalize_country(sap0.get('country'))
+    ctr_ok    = bool(infor_ctr and sap_ctr and infor_ctr.lower() == sap_ctr.lower())
+    rows.append(hrow("Destination Country", infor_ctr or '-', sap_ctr or '-', custom_ok=ctr_ok))
+
+    # ── 5. Ship Mode ───────────────────────────
+    infor_ship = (infor.get('ship_mode') or '').strip().lower()
+    sap_ship   = (sap0.get('ship_type') or '').strip().lower()
+    ship_ok    = infor_ship in sap_ship or sap_ship in infor_ship
+    rows.append(hrow("Ship Mode", infor.get('ship_mode'), sap0.get('ship_type'), custom_ok=ship_ok))
+
+    # ── 6. Latest Date / PODD ─────────────────
+    rows.append(hrow("Latest Date / PODD", infor.get('latest_date'), sap0.get('podd')))
+
+    # ── 7. Total Qty ───────────────────────────
+    rows.append(qrow("Total Qty (Pairs)", infor.get('total_qty'), total_sap))
+
+    # ── 8. Qty per Size ───────────────────────
+    all_sizes = sorted(
+        set(list(infor['qty_by_size'].keys()) + list(merged_sap_qty.keys())),
+        key=lambda x: float(x.replace('-', '.5')) if re.match(r'^\d+\-?$', x) else 99
+    )
     for size in all_sizes:
-        rows.append(row(f'Qty Size {size}', infor['qty_by_size'].get(size, 0), float(merged_sap_qty.get(size, 0)), size))
+        rows.append(qrow(f'Qty Size {size}', infor['qty_by_size'].get(size, 0), float(merged_sap_qty.get(size, 0)), size))
+
     return rows
 
 # ── EXCEL ────────────────────────────────────
 
 GREEN="C6EFCE"; DGREEN="375623"; RED="FFC7CE"; DRED="9C0006"
-DBLUE="1F3864"; WHITE="FFFFFF"; LGRAY="F2F2F2"
+DBLUE="1F3864"; WHITE="FFFFFF"; LGRAY="F2F2F2"; LBLUE="D6E4F0"
 
 def mf(h): return PatternFill("solid", start_color=h, fgColor=h)
 def fn(bold=False, color="000000", size=10): return Font(bold=bold, color=color, size=size, name="Arial")
@@ -156,6 +365,8 @@ def la(): return Alignment(horizontal='left', vertical='center', wrap_text=True)
 
 def build_excel(all_rows, summary):
     wb = Workbook()
+
+    # ── Summary sheet ──
     ws = wb.active; ws.title = "Summary"
     ws.merge_cells("A1:G1")
     ws["A1"] = "PO COMPARE SUMMARY — adidas Infor vs SAP Carton"
@@ -173,25 +384,38 @@ def build_excel(all_rows, summary):
             elif r%2==0: cell.fill=mf(LGRAY)
     for i,w in enumerate([18,38,45,13,10,13,20],1): ws.column_dimensions[get_column_letter(i)].width=w
     ws.freeze_panes="A3"
+
+    # ── Detail sheet ──
     wd=wb.create_sheet("Detail")
     wd.merge_cells("A1:H1")
     wd["A1"]="PO COMPARE DETAIL — Field by Field"
     wd["A1"].font=fn(True,WHITE,12); wd["A1"].fill=mf(DBLUE); wd["A1"].alignment=ca()
-    for c,h in enumerate(["PO Number","Infor File","SAP File(s)","Field","Infor Value","SAP Value","Status","Size"],1):
+    wd.row_dimensions[1].height = 25
+    hdrs = ["PO Number","Infor File","SAP File(s)","Field","Infor Value","SAP Value","Status","Size"]
+    for c,h in enumerate(hdrs,1):
         cell=wd.cell(2,c,h); cell.font=fn(True,WHITE); cell.fill=mf(DBLUE); cell.alignment=ca(); cell.border=tb()
+
     for r,row in enumerate(all_rows,3):
-        is_ok="MATCH" in row['Status'] and "MIS" not in row['Status']
-        is_err="MISMATCH" in row['Status']
-        for c,key in enumerate(["PO Number","Infor File","SAP File(s)","Field","Infor Value","SAP Value","Status","Size"],1):
-            cell=wd.cell(r,c,row.get(key,''))
+        is_ok  = "MATCH" in row['Status'] and "MIS" not in row['Status']
+        is_err = "MISMATCH" in row['Status']
+        is_header_section = row.get('Section') == 'header'
+
+        for c,key in enumerate(hdrs,1):
+            val = row.get(key,'')
+            if key == 'Section': continue
+            cell=wd.cell(r,c,val)
             cell.border=tb(); cell.alignment=ca() if c in [1,7,8] else la()
             if is_ok and c in [5,6,7]: cell.fill=mf(GREEN)
             if is_ok and c==7: cell.font=fn(True,DGREEN)
             if is_err and c in [5,6,7]: cell.fill=mf(RED)
             if is_err and c==7: cell.font=fn(True,DRED)
+            if is_header_section and c in [4] and not is_ok and not is_err:
+                cell.fill=mf(LBLUE)
             if not is_ok and not is_err and r%2==0: cell.fill=mf(LGRAY)
-    for i,w in enumerate([18,38,45,20,15,15,16,10],1): wd.column_dimensions[get_column_letter(i)].width=w
+
+    for i,w in enumerate([18,38,45,22,25,25,16,8],1): wd.column_dimensions[get_column_letter(i)].width=w
     wd.freeze_panes="A3"
+
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf.read()
 
@@ -229,7 +453,7 @@ if run_btn and infor_files and sap_files:
 
     with st.spinner("Parsing PDFs..."):
         for f in infor_files:
-            pdf_bytes = f.read()  # read once, reuse bytes
+            pdf_bytes = f.read()
             pos = parse_infor_pdf(pdf_bytes, f.name)
             log_lines.append(f"[Infor] {f.name} → {len(pos)} PO(s): {[p['po_number'] for p in pos]}")
             for d in pos:
@@ -237,7 +461,7 @@ if run_btn and infor_files and sap_files:
                     infor_by_po[d['po_number']] = d
 
         for f in sap_files:
-            pdf_bytes = f.read()  # read once, reuse bytes
+            pdf_bytes = f.read()
             cartons = parse_sap_pdf(pdf_bytes, f.name)
             log_lines.append(f"[SAP] {f.name} → {len(cartons)} Carton(s): {[c['po_number'] for c in cartons]}")
             for d in cartons:
@@ -263,10 +487,10 @@ if run_btn and infor_files and sap_files:
             'total': len(rows), 'match': mc, 'mismatch': ec,
         }
 
-    # Stats
+    # ── Stats ──
     total_po = len(summary)
-    ok_po = sum(1 for v in summary.values() if v['mismatch'] == 0)
-    err_po = total_po - ok_po
+    ok_po    = sum(1 for v in summary.values() if v['mismatch'] == 0)
+    err_po   = total_po - ok_po
     not_matched = len(no_sap) + len(no_infor)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -278,32 +502,57 @@ if run_btn and infor_files and sap_files:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Warnings — collapsed, ringkas
+    # ── Warnings ──
     if no_sap or no_infor:
-        with st.expander(f"⚠️  {not_matched} PO tidak punya pasangan (klik untuk lihat)"):
+        with st.expander(f"⚠️  {not_matched} PO tidak punya pasangan"):
             if no_sap:
-                st.markdown(f'<div class="warn-box">❌ SAP Carton tidak ditemukan untuk {len(no_sap)} PO:<br>{"  |  ".join(no_sap)}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warn-box">SAP Carton tidak ditemukan untuk {len(no_sap)} PO:<br>{"  |  ".join(no_sap)}</div>', unsafe_allow_html=True)
             if no_infor:
-                st.markdown(f'<div class="warn-box">❌ Infor PO tidak ditemukan untuk {len(no_infor)} PO:<br>{"  |  ".join(no_infor)}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warn-box">Infor PO tidak ditemukan untuk {len(no_infor)} PO:<br>{"  |  ".join(no_infor)}</div>', unsafe_allow_html=True)
 
-    # Results
+    # ── Results ──
     st.markdown("### Results")
     for po, info in summary.items():
         ok = info['mismatch'] == 0
-        label = f"✅ PO {po}  —  {info['total']} fields all match" if ok else f"❌ PO {po}  —  {info['mismatch']} MISMATCH dari {info['total']} fields"
+        label = f"✅ PO {po}  —  all {info['total']} fields match" if ok else f"❌ PO {po}  —  {info['mismatch']} MISMATCH dari {info['total']} fields"
         with st.expander(label):
-            st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:0.72rem;color:#6b7280;margin-bottom:10px">Infor: {info["infor_file"]}<br>SAP: {info["sap_files"]}</div>', unsafe_allow_html=True)
-            table = '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;font-family:DM Mono,monospace"><thead><tr style="background:#1a2030;color:#6b8aaa"><th style="padding:8px 12px;text-align:left;border-bottom:1px solid #2a3040">Field</th><th style="padding:8px 12px;text-align:right;border-bottom:1px solid #2a3040">Infor</th><th style="padding:8px 12px;text-align:right;border-bottom:1px solid #2a3040">SAP</th><th style="padding:8px 12px;text-align:center;border-bottom:1px solid #2a3040">Status</th></tr></thead><tbody>'
-            for row in [r for r in all_rows if r['PO Number'] == po]:
-                is_ok  = "MATCH" in row['Status'] and "MIS" not in row['Status']
-                is_err = "MISMATCH" in row['Status']
-                bg = "#0d1e10" if is_ok else ("#1e0d0d" if is_err else "transparent")
-                st_html = '<span style="color:#4caf7d">✅</span>' if is_ok else '<span style="color:#f47171">❌ MISMATCH</span>'
-                table += f'<tr style="background:{bg};border-bottom:1px solid #1a2030"><td style="padding:7px 12px;color:#a8b8d0">{row["Field"]}</td><td style="padding:7px 12px;text-align:right;color:#e0e8f0">{row["Infor Value"]}</td><td style="padding:7px 12px;text-align:right;color:#e0e8f0">{row["SAP Value"]}</td><td style="padding:7px 12px;text-align:center">{st_html}</td></tr>'
-            table += '</tbody></table>'
-            st.markdown(table, unsafe_allow_html=True)
+            st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:0.72rem;color:#6b7280;margin-bottom:12px">Infor: {info["infor_file"]}<br>SAP&nbsp;&nbsp;: {info["sap_files"]}</div>', unsafe_allow_html=True)
 
-    # Log
+            po_rows = [r for r in all_rows if r['PO Number'] == po]
+            header_rows = [r for r in po_rows if r.get('Section') == 'header']
+            qty_rows    = [r for r in po_rows if r.get('Section') == 'qty']
+
+            def render_table(rows_subset):
+                t = '<table style="width:100%;border-collapse:collapse;font-size:0.8rem;font-family:DM Mono,monospace">'
+                t += '<thead><tr style="background:#1a2030;color:#6b8aaa">'
+                t += '<th style="padding:8px 12px;text-align:left;border-bottom:1px solid #2a3040;width:30%">Field</th>'
+                t += '<th style="padding:8px 12px;text-align:left;border-bottom:1px solid #2a3040">Infor</th>'
+                t += '<th style="padding:8px 12px;text-align:left;border-bottom:1px solid #2a3040">SAP</th>'
+                t += '<th style="padding:8px 12px;text-align:center;border-bottom:1px solid #2a3040;width:120px">Status</th>'
+                t += '</tr></thead><tbody>'
+                for row in rows_subset:
+                    is_ok  = "MATCH" in row['Status'] and "MIS" not in row['Status']
+                    is_err = "MISMATCH" in row['Status']
+                    bg = "#0d1e10" if is_ok else ("#1e0d0d" if is_err else "transparent")
+                    st_html = '<span style="color:#4caf7d">✅ MATCH</span>' if is_ok else '<span style="color:#f47171">❌ MISMATCH</span>'
+                    t += f'<tr style="background:{bg};border-bottom:1px solid #1a2030">'
+                    t += f'<td style="padding:7px 12px;color:#7a9ab8">{row["Field"]}</td>'
+                    t += f'<td style="padding:7px 12px;color:#e0e8f0">{row["Infor Value"]}</td>'
+                    t += f'<td style="padding:7px 12px;color:#e0e8f0">{row["SAP Value"]}</td>'
+                    t += f'<td style="padding:7px 12px;text-align:center">{st_html}</td>'
+                    t += '</tr>'
+                t += '</tbody></table>'
+                return t
+
+            if header_rows:
+                st.markdown('<div class="section-label">📋 Header Fields</div>', unsafe_allow_html=True)
+                st.markdown(render_table(header_rows), unsafe_allow_html=True)
+
+            if qty_rows:
+                st.markdown('<div class="section-label" style="margin-top:12px">📦 Quantity</div>', unsafe_allow_html=True)
+                st.markdown(render_table(qty_rows), unsafe_allow_html=True)
+
+    # ── Log ──
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📋 Processing Log"):
         log_html = "<br>".join(
@@ -312,7 +561,7 @@ if run_btn and infor_files and sap_files:
         )
         st.markdown(f'<div class="log-box">{log_html}</div>', unsafe_allow_html=True)
 
-    # Download
+    # ── Download ──
     st.markdown("<br>", unsafe_allow_html=True)
     if all_rows:
         excel_bytes = build_excel(all_rows, summary)
