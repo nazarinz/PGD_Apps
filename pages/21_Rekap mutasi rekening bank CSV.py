@@ -125,50 +125,60 @@ def parse_date_dd_mm_yyyy(keterangan: str) -> str:
 def parse_name(keterangan: str, tipe: str) -> str:
     k = keterangan.strip()
 
-    # DEBET → ambil nomor rekening tujuan (angka panjang di akhir string)
+    # ── DEBET → nomor rekening tujuan (angka panjang di akhir) ──
     if tipe == 'DB':
         m = re.search(r'(\d{8,})\s*$', k)
-        if m:
-            return m.group(1)
-        # Cari setelah pola COD/AREA
-        m2 = re.search(r'(?:AREA\d+\s+COD|/)\s+[-\s]+(\d+)\s*$', k)
-        if m2:
-            return m2.group(1)
+        if m: return m.group(1)
         return k[:40]
 
-    # BI-FAST CR
+    # ── BI-FAST CR ──
     m = re.search(r'TANGGAL\s*:\S+\s+TRANSFER\s+DR\s+\d+\s+(.+)', k, re.I)
     if m: return m.group(1).strip()
     m = re.search(r'TRANSFER\s+DR\s+\d+\s+(.+)', k, re.I)
     if m: return m.group(1).strip()
 
-    # ESPAY / BI-FAST FinTech
-    m = re.search(r'TRFDN-([A-Z][A-Z\s]+?)(?:\s{2,}|ESPAY|$)', k, re.I)
+    # ── ESPAY / FinTech → TRFDN-NAMA ──
+    m = re.search(r'TRFDN-([A-Z][A-Z\s\.]+?)(?:\s{2,}|ESPAY|$)', k, re.I)
     if m: return m.group(1).strip()
 
-    # GoPay
+    # ── GoPay ──
     m = re.search(r'GoPay Bank Transfe\S*\s+(.+)', k, re.I)
     if m: return m.group(1).strip()
 
-    # AIRPAY
+    # ── AIRPAY ──
     if re.search(r'AIRPAY', k, re.I): return 'AIRPAY INTERNATIONAL'
 
-    # E-Banking biasa: ambil nama CAPSLOCK setelah double-space (nama bersih di akhir)
-    m = re.search(r'\s{2,}([A-Z][A-Z\s\.\',\-]+?)\s*$', k)
-    if m:
-        candidate = m.group(1).strip()
-        if not re.match(r'^\d+$', candidate) and len(candidate) > 2:
-            return candidate
+    # ── Hapus prefix angka (misal "1072360.00") ──
+    cleaned = re.sub(r'^\d+\.\d+', '', k).strip()
 
-    # Fallback: strip prefix angka.angka dari keterangan
-    clean = re.sub(r'^\d+(?:\.\d+)?', '', k).strip()
-    parts = re.split(r'\s{2,}', clean)
-    if len(parts) >= 2:
-        last = parts[-1].strip()
-        if last and not re.match(r'^\d+$', last):
-            return last
-    clean2 = re.sub(r'^\d+(?:\.\d+)?', '', clean).strip()
-    return clean2[:40] if clean2 else k[:40]
+    # ── Ambil nama rekening resmi: split pakai 2+ spasi, ambil segmen terakhir ──
+    # "COD DIAN RISDIAN  DIAN RISDIAN"     → last = "DIAN RISDIAN"
+    # "DFOD+COD          M.SYAIFUDIN YUSUF"→ last = "M.SYAIFUDIN YUSUF"
+    segments  = re.split(r'\s{2,}', cleaned.strip())
+    last_seg  = segments[-1].strip() if segments else cleaned
+    caps      = re.findall(r"[A-Z][A-Z\s\.\',\-]+", last_seg)
+    valid_caps= [b.strip() for b in caps if len(b.strip()) >= 2 and not re.match(r'^\d+$', b.strip())]
+    caps_name = valid_caps[-1] if valid_caps else (last_seg if last_seg else None)
+
+    # ── COD: ambil nama lowercase yang BERBEDA dari pemilik rekening ──
+    # "Cod m abdul rohmanSITI NURCHALIZA"       → "M Abdul Rohman"  (beda orang)
+    # "setoran cod fajar zulfikri  FAJAR ZULFIKRI"→ "FAJAR ZULFIKRI" (orang sama)
+    # "cod catur         CATUR ALUNG WAHYUD"    → "CATUR ALUNG WAHYUD" (1 kata → skip)
+    cod_m = re.search(r'\bcod\b', cleaned, re.I)
+    if cod_m:
+        rest   = cleaned[cod_m.end():].lstrip()
+        name_m = re.match(r'([a-z][a-z ]+?)(?=\s{2,}|[A-Z]|\s[A-Z])', rest)
+        if name_m:
+            candidate = name_m.group(1).strip()
+            if ' ' in candidate and len(candidate) >= 4:
+                if caps_name:
+                    lower_w = {w for w in candidate.lower().split() if len(w) > 1}
+                    caps_w  = {w for w in caps_name.lower().split()  if len(w) > 1}
+                    if lower_w & caps_w:   # kata sama → orang sama → pakai CAPS
+                        return caps_name
+                return candidate.title()  # orang beda → kembalikan nama COD
+
+    return caps_name if caps_name else cleaned[:40]
 
 
 def get_jenis(keterangan: str) -> str:
