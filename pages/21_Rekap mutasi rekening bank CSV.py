@@ -190,51 +190,110 @@ def get_jenis(keterangan: str) -> str:
 
 
 def parse_csv(content: str):
+    """
+    Parse BCA e-banking CSV export. Robust terhadap variasi format:
+    - Encoding BOM/UTF-8/latin-1
+    - Baris diawali tanda kutip tunggal: 'PEND,...
+    - Separator koma, dengan field numerik pakai titik desimal
+    - Kolom: Tanggal | Keterangan | Cabang | Jumlah | | Saldo  (atau variasi)
+    """
+    # Bersihkan BOM jika ada
+    content = content.lstrip('\ufeff').lstrip('\ufffd')
+
     lines = [l.strip() for l in content.splitlines() if l.strip()]
     summary = {}
     transactions = []
-    seq = 0  # original sequence number
+    seq = 0
+
+    # ── Debug: kumpulkan baris yang tidak terparsing ──
+    skipped = []
 
     for line in lines:
-        low = line.lower()
-        if low.startswith('saldo awal'):
-            try: summary['saldo_awal'] = float(line.split(',')[-1].replace("'","").strip())
-            except: pass
-        elif low.startswith('kredit,'):
-            try: summary['kredit'] = float(line.split(',')[-1].replace("'","").strip())
-            except: pass
-        elif low.startswith('debet,'):
-            try: summary['debet'] = float(line.split(',')[-1].replace("'","").strip())
-            except: pass
-        elif low.startswith('saldo akhir'):
-            try: summary['saldo_akhir'] = float(line.split(',')[-1].replace("'","").strip())
-            except: pass
-        elif low.startswith("'pend") or low.startswith("pend"):
-            seq += 1
-            clean = line.lstrip("'")
-            parts = clean.split(',')
-            if len(parts) < 5: continue
-            keterangan = parts[1]
-            try:
-                saldo  = float(parts[-1])
-                tipe   = parts[-2].strip()
-                jumlah = float(parts[-3])
-                date_str = parse_date_dd_mm_yyyy(keterangan)
-                nama   = parse_name(keterangan, tipe)
-                jenis  = get_jenis(keterangan)
-                transactions.append({
-                    'No_Asli': seq,
-                    'Tanggal': date_str,
-                    'Jenis': jenis,
-                    'Pengirim/Penerima': nama,
-                    'Tipe': tipe,
-                    'Jumlah': jumlah,
-                    'Saldo': saldo,
-                })
-            except (ValueError, IndexError):
-                continue
+        low = line.lower().lstrip("'").strip()
 
-    return transactions, summary
+        # ── Footer summary ──
+        if low.startswith('saldo awal'):
+            try: summary['saldo_awal'] = float(re.sub(r'[^\d.]', '', line.split(',')[-1]))
+            except: pass
+            continue
+        if low.startswith('kredit,') or re.match(r'^kredit\s*,', low):
+            try: summary['kredit'] = float(re.sub(r'[^\d.]', '', line.split(',')[-1]))
+            except: pass
+            continue
+        if low.startswith('debet,') or re.match(r'^debet\s*,', low):
+            try: summary['debet'] = float(re.sub(r'[^\d.]', '', line.split(',')[-1]))
+            except: pass
+            continue
+        if low.startswith('saldo akhir'):
+            try: summary['saldo_akhir'] = float(re.sub(r'[^\d.]', '', line.split(',')[-1]))
+            except: pass
+            continue
+
+        # ── Skip header baris ──
+        if low.startswith('tanggal') or low.startswith('date'):
+            continue
+
+        # ── Transaksi: harus ada "pend" di awal (dengan atau tanpa tanda kutip) ──
+        stripped = line.lstrip("'\"").strip()
+        if not stripped.upper().startswith('PEND'):
+            skipped.append(line[:80])
+            continue
+
+        # ── Split dengan koma, tapi perlu hati-hati karena keterangan bisa ada koma ──
+        # Format BCA: PEND , KETERANGAN , CABANG , JUMLAH , CR/DB , SALDO
+        # Kolom ke-1 (0-idx): PEND
+        # Kolom ke-2: keterangan (panjang, bisa ada koma internal)
+        # Kolom terakhir: saldo
+        # Kolom -2: CR atau DB
+        # Kolom -3: jumlah (float)
+        # Kolom -4: bisa kosong (kolom dummy) atau jumlah lagi
+
+        parts = stripped.split(',')
+        if len(parts) < 5:
+            skipped.append(line[:80])
+            continue
+
+        try:
+            # Cari saldo di akhir (float > 0 biasanya besar)
+            saldo_raw = parts[-1].strip().replace("'", "")
+            saldo = float(saldo_raw)
+
+            # Tipe: CR atau DB
+            tipe = parts[-2].strip().upper()
+            if tipe not in ('CR', 'DB'):
+                # Mungkin ada kolom kosong ekstra, coba geser
+                tipe = parts[-3].strip().upper()
+                if tipe not in ('CR', 'DB'):
+                    skipped.append(f"[no CR/DB] {line[:80]}")
+                    continue
+                jumlah = float(re.sub(r'[^\d.]', '', parts[-4].strip()))
+            else:
+                jumlah = float(re.sub(r'[^\d.]', '', parts[-3].strip()))
+
+            # Keterangan = semua bagian di antara kolom pertama dan kolom numerik terakhir
+            # Kolom pertama = PEND, lalu keterangan bisa multi-kolom
+            # Kita ambil parts[1] sebagai keterangan utama
+            keterangan = parts[1].strip()
+
+            seq += 1
+            date_str = parse_date_dd_mm_yyyy(keterangan)
+            nama     = parse_name(keterangan, tipe)
+            jenis    = get_jenis(keterangan)
+
+            transactions.append({
+                'No_Asli': seq,
+                'Tanggal': date_str,
+                'Jenis': jenis,
+                'Pengirim/Penerima': nama,
+                'Tipe': tipe,
+                'Jumlah': jumlah,
+                'Saldo': saldo,
+            })
+        except Exception:
+            skipped.append(line[:80])
+            continue
+
+    return transactions, summary, skipped
 
 
 # ═══════════════════════════════════════════════
@@ -487,10 +546,19 @@ raw   = uploaded.read().decode('utf-8', errors='replace')
 fname = uploaded.name
 
 with st.spinner("Memproses data mutasi..."):
-    transactions, summary = parse_csv(raw)
+    transactions, summary, skipped = parse_csv(raw)
 
 if not transactions:
     st.error("⚠️ Tidak ada transaksi yang berhasil diparsing. Pastikan format CSV sesuai.")
+    # Tampilkan debug info agar bisa diagnosa
+    with st.expander("🔍 Debug — Lihat isi file (10 baris pertama)"):
+        lines_preview = [l for l in raw.splitlines() if l.strip()][:15]
+        for i, l in enumerate(lines_preview):
+            st.code(f"[{i}] {l}", language=None)
+    if skipped:
+        with st.expander(f"⚠️ {len(skipped)} baris yang dilewati"):
+            for s in skipped[:20]:
+                st.code(s, language=None)
     st.stop()
 
 df_raw = pd.DataFrame(transactions)
