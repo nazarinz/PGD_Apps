@@ -1,5 +1,5 @@
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v11 FIX Working Status)
+# 8_Tooling Sizelist.py — PGD Apps (v12)
 # ==========================================
 import re
 import pandas as pd
@@ -7,8 +7,16 @@ import numpy as np
 import streamlit as st
 from io import BytesIO
 
+# ================= Config =================
+REQUIRED_COLS = ["Sales Order", "Document Date", "Article", "Order Quantity",
+                 "CRD", "PD", "LPD", "Working Status"]
+ARTICLE_PREFIXES = ("FG", "HS")
+WS_NEW_VALUE = 10
+DATE_COLS = ["Document Date", "LPD", "CRD", "PD"]
+
+# ==========================================
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v11 FIXED)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v12)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -16,7 +24,6 @@ if uploaded is None:
     st.info("⬆️ Silakan upload file Excel terlebih dahulu sebelum melanjutkan.")
     st.stop()
 
-# Panduan untuk user awam
 st.markdown("""
 ### 📘 Format File Excel Wajib
 Pastikan file memiliki kolom berikut:
@@ -34,300 +41,269 @@ Pastikan file memiliki kolom berikut:
 | **UK_***            | Kolom ukuran (size breakdown)                               |
 """)
 
-# Baca Excel
-df_sizelist = pd.read_excel(uploaded)
+# ================= Baca & Validasi =================
+df_raw = pd.read_excel(uploaded)
 
-# ================= 🔍 DEBUG MODE 1: Raw Data Info =================
+missing_cols = [c for c in REQUIRED_COLS if c not in df_raw.columns]
+if missing_cols:
+    st.error(f"❌ Kolom berikut tidak ditemukan di file: **{', '.join(missing_cols)}**")
+    st.stop()
+
 with st.expander("🔍 DEBUG 1: Info Data Mentah (sebelum filter)", expanded=False):
-    st.write(f"**Total rows awal:** {len(df_sizelist)}")
-    st.write(f"**Kolom yang ada:** {list(df_sizelist.columns)}")
-    
-    if "Article" in df_sizelist.columns:
-        st.write("**Sample Article:**")
-        st.write(df_sizelist["Article"].head(10).tolist())
-    
-    if "Working Status" in df_sizelist.columns:
-        st.write("**Working Status unik (raw type):**")
-        st.write(f"Type: {df_sizelist['Working Status'].dtype}")
-        st.write(df_sizelist["Working Status"].value_counts())
-    
-    if "Document Date" in df_sizelist.columns:
-        st.write("**Document Date sample:**")
-        st.write(df_sizelist["Document Date"].head(10))
+    st.write(f"**Total rows awal:** {len(df_raw)}")
+    st.write(f"**Kolom:** {list(df_raw.columns)}")
+    st.write("**Sample Article:**", df_raw["Article"].head(10).tolist())
+    st.write("**Working Status (value counts):**")
+    st.write(df_raw["Working Status"].value_counts())
+    st.write("**Document Date sample:**")
+    st.write(df_raw["Document Date"].head(10))
 
-# Filter Article hanya FG / HS
-if "Article" in df_sizelist.columns:
-    before_filter = len(df_sizelist)
-    df_sizelist = df_sizelist[df_sizelist["Article"].astype(str).str.startswith(("FG", "HS"))]
-    after_filter = len(df_sizelist)
-    st.info(f"✅ Filter Article FG/HS: {before_filter} rows → {after_filter} rows")
+# Filter Article FG / HS
+before = len(df_raw)
+df = df_raw[df_raw["Article"].astype(str).str.startswith(ARTICLE_PREFIXES)].copy()
+st.info(f"✅ Filter Article {'/'.join(ARTICLE_PREFIXES)}: {before} rows → {len(df)} rows")
 
-# Input tambahan dari user
+if df.empty:
+    st.error("❌ Tidak ada data setelah filter Article. Periksa kolom Article di file kamu.")
+    st.stop()
+
+# ================= Input Eksekusi =================
 st.subheader("⚙️ Pengaturan Eksekusi")
 new_order_date = st.date_input("Tanggal New Order terakhir *wajib diisi*", value=None)
-cancel_sos_input = st.text_area("Daftar Sales Order Cancel (pisahkan dengan koma):", placeholder="contoh: 10897552, 10896721")
 
-if st.button("🚀 Execute Generate"):
-    if not new_order_date:
-        st.error("❌ Silakan isi tanggal New Order terlebih dahulu sebelum mengeksekusi.")
-        st.stop()
+cancel_sos_input = st.text_area(
+    "Daftar Sales Order Cancel (pisahkan dengan koma ATAU baris baru):",
+    placeholder="contoh:\n11184283\n11185888\n11327194\natau: 11184283, 11185888, 11327194"
+)
 
-    NEW_ORDER_DATE = pd.to_datetime(new_order_date)
-    cancel_sos = [s.strip() for s in cancel_sos_input.split(",") if s.strip()]
+if not st.button("🚀 Execute Generate"):
+    st.stop()
 
-    st.success(f"✅ NEW_ORDER_DATE yang digunakan: **{NEW_ORDER_DATE.strftime('%Y-%m-%d')}**")
-    if cancel_sos:
-        st.warning(f"⚠️ Cancel SO yang akan ditandai: {', '.join(cancel_sos)}")
+if not new_order_date:
+    st.error("❌ Silakan isi tanggal New Order terlebih dahulu.")
+    st.stop()
 
-    # ================= Normalisasi tanggal =================
-    for col in ["Document Date", "LPD", "CRD", "PD"]:
-        if col in df_sizelist.columns:
-            df_sizelist[col] = pd.to_datetime(df_sizelist[col], errors="coerce")
+NEW_ORDER_DATE = pd.to_datetime(new_order_date)
 
-    # ================= 🔍 DEBUG MODE 2: Sebelum Remark =================
-    with st.expander("🔍 DEBUG 2: Kondisi Sebelum Remark Dibuat", expanded=True):
-        st.write(f"**NEW_ORDER_DATE:** {NEW_ORDER_DATE}")
-        
-        if "Document Date" in df_sizelist.columns:
-            st.write("**Document Date unik:**")
-            st.write(df_sizelist["Document Date"].dropna().unique())
-        
-        if "LPD" in df_sizelist.columns:
-            lpd_null_count = df_sizelist["LPD"].isna().sum()
-            st.write(f"**LPD kosong (null):** {lpd_null_count} dari {len(df_sizelist)} rows")
-        
-        if "Working Status" in df_sizelist.columns:
-            st.write("**Working Status (raw type dan unique values):**")
-            st.write(f"Type: {df_sizelist['Working Status'].dtype}")
-            ws_unique = df_sizelist["Working Status"].unique()
-            st.write(f"Unique values: {ws_unique}")
-            
-            # Test konversi
-            st.write("**Test konversi Working Status:**")
-            ws_test = df_sizelist["Working Status"].head(5)
-            for idx, val in ws_test.items():
-                as_float = float(val) if pd.notna(val) else None
-                st.write(f"  - Raw: `{val}` (type: {type(val).__name__}) | as float: {as_float} | == 10: {as_float == 10 if as_float else False}")
+# ✅ FIX: Split koma DAN newline — support paste multi-baris
+cancel_sos: list[str] = [s.strip() for s in re.split(r'[,\n\r]+', cancel_sos_input) if s.strip()]
 
-        # Tampilkan detail per row
-        st.write("### 📋 Detail Kondisi Per Row (Sample 20 rows pertama):")
-        
-        # PERBAIKAN: Konversi Working Status ke numeric
-        ws_numeric = pd.to_numeric(df_sizelist.get("Working Status", ""), errors='coerce').fillna(-1)
-        
-        debug_check = pd.DataFrame({
-            'Sales Order': df_sizelist['Sales Order'],
-            'Doc Date': df_sizelist['Document Date'],
-            'Doc >= NEW?': df_sizelist["Document Date"] >= NEW_ORDER_DATE,
-            'LPD': df_sizelist["LPD"] if "LPD" in df_sizelist.columns else None,
-            'LPD null?': df_sizelist["LPD"].isna() if "LPD" in df_sizelist.columns else None,
-            'Working Status (raw)': df_sizelist.get("Working Status", ""),
-            'WS numeric': ws_numeric,
-            'WS == 10?': ws_numeric == 10,
+st.success(f"✅ NEW_ORDER_DATE: **{NEW_ORDER_DATE.strftime('%Y-%m-%d')}**")
+if cancel_sos:
+    st.warning(f"⚠️ Cancel SO yang akan ditandai ({len(cancel_sos)} SO): {', '.join(cancel_sos)}")
+else:
+    st.info("ℹ️ Tidak ada SO Cancel yang dimasukkan.")
+
+# ================= Normalisasi Tanggal =================
+for col in DATE_COLS:
+    if col in df.columns:
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+
+# ================= DEBUG 2 =================
+with st.expander("🔍 DEBUG 2: Kondisi Sebelum Remark Dibuat", expanded=True):
+    st.write(f"**NEW_ORDER_DATE:** {NEW_ORDER_DATE}")
+
+    ws_numeric_debug = pd.to_numeric(df["Working Status"], errors="coerce").fillna(-1)
+    lpd_null = df["LPD"].isna()
+    cond1 = df["Document Date"] >= NEW_ORDER_DATE
+    cond2 = lpd_null
+    cond3 = ws_numeric_debug == WS_NEW_VALUE
+
+    st.write("### 🎯 Ringkasan Kondisi:")
+    st.write(f"- Cond 1 (Doc Date >= NEW): **{cond1.sum()}** rows")
+    st.write(f"- Cond 2 (LPD null): **{cond2.sum()}** rows")
+    st.write(f"- Cond 3 (WS == {WS_NEW_VALUE}): **{cond3.sum()}** rows")
+    st.write(f"- **Akan jadi 'New': {(cond1 & cond2 & cond3).sum()} rows**")
+
+    debug_df = pd.DataFrame({
+        "Sales Order": df["Sales Order"],
+        "Doc Date": df["Document Date"],
+        "Doc >= NEW?": cond1,
+        "LPD": df["LPD"],
+        "LPD null?": cond2,
+        "WS (raw)": df["Working Status"],
+        "WS numeric": ws_numeric_debug,
+        f"WS == {WS_NEW_VALUE}?": cond3,
+    })
+    st.dataframe(debug_df.head(20), use_container_width=True)
+
+# ================= Remark =================
+if "Remark" in df.columns:
+    df.drop(columns=["Remark"], inplace=True)
+
+ws_numeric = pd.to_numeric(df["Working Status"], errors="coerce").fillna(-1)
+remark_values = np.where(
+    (df["Document Date"] >= NEW_ORDER_DATE)
+    & (df["LPD"].isna())
+    & (ws_numeric == WS_NEW_VALUE),
+    "New", "cfm"
+)
+ins_pos = df.columns.get_loc("Document Date") + 1
+df.insert(ins_pos, "Remark", remark_values)
+
+with st.expander("🔍 DEBUG 3: Hasil Remark", expanded=True):
+    st.write("**Distribusi Remark:**")
+    st.write(pd.Series(remark_values).value_counts())
+    st.dataframe(df[["Sales Order", "Document Date", "LPD", "Working Status", "Remark"]].head(20))
+
+# ================= Isi LPD Kosong =================
+if {"CRD", "PD", "LPD"}.issubset(df.columns):
+    mask_lpd_null = df["LPD"].isna()
+    row_min = pd.concat([df["CRD"], df["PD"]], axis=1).min(axis=1, skipna=True)
+    df.loc[mask_lpd_null, "LPD"] = row_min[mask_lpd_null]
+    st.info(f"✅ LPD kosong diisi dengan min(CRD, PD): {mask_lpd_null.sum()} rows")
+
+# ================= Helpers =================
+def insert_after(df: pd.DataFrame, after_col: str, new_col: str, values) -> None:
+    pos = df.columns.get_loc(after_col) + 1
+    df.insert(pos, new_col, values)
+
+def bucket_day(day_series: pd.Series) -> np.ndarray:
+    day = day_series.values
+    return np.where(day >= 24, "30",
+           np.where(day >= 16, "23",
+           np.where(day >= 8,  "15",
+           np.where(day >= 1,  "07", None))))
+
+# ================= CRD_Mth & CRDPD_Mth =================
+if "CRD" in df.columns:
+    YM_CRD   = df["CRD"].dt.strftime("%Y%m")
+    Day_CRD  = df["CRD"].dt.day
+    Cls_CRD  = pd.Series(bucket_day(Day_CRD), index=df.index)
+    Rem      = df["Remark"].str.lower().fillna("cfm")
+    CRD_Mth  = YM_CRD.fillna("") + Cls_CRD.fillna("") + "_" + Rem
+    insert_after(df, "CRD",       "YM_CRD",    YM_CRD)
+    insert_after(df, "YM_CRD",    "Day_CRD",   Day_CRD)
+    insert_after(df, "Day_CRD",   "Class_CRD", Cls_CRD)
+    insert_after(df, "Class_CRD", "CRD_Mth",   CRD_Mth)
+
+if "LPD" in df.columns:
+    YM_LPD    = df["LPD"].dt.strftime("%Y%m")
+    Day_LPD   = df["LPD"].dt.day
+    Cls_LPD   = pd.Series(bucket_day(Day_LPD), index=df.index)
+    Rem       = df["Remark"].str.lower().fillna("cfm")
+    CRDPD_Mth = YM_LPD.fillna("") + Cls_LPD.fillna("") + "_" + Rem
+    insert_after(df, "LPD",        "YM_CRDPD",   YM_LPD)
+    insert_after(df, "YM_CRDPD",   "Day_CRDPD",  Day_LPD)
+    insert_after(df, "Day_CRDPD",  "Class_CRDPD", Cls_LPD)
+    insert_after(df, "Class_CRDPD","CRDPD_Mth",  CRDPD_Mth)
+
+# ================= Subtotal Builder =================
+size_cols  = [c for c in df.columns if re.match(r'(?i)^UK_', str(c))]
+order_cols = ["Order Quantity"] + size_cols
+cancel_set = set(cancel_sos)
+
+def make_subtotal(df: pd.DataFrame, group_col: str) -> tuple[pd.DataFrame, list[str]]:
+    pieces, color_tags = [], []
+    for key, grp in df.groupby(group_col, dropna=False):
+        has_new    = (grp["Remark"].str.lower() == "new").any()
+        has_cancel = grp["Sales Order"].astype(str).isin(cancel_set).any()
+        color      = "red" if has_new else ("purple" if has_cancel else "black")
+
+        row = {group_col: key}
+        row["Remark"] = "New" if has_new else "cfm"
+        for col in order_cols:
+            row[col] = grp[col].sum(skipna=True)
+
+        pieces.append(row)
+        color_tags.append(color)
+
+    out = pd.DataFrame(pieces).drop(columns=["Remark"], errors="ignore")
+    return out, color_tags
+
+sizes_df,  color_sizes  = make_subtotal(df, "Document Date")
+crd_df,    color_crd    = make_subtotal(df, "CRD_Mth")
+crdpd_df,  color_crdpd  = make_subtotal(df, "CRDPD_Mth")
+
+# ================= Warna Per Row Data Utama =================
+def row_colors(df: pd.DataFrame, cancel_set: set[str]) -> list[str]:
+    colors = []
+    for _, row in df.iterrows():
+        so = str(row.get("Sales Order", ""))
+        if so in cancel_set:
+            colors.append("purple")
+        elif str(row.get("Remark", "")).lower() == "new":
+            colors.append("red")
+        else:
+            colors.append("black")
+    return colors
+
+color_main = row_colors(df, cancel_set)
+
+# ================= Preview =================
+st.subheader("📑 Data (preview 20 rows)")
+st.dataframe(df.head(20), use_container_width=True)
+
+# ================= Excel Export =================
+def build_excel() -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
+        wb = writer.book
+
+        def fmt_text(color: str = "black"):
+            return wb.add_format({"font_name": "Calibri", "font_size": 9,
+                                  "align": "center", "valign": "vcenter",
+                                  "font_color": color})
+
+        def fmt_date(color: str = "black"):
+            return wb.add_format({"font_name": "Calibri", "font_size": 9,
+                                  "align": "center", "valign": "vcenter",
+                                  "font_color": color, "num_format": "m/d/yyyy"})
+
+        def fmt_num(color: str = "black"):
+            return wb.add_format({"font_name": "Calibri", "font_size": 9,
+                                  "align": "center", "valign": "vcenter",
+                                  "font_color": color, "num_format": "0"})
+
+        def write_sheet(ws, data: pd.DataFrame, colors: list[str]) -> None:
+            for j, col in enumerate(data.columns):
+                ws.write(0, j, col, fmt_text("black"))
+            for i, (_, row) in enumerate(data.iterrows()):
+                c = colors[i]
+                for j, val in enumerate(row):
+                    if pd.isna(val):
+                        ws.write(i + 1, j, "", fmt_text(c))
+                    elif isinstance(val, (pd.Timestamp, np.datetime64)):
+                        ws.write_datetime(i + 1, j, pd.to_datetime(val), fmt_date(c))
+                    elif isinstance(val, (int, float, np.number)) and not isinstance(val, bool):
+                        ws.write_number(i + 1, j, float(val), fmt_num(c))
+                    else:
+                        ws.write(i + 1, j, str(val), fmt_text(c))
+            ws.freeze_panes(1, 0)
+            ws.autofilter(0, 0, len(data), len(data.columns) - 1)
+
+        sheets = [
+            ("Data",           df,         color_main),
+            ("Sizes",          sizes_df,   color_sizes),
+            ("CRD_Mth_Sizes",  crd_df,     color_crd),
+            ("CRDPD_Mth_Sizes",crdpd_df,   color_crdpd),
+        ]
+        for sheet_name, data, colors in sheets:
+            data.to_excel(writer, sheet_name=sheet_name, index=False)
+            write_sheet(writer.sheets[sheet_name], data, colors)
+
+        # Summary
+        total_so     = df["Sales Order"].nunique() if "Sales Order" in df else 0
+        total_new    = (df["Remark"].str.lower() == "new").sum()
+        total_cancel = df["Sales Order"].astype(str).isin(cancel_set).sum()
+        summary = pd.DataFrame({
+            "Metric": ["Total SO", "Total New", "Total Cancel"],
+            "Value":  [total_so, int(total_new), int(total_cancel)]
         })
-        st.dataframe(debug_check.head(20), use_container_width=True)
-        
-        # Hitung berapa yang memenuhi semua kondisi
-        cond1 = df_sizelist["Document Date"] >= NEW_ORDER_DATE
-        cond2 = df_sizelist["LPD"].isna() if "LPD" in df_sizelist.columns else pd.Series([True]*len(df_sizelist))
-        cond3 = ws_numeric == 10  # FIXED: gunakan numeric comparison
-        
-        all_conditions = cond1 & cond2 & cond3
-        
-        st.write("### 🎯 Ringkasan Kondisi:")
-        st.write(f"- Kondisi 1 (Doc Date >= NEW): **{cond1.sum()}** rows")
-        st.write(f"- Kondisi 2 (LPD null): **{cond2.sum()}** rows")
-        st.write(f"- Kondisi 3 (WS == 10): **{cond3.sum()}** rows")
-        st.write(f"- **SEMUA kondisi terpenuhi (akan jadi 'New'): {all_conditions.sum()} rows**")
+        summary.to_excel(writer, sheet_name="Summary", index=False)
+        ws_sum = writer.sheets["Summary"]
+        ws_sum.set_column(0, 0, 18)
+        ws_sum.set_column(1, 1, 12)
 
-    # ================= Remark (FIXED) =================
-    if "Remark" in df_sizelist.columns:
-        df_sizelist.drop(columns=["Remark"], inplace=True)
+    return output.getvalue()
 
-    # PERBAIKAN: Gunakan numeric comparison untuk Working Status
-    ws_numeric = pd.to_numeric(df_sizelist.get("Working Status", ""), errors='coerce').fillna(-1)
-    
-    remark = np.where(
-        (df_sizelist["Document Date"] >= NEW_ORDER_DATE)
-        & (df_sizelist["LPD"].isna())
-        & (ws_numeric == 10),  # FIXED!
-        "New", "cfm"
-    )
-    ins_pos = df_sizelist.columns.get_loc("Document Date") + 1
-    df_sizelist.insert(ins_pos, "Remark", remark)
+excel_bytes = build_excel()
 
-    # ================= 🔍 DEBUG MODE 3: Setelah Remark =================
-    with st.expander("🔍 DEBUG 3: Hasil Remark", expanded=True):
-        remark_counts = pd.Series(remark).value_counts()
-        st.write("**Distribusi Remark:**")
-        st.write(remark_counts)
-        
-        st.write("### 📋 Sample Data dengan Remark (20 rows pertama):")
-        st.dataframe(df_sizelist[['Sales Order', 'Document Date', 'LPD', 'Working Status', 'Remark']].head(20))
+st.download_button(
+    "⬇️ Download Excel",
+    data=excel_bytes,
+    file_name="Tooling_Sizelist_v12.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
-    # ================= Isi LPD kosong =================
-    if {"CRD", "PD", "LPD"}.issubset(df_sizelist.columns):
-        row_min = pd.concat([df_sizelist["CRD"], df_sizelist["PD"]], axis=1).min(axis=1, skipna=True)
-        lpd_filled = df_sizelist["LPD"].isna().sum()
-        df_sizelist.loc[df_sizelist["LPD"].isna(), "LPD"] = row_min[df_sizelist["LPD"].isna()]
-        st.info(f"✅ LPD kosong diisi dengan min(CRD, PD): {lpd_filled} rows")
-
-    # ================= Helpers =================
-    def insert_after(df, after_col, new_col, values):
-        pos = df.columns.get_loc(after_col) + 1
-        df.insert(pos, new_col, values)
-
-    def bucket_day(day):
-        return np.where(day >= 24, "30",
-               np.where(day >= 16, "23",
-               np.where(day >= 8, "15",
-               np.where(day >= 1, "07", None))))
-
-    # ================= CRD_Mth & CRDPD_Mth =================
-    if "CRD" in df_sizelist.columns:
-        YM_CRD = df_sizelist["CRD"].dt.strftime("%Y%m")
-        Day_CRD = df_sizelist["CRD"].dt.day
-        base = pd.Series(bucket_day(Day_CRD), index=df_sizelist.index)
-        Remark = df_sizelist["Remark"].str.lower().fillna("cfm")
-        CRD_Mth = YM_CRD.fillna("") + base.fillna("") + "_" + Remark
-        insert_after(df_sizelist, "CRD", "YM_CRD", YM_CRD)
-        insert_after(df_sizelist, "YM_CRD", "Day_CRD", Day_CRD)
-        insert_after(df_sizelist, "Day_CRD", "Class_CRD", base)
-        insert_after(df_sizelist, "Class_CRD", "CRD_Mth", CRD_Mth)
-
-    if "LPD" in df_sizelist.columns:
-        YM_LPD = df_sizelist["LPD"].dt.strftime("%Y%m")
-        Day_LPD = df_sizelist["LPD"].dt.day
-        base2 = pd.Series(bucket_day(Day_LPD), index=df_sizelist.index)
-        Remark = df_sizelist["Remark"].str.lower().fillna("cfm")
-        CRDPD_Mth = YM_LPD.fillna("") + base2.fillna("") + "_" + Remark
-        insert_after(df_sizelist, "LPD", "YM_CRDPD", YM_LPD)
-        insert_after(df_sizelist, "YM_CRDPD", "Day_CRDPD", Day_LPD)
-        insert_after(df_sizelist, "Day_CRDPD", "Class_CRDPD", base2)
-        insert_after(df_sizelist, "Class_CRDPD", "CRDPD_Mth", CRDPD_Mth)
-
-    # ================= Subtotal Builder =================
-    size_cols = [c for c in df_sizelist.columns if re.match(r'(?i)^UK_', str(c))]
-    order_cols = ["Order Quantity"] + size_cols
-
-    def make_subtotal(df, group_col):
-        pieces = []
-        color_tags = []
-        for key, grp in df.groupby(group_col, dropna=False):
-            subtotal = {col: "" for col in ["Remark", "Sales Order", group_col] + order_cols}
-            subtotal["Remark"] = (
-                "New" if (grp["Remark"].str.lower() == "new").any() else "cfm"
-            )
-            subtotal[group_col] = key
-            for col in order_cols:
-                subtotal[col] = grp[col].sum(skipna=True)
-
-            # logic warna group
-            has_new = (grp["Remark"].str.lower() == "new").any()
-            has_cancel = any(grp["Sales Order"].astype(str).isin(cancel_sos))
-            color = "red" if has_new else ("purple" if has_cancel else "black")
-            pieces.append(subtotal)
-            color_tags.append(color)
-
-        out = pd.DataFrame(pieces).drop(columns=["Sales Order", "Remark"], errors="ignore")
-        return out, color_tags
-
-    sizes_df, color_sizes = make_subtotal(df_sizelist, "Document Date")
-    crd_df, color_crd = make_subtotal(df_sizelist, "CRD_Mth")
-    crdpd_df, color_crdpd = make_subtotal(df_sizelist, "CRDPD_Mth")
-
-    # ================= Pewarnaan Data =================
-    def colorize_data(df):
-        colors = []
-        for _, row in df.iterrows():
-            so = str(row.get("Sales Order", ""))
-            if so in cancel_sos:
-                colors.append("purple")
-            elif str(row.get("Remark", "")).lower() == "new":
-                colors.append("red")
-            else:
-                colors.append("black")
-        return colors
-
-    color_main = colorize_data(df_sizelist)
-
-    # ================= Preview =================
-    st.subheader("📑 Data (preview)")
-    st.dataframe(df_sizelist.head(20), use_container_width=True)
-
-    # ================= Excel Export =================
-    def build_excel():
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
-            wb = writer.book
-
-            # Format helper
-            fmt_text = lambda color=None: wb.add_format({
-                "font_name": "Calibri", "font_size": 9,
-                "align": "center", "valign": "vcenter",
-                "font_color": color or "black"
-            })
-            fmt_date = lambda color=None: wb.add_format({
-                "font_name": "Calibri", "font_size": 9,
-                "align": "center", "valign": "vcenter",
-                "font_color": color or "black",
-                "num_format": "m/d/yyyy"
-            })
-            fmt_num = lambda color=None: wb.add_format({
-                "font_name": "Calibri", "font_size": 9,
-                "align": "center", "valign": "vcenter",
-                "font_color": color or "black",
-                "num_format": "0"
-            })
-
-            def write(ws, df, colors):
-                for j, col in enumerate(df.columns):
-                    ws.write(0, j, col, fmt_text("black"))
-                for i, (_, row) in enumerate(df.iterrows()):
-                    for j, val in enumerate(row):
-                        color = colors[i]
-                        if pd.isna(val):
-                            ws.write(i + 1, j, "", fmt_text(color))
-                        elif isinstance(val, (pd.Timestamp, np.datetime64)):
-                            ws.write_datetime(i + 1, j, pd.to_datetime(val), fmt_date(color))
-                        elif isinstance(val, (int, float, np.number)) and not isinstance(val, bool):
-                            ws.write_number(i + 1, j, float(val), fmt_num(color))
-                        else:
-                            ws.write(i + 1, j, str(val), fmt_text(color))
-                ws.freeze_panes(1, 0)
-                ws.autofilter(0, 0, len(df), len(df.columns) - 1)
-
-            # Write all sheets
-            df_sizelist.to_excel(writer, sheet_name="Data", index=False)
-            write(writer.sheets["Data"], df_sizelist, color_main)
-
-            sizes_df.to_excel(writer, sheet_name="Sizes", index=False)
-            write(writer.sheets["Sizes"], sizes_df, color_sizes)
-
-            crd_df.to_excel(writer, sheet_name="CRD_Mth_Sizes", index=False)
-            write(writer.sheets["CRD_Mth_Sizes"], crd_df, color_crd)
-
-            crdpd_df.to_excel(writer, sheet_name="CRDPD_Mth_Sizes", index=False)
-            write(writer.sheets["CRDPD_Mth_Sizes"], crdpd_df, color_crdpd)
-
-            # Summary sheet
-            total_so = df_sizelist["Sales Order"].nunique() if "Sales Order" in df_sizelist else 0
-            total_new = (df_sizelist["Remark"].str.lower() == "new").sum()
-            total_cancel = sum(df_sizelist["Sales Order"].astype(str).isin(cancel_sos))
-            summary = pd.DataFrame({
-                "Metric": ["Total SO", "Total New", "Total Cancel"],
-                "Value": [total_so, total_new, total_cancel]
-            })
-            summary.to_excel(writer, sheet_name="Summary", index=False)
-            ws5 = writer.sheets["Summary"]
-            for j in range(2):
-                ws5.set_column(j, j, 18)
-
-        return output.getvalue()
-
-    excel_bytes = build_excel()
-    st.download_button("⬇️ Download Excel", data=excel_bytes,
-                       file_name="Tooling_Sizelist_v11_FIXED.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    
-    st.success("✅ Processing selesai! Bug Working Status sudah diperbaiki.")
+st.success("✅ Processing selesai! Cancel SO per baris / per koma keduanya sudah support.")
