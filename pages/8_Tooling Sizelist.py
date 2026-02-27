@@ -88,6 +88,11 @@ NEW_ORDER_DATE = pd.to_datetime(new_order_date)
 # ✅ FIX: Split koma DAN newline — support paste multi-baris
 cancel_sos: list[str] = [s.strip() for s in re.split(r'[,\n\r]+', cancel_sos_input) if s.strip()]
 
+def normalize_so(val) -> str:
+    """Normalize SO ke string bersih — handle float artifact '11184283.0' → '11184283'."""
+    s = str(val).strip()
+    return s[:-2] if s.endswith(".0") else s
+
 st.success(f"✅ NEW_ORDER_DATE: **{NEW_ORDER_DATE.strftime('%Y-%m-%d')}**")
 if cancel_sos:
     st.warning(f"⚠️ Cancel SO yang akan ditandai ({len(cancel_sos)} SO): {', '.join(cancel_sos)}")
@@ -191,13 +196,16 @@ if "LPD" in df.columns:
 # ================= Subtotal Builder =================
 size_cols  = [c for c in df.columns if re.match(r'(?i)^UK_', str(c))]
 order_cols = ["Order Quantity"] + size_cols
-cancel_set = set(cancel_sos)
+cancel_set = set(cancel_sos)  # user input sudah string bersih
+
+# Normalisasi kolom SO di dataframe agar cocok saat compare
+df["_SO_str"] = df["Sales Order"].apply(normalize_so)
 
 def make_subtotal(df: pd.DataFrame, group_col: str) -> tuple[pd.DataFrame, list[str]]:
     pieces, color_tags = [], []
     for key, grp in df.groupby(group_col, dropna=False):
         has_new    = (grp["Remark"].str.lower() == "new").any()
-        has_cancel = grp["Sales Order"].astype(str).isin(cancel_set).any()
+        has_cancel = grp["_SO_str"].isin(cancel_set).any()
         color      = "red" if has_new else ("purple" if has_cancel else "black")
 
         row = {group_col: key}
@@ -219,7 +227,7 @@ crdpd_df,  color_crdpd  = make_subtotal(df, "CRDPD_Mth")
 def row_colors(df: pd.DataFrame, cancel_set: set[str]) -> list[str]:
     colors = []
     for _, row in df.iterrows():
-        so = str(row.get("Sales Order", ""))
+        so = str(row.get("_SO_str", row.get("Sales Order", "")))
         if so in cancel_set:
             colors.append("purple")
         elif str(row.get("Remark", "")).lower() == "new":
@@ -273,7 +281,7 @@ def build_excel() -> bytes:
             ws.autofilter(0, 0, len(data), len(data.columns) - 1)
 
         sheets = [
-            ("Data",           df,         color_main),
+            ("Data",           df.drop(columns=["_SO_str"], errors="ignore"),         color_main),
             ("Sizes",          sizes_df,   color_sizes),
             ("CRD_Mth_Sizes",  crd_df,     color_crd),
             ("CRDPD_Mth_Sizes",crdpd_df,   color_crdpd),
@@ -285,7 +293,7 @@ def build_excel() -> bytes:
         # Summary
         total_so     = df["Sales Order"].nunique() if "Sales Order" in df else 0
         total_new    = (df["Remark"].str.lower() == "new").sum()
-        total_cancel = df["Sales Order"].astype(str).isin(cancel_set).sum()
+        total_cancel = df["_SO_str"].isin(cancel_set).sum()
         summary = pd.DataFrame({
             "Metric": ["Total SO", "Total New", "Total Cancel"],
             "Value":  [total_so, int(total_new), int(total_cancel)]
