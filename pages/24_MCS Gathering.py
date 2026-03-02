@@ -1,62 +1,40 @@
-import streamlit as st
-import pandas as pd
-import re
-from datetime import datetime
-from io import BytesIO
+"""
+MCS Recap Tool — Single File Streamlit App
+Upload 4 source files → process → download styled Excel
+"""
 
+import re
+import logging
+from io import BytesIO
+from datetime import datetime
+
+import pandas as pd
+import streamlit as st
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 
-st.set_page_config(page_title="MCS Recap Generator", layout="wide")
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
 
 # =====================================================
-# 1️⃣ PREPARE FUNCTIONS
+# CONFIG / CONSTANTS
 # =====================================================
 
-def prepare_mcs(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = df.columns.astype(str).str.strip()
+MCS_RENAME = {
+    "Article No": "Article/No",
+    "1ST Ex-factory date": "1st Ex-Factory Date",
+    "Gender": "Age Group/Gender",
+    "Bottom Tooling No.": "Bottom Tooling No",
+    "Upper Tooling No.": "Upper Tooling No",
+}
 
-    df = df.rename(columns={
-        "Article No": "Article/No",
-        "1ST Ex-factory date": "1st Ex-Factory Date",
-        "Gender": "Age Group/Gender",
-        "Bottom Tooling No.": "Bottom Tooling No",
-        "Upper Tooling No.": "Upper Tooling No",
-    })
+ORIGINAL_RENAME = {
+    "Article": "Article/No",
+    "Age Group": "Age Group/Gender",
+}
 
-    if "Size" not in df.columns:
-        df["Size"] = None
-
-    if "Factory Priority in Origo System" not in df.columns:
-        df["Factory Priority in Origo System"] = None
-
-    return df
-
-
-def prepare_original(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = df.columns.astype(str).str.strip()
-
-    df = df.rename(columns={
-        "Article": "Article/No",
-        "Age Group": "Age Group/Gender",
-    })
-
-    if "Size" not in df.columns:
-        df["Size"] = None
-
-    if "Factory Priority in Origo System" not in df.columns:
-        df["Factory Priority in Origo System"] = None
-
-    return df
-
-
-# =====================================================
-# 2️⃣ FINAL COLUMN STRUCTURE (OUTPUT)
-# =====================================================
-
-final_cols = [
+FINAL_COLS = [
     "Season",
     "Category",
     "Model Name",
@@ -73,34 +51,22 @@ final_cols = [
     "LT",
     "Age Group/Gender",
     "Size Run",
-    "Size"
+    "Size",
 ]
 
-# =====================================================
-# 6️⃣ SOCCER DETECTION (UPDATED)
-# =====================================================
-
-soccer_keywords = [
-    "PREDATOR",
-    "COPA",
-    "CRAZYFAST",
-    "F50",
-    "MESSI",
-    "EDGE",
-    "ACCURACY",
-    "FREAK",
-    "SALA",
-    "ADIPURE",
-    "SAMBA TEAM",
-    "SUPERSTAR JUDE",
+OUTPUT_COLS = FINAL_COLS + [
+    "Is_Soccer",
+    "Age Group/Gender Normalized",
+    "Size Run Normalized",
 ]
-soccer_pattern = "|".join(re.escape(k) for k in soccer_keywords)
 
-# =====================================================
-# 7️⃣ NORMALIZE AGE GROUP / GENDER
-# =====================================================
+SOCCER_KEYWORDS = [
+    "PREDATOR", "COPA", "CRAZYFAST", "F50", "MESSI",
+    "EDGE", "ACCURACY", "FREAK", "SALA", "ADIPURE",
+    "SAMBA TEAM", "SUPERSTAR JUDE",
+]
 
-normalize_mapping = {
+AGE_NORMALIZE_MAP = {
     "U-JUNIOR": "JUNIOR",
     "JUNIOR": "JUNIOR",
     "UNISEX": "UNISEX",
@@ -118,11 +84,7 @@ normalize_mapping = {
     "KIDS": "KIDS",
 }
 
-# =====================================================
-# 8️⃣ SIZE GENERATION (DON'T OVERWRITE)
-# =====================================================
-
-size_mapping = {
+SIZE_MAP = {
     "MEN": "8-",
     "WOMEN": "5-",
     "JUNIOR": "3",
@@ -131,260 +93,280 @@ size_mapping = {
     "KIDS": "11-K",
 }
 
+
 # =====================================================
-# 9️⃣ SIZE RUN NORMALIZATION
+# PIPELINE FUNCTIONS
 # =====================================================
 
-def clean_token(token: str) -> str:
-    token = token.strip().upper()
-    token = token.replace(" ", "")
-    return token
+def prepare_mcs(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = df.columns.astype(str).str.strip()
+    df = df.rename(columns=MCS_RENAME)
+    for col in ("Size", "Factory Priority in Origo System"):
+        if col not in df.columns:
+            df[col] = None
+    return df
 
-def expand_range_numeric(start, end, is_kids=False):
+
+def prepare_original(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = df.columns.astype(str).str.strip()
+    df = df.rename(columns=ORIGINAL_RENAME)
+    for col in ("Size", "Factory Priority in Origo System"):
+        if col not in df.columns:
+            df[col] = None
+    return df
+
+
+def standardize_types(df: pd.DataFrame) -> pd.DataFrame:
+    for col in ("Bottom Tooling No", "Upper Tooling No", "LT"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["1st Ex-Factory Date"] = pd.to_datetime(df["1st Ex-Factory Date"], errors="coerce")
+    df["Age Group/Gender"] = df["Age Group/Gender"].fillna("").astype(str).str.upper().str.strip()
+    df["Size"] = df["Size"].replace(r"^\s*$", pd.NA, regex=True)
+    return df
+
+
+def detect_soccer(df: pd.DataFrame) -> pd.DataFrame:
+    pattern = "|".join(re.escape(k) for k in SOCCER_KEYWORDS)
+    cat_soccer = (
+        df["Category"].fillna("").astype(str).str.upper()
+        .str.contains(r"FOOTBALL\s*/\s*SOCCER", regex=True, na=False)
+    )
+    name_soccer = (
+        df["Model Name"].fillna("").astype(str).str.upper()
+        .str.contains(pattern, regex=True, na=False)
+    )
+    df["Is_Soccer"] = cat_soccer | name_soccer
+    return df
+
+
+def normalize_age_group(df: pd.DataFrame) -> pd.DataFrame:
+    df["Age Group/Gender Normalized"] = df["Age Group/Gender"].map(AGE_NORMALIZE_MAP)
+    return df
+
+
+def generate_size(df: pd.DataFrame) -> pd.DataFrame:
+    generated = df["Age Group/Gender Normalized"].map(SIZE_MAP)
+    mask_kids_soccer = (df["Age Group/Gender Normalized"] == "KIDS") & (df["Is_Soccer"])
+    generated.loc[mask_kids_soccer] = "3"
+    existing = df["Size"].replace(r"^\s*$", pd.NA, regex=True)
+    df["Size"] = existing.combine_first(generated)
+    return df
+
+
+def expand_range(start: str, end: str, is_kids: bool = False) -> list:
     sizes = []
-    start = int(float(start))
-    end = int(float(end))
-    for i in range(start, end + 1):
-        if is_kids:
-            sizes.append(f"{i}K")
-            sizes.append(f"{i}-K")
-        else:
-            sizes.append(f"{i}")
-            sizes.append(f"{i}-")
+    for i in range(int(float(start)), int(float(end)) + 1):
+        sizes += ([f"{i}K", f"{i}-K"] if is_kids else [str(i), f"{i}-"])
     return sizes
 
-def normalize_size_run(size_run):
-    if pd.isna(size_run):
+
+def normalize_size_run(value) -> str | None:
+    if pd.isna(value):
         return None
-
-    raw = str(size_run).upper()
-    raw = raw.replace(";", ",")
-    raw = raw.replace(" ", "")
-
-    tokens = re.split(r",", raw)
-    final_sizes = []
-
-    for token in tokens:
-        token = clean_token(token)
+    raw = str(value).upper().replace(";", ",").replace(" ", "")
+    final = []
+    for token in raw.split(","):
+        token = token.strip()
         if not token:
             continue
+        if m := re.match(r"(\d+\.?\d*)K-(\d+\.?\d*)K", token):
+            final.extend(expand_range(*m.groups(), is_kids=True))
+        elif m := re.match(r"(\d+\.?\d*)-(\d+\.?\d*)", token):
+            if "K" not in token:
+                final.extend(expand_range(*m.groups(), is_kids=False))
+        elif m := re.match(r"(\d+)K", token):
+            n = m.group(1)
+            final += [f"{n}K", f"{n}-K"]
+        elif m := re.match(r"(\d+)", token):
+            n = m.group(1)
+            final += [str(n), f"{n}-"]
+    seen: set = set()
+    deduped = [s for s in final if not (s in seen or seen.add(s))]  # type: ignore
+    return ",".join(deduped)
 
-        kids_match = re.match(r"(\d+\.?\d*)K-(\d+\.?\d*)K", token)
-        if kids_match:
-            start, end = kids_match.groups()
-            final_sizes.extend(expand_range_numeric(start, end, is_kids=True))
-            continue
 
-        adult_match = re.match(r"(\d+\.?\d*)-(\d+\.?\d*)", token)
-        if adult_match and "K" not in token:
-            start, end = adult_match.groups()
-            final_sizes.extend(expand_range_numeric(start, end, is_kids=False))
-            continue
+def run_pipeline(
+    df_mcsfw26: pd.DataFrame,
+    df_mcsfw27: pd.DataFrame,
+    df_mcsss27: pd.DataFrame,
+    df_originalfootball: pd.DataFrame,
+) -> pd.DataFrame:
+    frames = [
+        prepare_mcs(df_mcsfw26).reindex(columns=FINAL_COLS),
+        prepare_mcs(df_mcsfw27).reindex(columns=FINAL_COLS),
+        prepare_mcs(df_mcsss27).reindex(columns=FINAL_COLS),
+        prepare_original(df_originalfootball).reindex(columns=FINAL_COLS),
+    ]
+    for df in frames:
+        standardize_types(df)
 
-        single_k_match = re.match(r"(\d+)K", token)
-        if single_k_match:
-            num = single_k_match.group(1)
-            final_sizes.append(f"{num}K")
-            final_sizes.append(f"{num}-K")
-            continue
+    df_all = pd.concat(frames, ignore_index=True)
+    df_all = (
+        df_all
+        .pipe(detect_soccer)
+        .pipe(normalize_age_group)
+        .pipe(generate_size)
+    )
+    df_all["Size Run Normalized"] = df_all["Size Run"].apply(normalize_size_run)
+    return df_all.reindex(columns=OUTPUT_COLS)
 
-        single_match = re.match(r"(\d+)", token)
-        if single_match:
-            num = single_match.group(1)
-            final_sizes.append(f"{num}")
-            final_sizes.append(f"{num}-")
-            continue
 
-    seen = set()
-    normalized = []
-    for s in final_sizes:
-        if s not in seen:
-            seen.add(s)
-            normalized.append(s)
+def to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="MCS Recap")
+        ws = writer.sheets["MCS Recap"]
 
-    return ",".join(normalized)
-
-# =====================================================
-# EXCEL EXPORT (STYLED) TO BYTES
-# =====================================================
-
-def export_styled_excel(df: pd.DataFrame, sheet_name="MCS Recap") -> bytes:
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-        ws = writer.sheets[sheet_name]
-
-        font_style = Font(name="Calibri", size=9)
-        alignment_style = Alignment(horizontal="center", vertical="center")
+        font = Font(name="Calibri", size=9)
+        align = Alignment(horizontal="center", vertical="center")
 
         for row in ws.iter_rows():
             for cell in row:
-                cell.font = font_style
-                cell.alignment = alignment_style
+                cell.font = font
+                cell.alignment = align
 
         for col_cells in ws.columns:
-            max_length = 0
-            col_letter = get_column_letter(col_cells[0].column)
-            for cell in col_cells:
-                if cell.value is not None:
-                    max_length = max(max_length, len(str(cell.value)))
-            ws.column_dimensions[col_letter].width = max_length + 2
+            letter = get_column_letter(col_cells[0].column)
+            max_len = max(
+                (len(str(c.value)) for c in col_cells if c.value is not None),
+                default=10,
+            )
+            ws.column_dimensions[letter].width = max_len + 2
 
         for row in ws.iter_rows():
             ws.row_dimensions[row[0].row].height = 15
 
-    return output.getvalue()
+    return buffer.getvalue()
+
 
 # =====================================================
-# FILE LOADING HELPERS
+# STREAMLIT UI
 # =====================================================
 
-def list_sheets(uploaded_file) -> list[str]:
-    xls = pd.ExcelFile(uploaded_file)
-    return xls.sheet_names
+st.set_page_config(
+    page_title="MCS Recap Tool",
+    page_icon="👟",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-def read_excel(uploaded_file, sheet_name: str) -> pd.DataFrame:
-    return pd.read_excel(uploaded_file, sheet_name=sheet_name)
+st.markdown("""
+<style>
+    .main .block-container { padding-top: 2rem; }
+    div[data-testid="metric-container"] {
+        background: #f0f2f6; border-radius: 8px; padding: 0.5rem 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# =====================================================
-# UI
-# =====================================================
 
-st.title("MCS Recap Generator (Deploy-ready)")
+@st.cache_data(show_spinner=False)
+def read_excel_cached(raw: bytes, filename: str) -> pd.DataFrame:
+    try:
+        return pd.read_excel(raw, dtype=str)
+    except Exception as e:
+        raise ValueError(f"Cannot read '{filename}': {e}") from e
 
+
+def safe_read(uploaded) -> pd.DataFrame | None:
+    if uploaded is None:
+        return None
+    try:
+        return read_excel_cached(uploaded.read(), uploaded.name)
+    except ValueError as e:
+        st.error(str(e))
+        return None
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("Upload Files")
-    fw26_file = st.file_uploader("MCS FW26 (Excel)", type=["xlsx", "xls"], key="fw26")
-    fw27_file = st.file_uploader("MCS FW27 (Excel)", type=["xlsx", "xls"], key="fw27")
-    ss27_file = st.file_uploader("MCS SS27 (Excel)", type=["xlsx", "xls"], key="ss27")
-    football_file = st.file_uploader("Original Football (Excel)", type=["xlsx", "xls"], key="football")
+    st.title("👟 MCS Recap Tool")
+    st.caption("Upload 4 file sumber untuk generate laporan Excel konsolidasi.")
+    st.divider()
+    st.subheader("📂 Upload Files")
+
+    uf_fw26     = st.file_uploader("MCS FW26",          type=["xlsx", "xls"], key="fw26")
+    uf_fw27     = st.file_uploader("MCS FW27",          type=["xlsx", "xls"], key="fw27")
+    uf_ss27     = st.file_uploader("MCS SS27",          type=["xlsx", "xls"], key="ss27")
+    uf_football = st.file_uploader("Original Football", type=["xlsx", "xls"], key="football")
 
     st.divider()
-    st.header("Options")
-    preview_rows = st.number_input("Preview rows", min_value=5, max_value=200, value=20, step=5)
+    run_btn = st.button("⚙️ Generate Report", use_container_width=True, type="primary")
 
-# Sheet selectors
-def sheet_selector(label: str, f):
-    if not f:
-        st.info(f"Upload file untuk {label} dulu.")
-        return None
-    sheets = list_sheets(f)
-    if len(sheets) == 1:
-        return sheets[0]
-    return st.selectbox(f"Sheet untuk {label}", sheets, index=0, key=f"sheet_{label}")
 
-col1, col2 = st.columns(2)
+# ── Main ──────────────────────────────────────────────────────────────────────
+st.title("MCS Recap Generator")
+st.caption("Konsolidasi FW26 · FW27 · SS27 · Football → satu Excel terformat.")
 
-with col1:
-    st.subheader("Sheet Selection")
-    fw26_sheet = sheet_selector("FW26", fw26_file)
-    fw27_sheet = sheet_selector("FW27", fw27_file)
-    ss27_sheet = sheet_selector("SS27", ss27_file)
-    football_sheet = sheet_selector("Football", football_file)
+all_uploaded = all([uf_fw26, uf_fw27, uf_ss27, uf_football])
 
-with col2:
-    st.subheader("Status")
-    missing = [name for name, f in [
-        ("FW26", fw26_file), ("FW27", fw27_file), ("SS27", ss27_file), ("Football", football_file)
-    ] if f is None]
-    if missing:
-        st.warning("Belum lengkap: " + ", ".join(missing))
-    else:
-        st.success("Semua file sudah diupload ✅")
+col1, col2, col3, col4 = st.columns(4)
+for col, label, uf in zip(
+    [col1, col2, col3, col4],
+    ["MCS FW26", "MCS FW27", "MCS SS27", "Football"],
+    [uf_fw26, uf_fw27, uf_ss27, uf_football],
+):
+    with col:
+        st.metric(label=label, value="✅" if uf else "⬜")
 
-run = st.button("Generate MCS Recap", type="primary", disabled=bool(missing))
+if not all_uploaded:
+    st.info("👈 Upload semua 4 file di sidebar untuk mengaktifkan Generate Report.", icon="ℹ️")
 
-if run:
-    try:
-        # Read
-        df_mcsfw26 = read_excel(fw26_file, fw26_sheet)
-        df_mcsfw27 = read_excel(fw27_file, fw27_sheet)
-        df_mcsss27 = read_excel(ss27_file, ss27_sheet)
-        df_originalfootball = read_excel(football_file, football_sheet)
+if run_btn:
+    if not all_uploaded:
+        st.warning("Upload semua 4 file terlebih dahulu.", icon="⚠️")
+        st.stop()
 
-        # Prepare + reindex
-        df_fw26 = prepare_mcs(df_mcsfw26).reindex(columns=final_cols)
-        df_fw27 = prepare_mcs(df_mcsfw27).reindex(columns=final_cols)
-        df_ss27 = prepare_mcs(df_mcsss27).reindex(columns=final_cols)
-        df_football = prepare_original(df_originalfootball).reindex(columns=final_cols)
+    with st.status("Memproses file…", expanded=True) as status:
+        try:
+            st.write("📖 Membaca file…")
+            df_fw26     = safe_read(uf_fw26)
+            df_fw27     = safe_read(uf_fw27)
+            df_ss27     = safe_read(uf_ss27)
+            df_football = safe_read(uf_football)
 
-        # Standardize types
-        for df in [df_fw26, df_fw27, df_ss27, df_football]:
-            df["Bottom Tooling No"] = pd.to_numeric(df["Bottom Tooling No"], errors="coerce")
-            df["Upper Tooling No"] = pd.to_numeric(df["Upper Tooling No"], errors="coerce")
-            df["LT"] = pd.to_numeric(df["LT"], errors="coerce")
-            df["1st Ex-Factory Date"] = pd.to_datetime(df["1st Ex-Factory Date"], errors="coerce")
+            if None in [df_fw26, df_fw27, df_ss27, df_football]:
+                st.error("Satu atau lebih file gagal dibaca.")
+                st.stop()
 
-            df["Age Group/Gender"] = (
-                df["Age Group/Gender"]
-                .fillna("")
-                .astype(str)
-                .str.upper()
-                .str.strip()
-            )
+            st.write("⚙️ Menjalankan pipeline…")
+            df_result = run_pipeline(df_fw26, df_fw27, df_ss27, df_football)
 
-            df["Size"] = df["Size"].replace(r"^\s*$", pd.NA, regex=True)
+            st.write("📊 Membuat Excel…")
+            excel_bytes = to_excel_bytes(df_result)
 
-        # Concat
-        df_all = pd.concat([df_fw26, df_fw27, df_ss27, df_football], ignore_index=True)
+            status.update(label="✅ Laporan siap!", state="complete")
 
-        # Soccer detection
-        cat_soccer = (
-            df_all["Category"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.contains(r"FOOTBALL\s*/\s*SOCCER", regex=True, na=False)
-        )
+        except Exception as e:
+            logger.exception("Pipeline failed")
+            status.update(label="❌ Gagal", state="error")
+            st.error(f"**Error:** {e}")
+            st.stop()
 
-        name_soccer = (
-            df_all["Model Name"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.contains(soccer_pattern, na=False, regex=True)
-        )
+    st.divider()
+    st.subheader("📊 Preview")
 
-        df_all["Is_Soccer"] = cat_soccer | name_soccer
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Rows",       f"{len(df_result):,}")
+    m2.metric("Soccer Articles",  f"{df_result['Is_Soccer'].sum():,}")
+    m3.metric("Seasons",          df_result["Season"].nunique())
+    m4.metric("Unique Models",    df_result["Model No"].nunique())
 
-        # Normalize age group/gender
-        df_all["Age Group/Gender Normalized"] = df_all["Age Group/Gender"].map(normalize_mapping)
+    tab_all, tab_soccer = st.tabs(["All Data", "Soccer Only"])
+    with tab_all:
+        st.dataframe(df_result, use_container_width=True, height=400)
+    with tab_soccer:
+        st.dataframe(df_result[df_result["Is_Soccer"]], use_container_width=True, height=400)
 
-        # Size generation (fill blanks only)
-        generated_size = df_all["Age Group/Gender Normalized"].map(size_mapping)
-
-        mask_special = (
-            (df_all["Age Group/Gender Normalized"] == "KIDS") &
-            (df_all["Is_Soccer"] == True)
-        )
-        generated_size.loc[mask_special] = "3"
-
-        existing_size = df_all["Size"].replace(r"^\s*$", pd.NA, regex=True)
-        df_all["Size"] = existing_size.combine_first(generated_size)
-
-        # Size run normalized
-        df_all["Size Run Normalized"] = df_all["Size Run"].apply(normalize_size_run)
-
-        # Output cols
-        output_cols = final_cols + ["Is_Soccer", "Age Group/Gender Normalized", "Size Run Normalized"]
-        df_all = df_all.reindex(columns=output_cols)
-
-        st.subheader("Preview Output")
-        st.dataframe(df_all.head(int(preview_rows)), use_container_width=True)
-
-        # Export
-        today_str = datetime.today().strftime("%Y%m%d")
-        file_name = f"MCS Recap - {today_str}.xlsx"
-        excel_bytes = export_styled_excel(df_all, sheet_name="MCS Recap")
-
-        st.download_button(
-            label="Download Excel (Styled)",
-            data=excel_bytes,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-        st.success(f"✅ Generated: {file_name}")
-
-    except Exception as e:
-        st.exception(e)
+    st.divider()
+    filename = f"MCS Recap - {datetime.today().strftime('%Y%m%d')}.xlsx"
+    st.download_button(
+        label="⬇️ Download Excel Report",
+        data=excel_bytes,
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        type="primary",
+    )
