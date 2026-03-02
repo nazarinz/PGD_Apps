@@ -8,7 +8,7 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="MCS Recap Generator", layout="wide")
-st.title("MCS Recap Generator (Multi-upload)")
+st.title("MCS Recap Generator (Smart Auto + Manual Override)")
 
 # =====================================================
 # PREPARE FUNCTIONS
@@ -30,7 +30,6 @@ def prepare_mcs(df: pd.DataFrame) -> pd.DataFrame:
         df["Size"] = None
     if "Factory Priority in Origo System" not in df.columns:
         df["Factory Priority in Origo System"] = None
-
     return df
 
 
@@ -47,7 +46,6 @@ def prepare_original(df: pd.DataFrame) -> pd.DataFrame:
         df["Size"] = None
     if "Factory Priority in Origo System" not in df.columns:
         df["Factory Priority in Origo System"] = None
-
     return df
 
 
@@ -104,9 +102,12 @@ size_mapping = {
     "KIDS": "11-K",
 }
 
+# =====================================================
+# SIZE RUN NORMALIZATION
+# =====================================================
+
 def clean_token(token: str) -> str:
-    token = token.strip().upper()
-    token = token.replace(" ", "")
+    token = token.strip().upper().replace(" ", "")
     return token
 
 def expand_range_numeric(start, end, is_kids=False):
@@ -167,8 +168,11 @@ def normalize_size_run(size_run):
         if s not in seen:
             seen.add(s)
             normalized.append(s)
-
     return ",".join(normalized)
+
+# =====================================================
+# EXCEL EXPORT (STYLED)
+# =====================================================
 
 def export_styled_excel(df: pd.DataFrame, sheet_name="MCS Recap") -> bytes:
     output = BytesIO()
@@ -197,15 +201,65 @@ def export_styled_excel(df: pd.DataFrame, sheet_name="MCS Recap") -> bytes:
 
     return output.getvalue()
 
-def list_sheets(uploaded_file) -> list[str]:
-    xls = pd.ExcelFile(uploaded_file)
-    return xls.sheet_names
+# =====================================================
+# SMART DETECTION (TYPE + SHEET)
+# =====================================================
 
-def read_excel(uploaded_file, sheet_name: str) -> pd.DataFrame:
-    return pd.read_excel(uploaded_file, sheet_name=sheet_name)
+MCS_KEY_COLS = {
+    "Article No", "1ST Ex-factory date", "Gender", "Bottom Tooling No.", "Upper Tooling No.",
+    "Season", "Category", "Model Name", "Model No", "Status", "Size Run"
+}
+ORIG_KEY_COLS = {
+    "Article", "Age Group", "Season", "Category", "Model Name", "Model No", "Status", "Size Run"
+}
+
+def score_columns(cols, keyset):
+    cols_norm = {str(c).strip() for c in cols}
+    return len(cols_norm.intersection(keyset))
+
+def smart_pick_sheet_and_type(uploaded_file):
+    """
+    Return: (best_sheet, detected_type, debug_scores)
+    detected_type: "MCS" or "Original Football"
+    """
+    xls = pd.ExcelFile(uploaded_file)
+    debug = []
+
+    best = None  # (score, sheet, detected_type)
+    for sh in xls.sheet_names:
+        try:
+            # read just header (0 rows) -> cepat
+            tmp = pd.read_excel(uploaded_file, sheet_name=sh, nrows=0)
+            cols = tmp.columns
+
+            mcs_score = score_columns(cols, MCS_KEY_COLS)
+            orig_score = score_columns(cols, ORIG_KEY_COLS)
+
+            # pilih type score tertinggi
+            if mcs_score >= orig_score:
+                chosen_type = "MCS"
+                chosen_score = mcs_score
+            else:
+                chosen_type = "Original Football"
+                chosen_score = orig_score
+
+            debug.append((sh, chosen_type, chosen_score, mcs_score, orig_score))
+
+            if best is None or chosen_score > best[0]:
+                best = (chosen_score, sh, chosen_type)
+        except Exception:
+            debug.append((sh, "ERROR", -1, -1, -1))
+            continue
+
+    if best is None:
+        # fallback
+        return (xls.sheet_names[0], "MCS", debug)
+
+    _, best_sheet, best_type = best
+    return (best_sheet, best_type, debug)
 
 # =====================================================
-# UI: ONE MULTI-UPLOADER
+# UI
 # =====================================================
 
 uploaded_files = st.file_uploader(
@@ -214,43 +268,54 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-st.caption("Setiap file akan kamu pilih tipenya (MCS atau Original Football) + pilih sheetnya.")
-
 preview_rows = st.number_input("Preview rows", min_value=5, max_value=200, value=20, step=5)
 
 if not uploaded_files:
     st.info("Upload minimal 1 file Excel.")
     st.stop()
 
-# per-file config
-st.subheader("Konfigurasi tiap file")
-configs = []
+st.subheader("Konfigurasi tiap file (Auto default, bisa override)")
 
+configs = []
 for i, f in enumerate(uploaded_files):
     with st.expander(f"⚙️ {f.name}", expanded=(i == 0)):
-        try:
-            sheets = list_sheets(f)
-        except Exception as e:
-            st.error(f"Gagal baca file {f.name}: {e}")
-            continue
+        xls = pd.ExcelFile(f)
+        sheets = xls.sheet_names
 
-        file_type = st.selectbox(
-            "Tipe file",
-            ["MCS", "Original Football"],
-            key=f"type_{i}"
-        )
+        auto_sheet, auto_type, debug = smart_pick_sheet_and_type(f)
 
-        sheet = sheets[0] if len(sheets) == 1 else st.selectbox(
-            "Sheet",
-            sheets,
-            key=f"sheet_{i}"
-        )
+        # default index untuk selectbox sheet
+        sheet_index = sheets.index(auto_sheet) if auto_sheet in sheets else 0
 
-        configs.append({
-            "file": f,
-            "type": file_type,
-            "sheet": sheet,
-        })
+        c1, c2 = st.columns([1, 1])
+
+        with c1:
+            file_type = st.selectbox(
+                "Tipe file",
+                ["MCS", "Original Football"],
+                index=0 if auto_type == "MCS" else 1,
+                key=f"type_{i}",
+                help=f"Auto-detect: {auto_type}"
+            )
+
+        with c2:
+            sheet = st.selectbox(
+                "Sheet",
+                sheets,
+                index=sheet_index,
+                key=f"sheet_{i}",
+                help=f"Auto-pick: {auto_sheet}"
+            )
+
+        with st.popover("Lihat skor auto-detect"):
+            st.write("Semakin tinggi score = makin cocok.")
+            df_dbg = pd.DataFrame(
+                debug,
+                columns=["Sheet", "Chosen Type", "Chosen Score", "MCS Score", "Original Score"]
+            ).sort_values(["Chosen Score", "Sheet"], ascending=[False, True])
+            st.dataframe(df_dbg, use_container_width=True)
+
+        configs.append({"file": f, "type": file_type, "sheet": sheet})
 
 run = st.button("Generate MCS Recap", type="primary", disabled=(len(configs) == 0))
 
@@ -259,7 +324,7 @@ if run:
         prepared_dfs = []
 
         for cfg in configs:
-            df = read_excel(cfg["file"], cfg["sheet"])
+            df = pd.read_excel(cfg["file"], sheet_name=cfg["sheet"])
 
             if cfg["type"] == "MCS":
                 df_std = prepare_mcs(df).reindex(columns=final_cols)
@@ -284,7 +349,6 @@ if run:
 
             prepared_dfs.append(df_std)
 
-        # Concat ALL
         df_all = pd.concat(prepared_dfs, ignore_index=True)
 
         # Soccer detection
@@ -324,7 +388,6 @@ if run:
         # Size run normalized
         df_all["Size Run Normalized"] = df_all["Size Run"].apply(normalize_size_run)
 
-        # Output cols
         output_cols = final_cols + ["Is_Soccer", "Age Group/Gender Normalized", "Size Run Normalized"]
         df_all = df_all.reindex(columns=output_cols)
 
