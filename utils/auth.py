@@ -128,6 +128,7 @@ def _render_login_form(form_key: str = "login_form") -> bool:
         return False
 
     if login(username.strip(), password):
+        st.session_state["show_login_popup"] = False
         st.success("Login berhasil")
         st.rerun()
 
@@ -144,35 +145,36 @@ def open_login_popup(dialog_title: str = "🔐 Login PGD Apps", form_key: str = 
 
 
 def render_sidebar_auth() -> None:
-    with st.sidebar:
-        init_auth_state()
+    init_auth_state()
+    st.session_state.setdefault("show_login_popup", False)
+    st.session_state.setdefault("login_popup_auto_opened", False)
 
+    # Buka popup otomatis sekali per sesi saat user belum login.
+    if not is_logged_in() and not st.session_state["login_popup_auto_opened"]:
+        st.session_state["show_login_popup"] = True
+        st.session_state["login_popup_auto_opened"] = True
+
+    left, right = st.columns([4, 1])
+    with right:
         if is_logged_in():
             user = get_current_user() or {}
-            st.success(f"Masuk sebagai **{user.get('username', '-')}**")
-            st.caption(f"Role: `{user.get('role', '-')}`")
-
-            if st.button("Logout", use_container_width=True):
+            st.caption(f"👤 **{user.get('username', '-')}** ({user.get('role', '-')})")
+            if st.button("Logout", use_container_width=True, key="auth_logout_button"):
+                st.session_state["show_login_popup"] = False
+                st.session_state["login_popup_auto_opened"] = False
                 logout()
             return
 
-        st.subheader("🔐 Login")
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Masuk", use_container_width=True)
+        if st.button("🔐 Login", use_container_width=True, key="auth_login_button"):
+            st.session_state["show_login_popup"] = True
 
-        if submit:
-            if login(username.strip(), password):
-                st.success("Login berhasil")
-                st.rerun()
-            else:
-                st.error("Username atau password salah / akun nonaktif")
+    if st.session_state.get("show_login_popup", False):
+        open_login_popup(form_key="login_popup_form")
 
 
 def require_login() -> None:
     if not is_logged_in():
-        st.warning("Silakan login terlebih dahulu dari sidebar.")
+        st.warning("Silakan login terlebih dahulu dari tombol 🔐 Login di halaman Home.")
         st.stop()
 
 
