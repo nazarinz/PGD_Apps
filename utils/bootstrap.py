@@ -10,8 +10,11 @@ from utils.auth import hash_password
 
 def _get_setting(key: str, default: str | None = None) -> str | None:
     """Read setting with priority: Streamlit secrets -> environment variable -> default."""
-    if key in st.secrets:
-        return str(st.secrets.get(key))
+    try:
+        if key in st.secrets:
+            return str(st.secrets.get(key))
+    except Exception:
+        pass
     return os.getenv(key, default)
 
 
