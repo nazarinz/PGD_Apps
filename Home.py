@@ -10,12 +10,15 @@ from pathlib import Path
 set_page("PGD Apps — Home", "🤖")
 
 # ============================================================
-# JavaScript: sync background dengan system theme
+# JavaScript: sync background dengan mode theme pilihan user (System/Light/Dark)
 # ============================================================
 st.markdown("""
 <script>
     const applyTheme = () => {
-        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const userTheme = document.documentElement.getAttribute('data-user-theme');
+        const isDark = userTheme
+            ? userTheme === 'dark'
+            : window.matchMedia('(prefers-color-scheme: dark)').matches;
         const root = document.documentElement;
         const stApp = document.querySelector('.stApp');
         const main = document.querySelector('.main');
@@ -70,6 +73,40 @@ css = """
         --hero-end:         #3730a3;
         color-scheme: dark;
     }
+}
+
+:root[data-user-theme='light'] {
+    --primary-color:        #2563eb;
+    --primary-dark:         #1d4ed8;
+    --accent-color:         #0ea5e9;
+    --text-primary:         #0f172a;
+    --text-secondary:       #475569;
+    --text-muted:           #94a3b8;
+    --bg-primary:           #ffffff;
+    --bg-secondary:         #f8fafc;
+    --card-bg:              #fafbff;
+    --border-color:         #e0e7ff;
+    --shadow:               rgba(37, 99, 235, 0.08);
+    --hero-start:           #3b82f6;
+    --hero-end:             #2563eb;
+    color-scheme: light;
+}
+
+:root[data-user-theme='dark'] {
+    --primary-color:    #60a5fa;
+    --primary-dark:     #3b82f6;
+    --accent-color:     #93c5fd;
+    --text-primary:     #f1f5f9;
+    --text-secondary:   #cbd5e1;
+    --text-muted:       #64748b;
+    --bg-primary:       #0f172a;
+    --bg-secondary:     #1e293b;
+    --card-bg:          #1e293b;
+    --border-color:     #334155;
+    --shadow:           rgba(96, 165, 250, 0.15);
+    --hero-start:       #1e40af;
+    --hero-end:         #3730a3;
+    color-scheme: dark;
 }
 
 /* ── Global backgrounds ── */
