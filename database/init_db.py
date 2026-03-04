@@ -8,8 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from utils.auth import hash_password
-from utils.database import create_user, get_user_by_username, init_db, list_users
+from utils.database import create_user_with_password, get_user_by_username, init_db, list_users
 
 
 def bootstrap_admin(username: str, password: str) -> None:
@@ -17,13 +16,7 @@ def bootstrap_admin(username: str, password: str) -> None:
     if get_user_by_username(username):
         print(f"User '{username}' sudah ada, lewati pembuatan.")
         return
-    try:
-        password_hash = hash_password(password)
-    except RuntimeError as err:
-        print(str(err))
-        return
-
-    create_user(username=username, password_hash=password_hash, role="admin")
+    create_user_with_password(username=username, password=password, role="admin")
     print(f"Admin '{username}' berhasil dibuat.")
 
 
