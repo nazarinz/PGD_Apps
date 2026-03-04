@@ -118,6 +118,31 @@ def logout(redirect: bool = True) -> None:
         st.switch_page("Home.py")
 
 
+def _render_login_form(form_key: str = "login_form") -> bool:
+    with st.form(form_key, clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Masuk", use_container_width=True)
+
+    if not submit:
+        return False
+
+    if login(username.strip(), password):
+        st.success("Login berhasil")
+        st.rerun()
+
+    st.error("Username atau password salah / akun nonaktif")
+    return False
+
+
+def open_login_popup(dialog_title: str = "🔐 Login PGD Apps", form_key: str = "login_form") -> None:
+    @st.dialog(dialog_title)
+    def _login_popup() -> None:
+        _render_login_form(form_key=form_key)
+
+    _login_popup()
+
+
 def render_sidebar_auth() -> None:
     with st.sidebar:
         init_auth_state()
