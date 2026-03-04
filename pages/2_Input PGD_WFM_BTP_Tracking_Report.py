@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 import re
 from datetime import date, datetime
 from typing import List, Optional

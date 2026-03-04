@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # app_streamlit_merged_simple.py
 # -*- coding: utf-8 -*-
 """

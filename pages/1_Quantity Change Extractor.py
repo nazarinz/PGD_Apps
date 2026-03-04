@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # pages/1_Quantity Change Extractor.py
 # ① Extractor (Text/HTML) — PGD Apps
 import io

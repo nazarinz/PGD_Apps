@@ -16,3 +16,6 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local SQLite auth database (generated at runtime)
+database/*.db

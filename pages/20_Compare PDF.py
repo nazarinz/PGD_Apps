@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 """
 PO Compare Tool — Streamlit App
 Jalankan: streamlit run app.py

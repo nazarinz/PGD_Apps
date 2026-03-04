@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # app.py
 # Streamlit front-end for PGD — Merge per-PO (Exploded) + Dashboard vs SAP Compare (No Aggregation)
 # Versi: 2025-10-21 (Streamlit)

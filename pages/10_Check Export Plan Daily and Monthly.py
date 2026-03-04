@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # pages/2_Check Export Plan Daily and Monthly.py
 # PGD Apps — Check Export Plan Daily and Monthly (SO Auto-Detect) + Drill-down Matches (cached)
 import io, re
