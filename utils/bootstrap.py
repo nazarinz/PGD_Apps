@@ -5,7 +5,7 @@ import os
 import streamlit as st
 
 from utils import database as db
-from utils.auth import hash_password, verify_password
+from utils.auth import hash_password
 
 
 def _get_setting(key: str, default: str | None = None) -> str | None:
@@ -16,7 +16,7 @@ def _get_setting(key: str, default: str | None = None) -> str | None:
 
 
 def bootstrap_admin_if_empty() -> None:
-    """Initialize DB and ensure configured admin credentials are usable."""
+    """Initialize DB and create first admin user when users table is empty."""
     db.init_db()
 
     admin_username = _get_setting("ADMIN_USERNAME", "admin")
