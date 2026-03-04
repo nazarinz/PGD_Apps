@@ -225,7 +225,9 @@ def smart_pick_sheet_and_type(uploaded_file):
     xls = pd.ExcelFile(uploaded_file)
     debug = []
 
-    best = None  # (score, sheet, detected_type)
+    best_score = -1
+    best_sheet = None
+    best_type = None
     for sh in xls.sheet_names:
         try:
             # read just header (0 rows) -> cepat
@@ -245,17 +247,18 @@ def smart_pick_sheet_and_type(uploaded_file):
 
             debug.append((sh, chosen_type, chosen_score, mcs_score, orig_score))
 
-            if best is None or chosen_score > best[0]:
-                best = (chosen_score, sh, chosen_type)
+            if chosen_score > best_score:
+                best_score = chosen_score
+                best_sheet = sh
+                best_type = chosen_type
         except Exception:
             debug.append((sh, "ERROR", -1, -1, -1))
             continue
 
-    if best is None:
+    if best_sheet is None or best_type is None:
         # fallback
         return (xls.sheet_names[0], "MCS", debug)
 
-    _, best_sheet, best_type = best
     return (best_sheet, best_type, debug)
 
 # =====================================================

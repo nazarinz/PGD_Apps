@@ -152,7 +152,7 @@ def create_reordered_sheet(src_ws: Worksheet, dst_ws: Worksheet, new_order_names
             # skip horizontal merges to avoid corruption after reordering
             pass
 
-def reorder_workbook_keep_format(wb: "openpyxl.workbook.workbook.Workbook"):
+def reorder_workbook_keep_format(wb: Workbook):
     new_wb = Workbook()
     if new_wb.active and len(wb.worksheets) > 0:
         new_wb.remove(new_wb.active)
