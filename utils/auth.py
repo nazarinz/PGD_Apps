@@ -128,6 +128,7 @@ def _render_login_form(form_key: str = "login_form") -> bool:
         return False
 
     if login(username.strip(), password):
+        st.session_state["show_login_popup"] = False
         st.success("Login berhasil")
         st.rerun()
 
@@ -145,6 +146,13 @@ def open_login_popup(dialog_title: str = "🔐 Login PGD Apps", form_key: str = 
 
 def render_sidebar_auth() -> None:
     init_auth_state()
+    st.session_state.setdefault("show_login_popup", False)
+    st.session_state.setdefault("login_popup_auto_opened", False)
+
+    # Buka popup otomatis sekali per sesi saat user belum login.
+    if not is_logged_in() and not st.session_state["login_popup_auto_opened"]:
+        st.session_state["show_login_popup"] = True
+        st.session_state["login_popup_auto_opened"] = True
 
     left, right = st.columns([4, 1])
     with right:
@@ -152,6 +160,8 @@ def render_sidebar_auth() -> None:
             user = get_current_user() or {}
             st.caption(f"👤 **{user.get('username', '-')}** ({user.get('role', '-')})")
             if st.button("Logout", use_container_width=True, key="auth_logout_button"):
+                st.session_state["show_login_popup"] = False
+                st.session_state["login_popup_auto_opened"] = False
                 logout()
             return
 
