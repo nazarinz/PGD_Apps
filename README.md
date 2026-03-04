@@ -70,7 +70,7 @@ auth_secret = "random_panjang_32_atau_lebih"
 
 Catatan:
 - `auth_secret` dibaca dari `st.secrets.get("auth_secret")` atau env `AUTH_SECRET`.
-- Jika `AUTH_SECRET` tidak ada, aplikasi fallback ke `"dev-insecure-secret"` (hanya untuk dev).
+- Jika `AUTH_SECRET` tidak ada, aplikasi membuat secret acak runtime per proses (lebih aman dibanding secret statis).
 
 ---
 
