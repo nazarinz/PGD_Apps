@@ -7,6 +7,11 @@ import streamlit as st
 
 def _get_setting(key: str, default: str | None = None) -> str | None:
     """Prioritas: Streamlit secrets -> environment variable -> default."""
+from utils.database import create_user_with_password, get_user_by_username, init_db, list_users
+
+
+def _get_setting(key: str, default: str | None = None) -> str | None:
+    """Read setting with priority: Streamlit secrets -> environment variable -> default."""
     if key in st.secrets:
         return str(st.secrets.get(key))
     return os.getenv(key, default)
@@ -20,6 +25,14 @@ def bootstrap_admin_if_empty() -> None:
     db.init_db()
 
     if len(db.list_users()) > 0:
+    """
+    Run once at app startup:
+    - ensure auth tables exist
+    - if no user exists yet, create an admin user from secrets/env
+    """
+    init_db()
+
+    if len(list_users()) > 0:
         return
 
     admin_username = _get_setting("ADMIN_USERNAME", "admin")
@@ -49,4 +62,8 @@ def bootstrap_admin_if_empty() -> None:
             role="admin",
         )
 
+    if get_user_by_username(admin_username):
+        return
+
+    create_user_with_password(username=admin_username, password=admin_password, role="admin")
     st.success(f"Bootstrap selesai: admin '{admin_username}' dibuat (first run). Silakan login.")
