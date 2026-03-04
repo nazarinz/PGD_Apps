@@ -8,19 +8,36 @@ import bcrypt
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_DIR = BASE_DIR / "database"
 DB_PATH = DB_DIR / "users.db"
+_DB_INITIALIZED = False
 
 
-def get_connection() -> sqlite3.Connection:
-    """Create a SQLite connection with row access by column name."""
+def _connect() -> sqlite3.Connection:
+    """Create SQLite connection without running schema bootstrap."""
     DB_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def ensure_db_initialized() -> None:
+    """Ensure auth tables are available before query execution."""
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+
+    init_db()
+    _DB_INITIALIZED = True
+
+
+def get_connection() -> sqlite3.Connection:
+    """Create a SQLite connection with row access by column name."""
+    ensure_db_initialized()
+    return _connect()
+
+
 def init_db() -> None:
     """Initialize required auth tables if not exists."""
-    with get_connection() as conn:
+    with _connect() as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
