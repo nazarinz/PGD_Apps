@@ -119,30 +119,13 @@ def logout(redirect: bool = True) -> None:
 
 
 def render_sidebar_auth() -> None:
-    init_auth_state()
     with st.sidebar:
-        if is_logged_in():
-            user = get_current_user() or {}
-            st.success(f"Login sebagai: **{user.get('username', '-')}**")
-            st.caption(f"Role: `{user.get('role', '-')}`")
-            if st.button("Logout", use_container_width=True):
-                logout(redirect=True)
-        else:
-            st.info("Belum login")
+        st.info("Mode tanpa login aktif")
 
 
 def require_login() -> None:
-    init_auth_state()
-    render_sidebar_auth()
-    if not is_logged_in():
-        st.warning("Silakan login terlebih dahulu.")
-        st.switch_page("Home.py")
-        st.stop()
+    return
 
 
 def require_role(role: str) -> None:
-    require_login()
-    current_user = get_current_user() or {}
-    if current_user.get("role") != role:
-        st.error("Access Denied")
-        st.stop()
+    return
