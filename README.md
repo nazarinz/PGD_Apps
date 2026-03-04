@@ -58,6 +58,22 @@ pip install -r requirements.txt
 
 ---
 
+## 🔐 Konfigurasi Auth untuk Deploy
+
+Set minimal secrets/env berikut di platform deploy (mis. **Streamlit Cloud → Secrets**):
+
+```toml
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "ganti_dengan_password_kuat"
+auth_secret = "random_panjang_32_atau_lebih"
+```
+
+Catatan:
+- `auth_secret` dibaca dari `st.secrets.get("auth_secret")` atau env `AUTH_SECRET`.
+- Jika `AUTH_SECRET` tidak ada, aplikasi fallback ke `"dev-insecure-secret"` (hanya untuk dev).
+
+---
+
 ## ▶️ Cara Menjalankan
 
 ### Windows (PowerShell)

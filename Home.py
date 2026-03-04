@@ -6,11 +6,11 @@ logo fallback, placeholder text, 2-kolom tool grid, dan version badge.
 import streamlit as st
 from utils import set_page, header, footer
 from utils.auth import init_auth_state, login, is_logged_in, get_current_user, render_sidebar_auth
-from utils.database import init_db
+from utils.bootstrap import bootstrap_admin_if_empty
 from pathlib import Path
 
 set_page("PGD Apps — Home", "🤖")
-init_db()
+bootstrap_admin_if_empty()
 init_auth_state()
 render_sidebar_auth()
 
