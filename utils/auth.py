@@ -12,10 +12,11 @@ from utils.database import get_user_by_id, get_user_by_username
 
 SESSION_AUTH_KEY = "auth_user"
 SESSION_AUTH_SIG = "auth_sig"
+_RUNTIME_FALLBACK_SECRET = os.urandom(32).hex()
 
 
 def _session_secret() -> str:
-    return str(st.secrets.get("auth_secret") or os.getenv("AUTH_SECRET") or "dev-insecure-secret")
+    return str(st.secrets.get("auth_secret") or os.getenv("AUTH_SECRET") or _RUNTIME_FALLBACK_SECRET)
 
 
 def _build_signature(user_id: int, username: str, role: str) -> str:
