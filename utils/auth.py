@@ -12,6 +12,7 @@ from utils.database import get_user_by_id, get_user_by_username
 
 SESSION_AUTH_KEY = "auth_user"
 SESSION_AUTH_SIG = "auth_sig"
+AUTH_DISABLED = True
 
 
 def _session_secret() -> str:
@@ -97,6 +98,9 @@ def _session_valid() -> bool:
 
 
 def is_logged_in() -> bool:
+    if AUTH_DISABLED:
+        return True
+
     init_auth_state()
     if not _session_valid():
         logout(redirect=False)
@@ -105,6 +109,9 @@ def is_logged_in() -> bool:
 
 
 def get_current_user() -> dict[str, Any] | None:
+    if AUTH_DISABLED:
+        return {"user_id": 0, "username": "guest", "role": "admin"}
+
     if not is_logged_in():
         return None
     return st.session_state.get(SESSION_AUTH_KEY)
@@ -145,6 +152,10 @@ def open_login_popup(dialog_title: str = "🔐 Login PGD Apps", form_key: str = 
 
 
 def render_sidebar_auth() -> None:
+    if AUTH_DISABLED:
+        st.caption("🔓 Login sementara dinonaktifkan")
+        return
+
     init_auth_state()
     st.session_state.setdefault("show_login_popup", False)
     st.session_state.setdefault("login_popup_auto_opened", False)
@@ -173,12 +184,18 @@ def render_sidebar_auth() -> None:
 
 
 def require_login() -> None:
+    if AUTH_DISABLED:
+        return
+
     if not is_logged_in():
         st.warning("Silakan login terlebih dahulu dari tombol 🔐 Login di halaman Home.")
         st.stop()
 
 
 def require_role(role: str) -> None:
+    if AUTH_DISABLED:
+        return
+
     require_login()
     user = get_current_user()
     if not user:
