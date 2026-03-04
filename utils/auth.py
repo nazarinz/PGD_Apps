@@ -120,12 +120,43 @@ def logout(redirect: bool = True) -> None:
 
 def render_sidebar_auth() -> None:
     with st.sidebar:
-        st.info("Mode tanpa login aktif")
+        init_auth_state()
+
+        if is_logged_in():
+            user = get_current_user() or {}
+            st.success(f"Masuk sebagai **{user.get('username', '-')}**")
+            st.caption(f"Role: `{user.get('role', '-')}`")
+
+            if st.button("Logout", use_container_width=True):
+                logout()
+            return
+
+        st.subheader("🔐 Login")
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Masuk", use_container_width=True)
+
+        if submit:
+            if login(username.strip(), password):
+                st.success("Login berhasil")
+                st.rerun()
+            else:
+                st.error("Username atau password salah / akun nonaktif")
 
 
 def require_login() -> None:
-    return
+    if not is_logged_in():
+        st.warning("Silakan login terlebih dahulu dari sidebar.")
+        st.stop()
 
 
 def require_role(role: str) -> None:
-    return
+    require_login()
+    user = get_current_user()
+    if not user:
+        st.stop()
+
+    if user.get("role") != role:
+        st.error("Anda tidak memiliki akses ke halaman ini.")
+        st.stop()
