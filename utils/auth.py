@@ -119,13 +119,52 @@ def logout(redirect: bool = True) -> None:
 
 
 def render_sidebar_auth() -> None:
-    with st.sidebar:
-        st.info("Mode tanpa login aktif")
+    init_auth_state()
+
+    @st.dialog("🔐 Login PGD Apps")
+    def login_popup() -> None:
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Masuk", use_container_width=True)
+
+        if submit:
+            if login(username.strip(), password):
+                st.success("Login berhasil")
+                st.rerun()
+            else:
+                st.error("Username atau password salah / akun nonaktif")
+
+    if is_logged_in():
+        user = get_current_user() or {}
+        col_info, col_action = st.columns([4, 1])
+        with col_info:
+            st.success(f"Masuk sebagai **{user.get('username', '-')}** (role: `{user.get('role', '-')}`)")
+        with col_action:
+            if st.button("Logout", use_container_width=True):
+                logout()
+        return
+
+    col_info, col_action = st.columns([4, 1])
+    with col_info:
+        st.info("Anda belum login")
+    with col_action:
+        if st.button("Login", use_container_width=True, type="primary"):
+            login_popup()
 
 
 def require_login() -> None:
-    return
+    if not is_logged_in():
+        st.warning("Silakan login terlebih dahulu dari tombol Login di halaman Home.")
+        st.stop()
 
 
 def require_role(role: str) -> None:
-    return
+    require_login()
+    user = get_current_user()
+    if not user:
+        st.stop()
+
+    if user.get("role") != role:
+        st.error("Anda tidak memiliki akses ke halaman ini.")
+        st.stop()
