@@ -119,10 +119,19 @@ def logout(redirect: bool = True) -> None:
 
 
 def render_sidebar_auth() -> None:
-    init_auth_state()
+    with st.sidebar:
+        init_auth_state()
 
-    @st.dialog("🔐 Login PGD Apps")
-    def login_popup() -> None:
+        if is_logged_in():
+            user = get_current_user() or {}
+            st.success(f"Masuk sebagai **{user.get('username', '-')}**")
+            st.caption(f"Role: `{user.get('role', '-')}`")
+
+            if st.button("Logout", use_container_width=True):
+                logout()
+            return
+
+        st.subheader("🔐 Login")
         with st.form("login_form", clear_on_submit=False):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
@@ -135,27 +144,10 @@ def render_sidebar_auth() -> None:
             else:
                 st.error("Username atau password salah / akun nonaktif")
 
-    if is_logged_in():
-        user = get_current_user() or {}
-        col_info, col_action = st.columns([4, 1])
-        with col_info:
-            st.success(f"Masuk sebagai **{user.get('username', '-')}** (role: `{user.get('role', '-')}`)")
-        with col_action:
-            if st.button("Logout", use_container_width=True):
-                logout()
-        return
-
-    col_info, col_action = st.columns([4, 1])
-    with col_info:
-        st.info("Anda belum login")
-    with col_action:
-        if st.button("Login", use_container_width=True, type="primary"):
-            login_popup()
-
 
 def require_login() -> None:
     if not is_logged_in():
-        st.warning("Silakan login terlebih dahulu dari tombol Login di halaman Home.")
+        st.warning("Silakan login terlebih dahulu dari sidebar.")
         st.stop()
 
 
