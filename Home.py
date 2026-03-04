@@ -5,34 +5,12 @@ logo fallback, placeholder text, 2-kolom tool grid, dan version badge.
 """
 import streamlit as st
 from utils import set_page, header, footer
-from utils.auth import init_auth_state, login, is_logged_in, get_current_user, render_sidebar_auth
-from utils.bootstrap import bootstrap_admin_if_empty
+from utils.auth import init_auth_state, render_sidebar_auth
 from pathlib import Path
 
 set_page("PGD Apps — Home", "🤖")
-bootstrap_admin_if_empty()
 init_auth_state()
 render_sidebar_auth()
-
-if not is_logged_in():
-    st.title("🔐 Login")
-    st.caption("Silakan login untuk mengakses semua halaman tools.")
-
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login", use_container_width=True)
-
-    if submitted:
-        if login(username=username, password=password):
-            st.success("Login berhasil. Mengarahkan ke Dashboard...")
-            st.switch_page("pages/dashboard.py")
-        else:
-            st.error("Username atau password salah / user tidak aktif.")
-    st.stop()
-
-user = get_current_user() or {}
-st.sidebar.info(f"User aktif: {user.get('username', '-')}")
 
 # ============================================================
 # JavaScript: sync background dengan mode theme pilihan user (System/Light/Dark)
