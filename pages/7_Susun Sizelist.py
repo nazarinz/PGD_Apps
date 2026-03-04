@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # ======================================================
 # Reorder UK_* Size Columns in Excel (Upload + Keep Format) + Auto Download
 # ======================================================

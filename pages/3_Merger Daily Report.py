@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # pages/3_Merger Daily Report.py
 # Adapted from user's HTML-XLS merger app
 import io

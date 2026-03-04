@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # PGD Apps — Input Tracking Report (Pending Cancel Only)
 # =====================================================
 # Sub-tools: "Buat masukin tracking PO Pending Cancel"

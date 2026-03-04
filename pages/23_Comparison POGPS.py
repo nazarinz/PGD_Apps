@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # ============================================================
 # PGD Comparison Tracking — SAP vs Infor  |  PO Splitter 5.000
 # ============================================================

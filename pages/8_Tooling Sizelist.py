@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # ==========================================
 # 8_Tooling Sizelist.py — PGD Apps (v12)
 # ==========================================

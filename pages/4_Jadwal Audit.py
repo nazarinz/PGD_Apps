@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # pages/4_Jadwal Audit Mingguan/Bulanan.py
 # Adapted from user's Jadwal Audit Mingguan/Bulanan — revised randomization & seed control
 import io, os

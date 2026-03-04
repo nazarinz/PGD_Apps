@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 """
 Reroute Tools Suite - Unified Streamlit App
 Menggabungkan:

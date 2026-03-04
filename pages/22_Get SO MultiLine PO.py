@@ -1,3 +1,7 @@
+from utils.auth import require_login
+
+require_login()
+
 # ------------------------------------------------------------
 # Streamlit App — Get SO from SAP
 # Matching Strategy:
