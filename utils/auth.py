@@ -144,33 +144,36 @@ def open_login_popup(dialog_title: str = "🔐 Login PGD Apps", form_key: str = 
 
 
 def render_sidebar_auth() -> None:
-    init_auth_state()
+    with st.sidebar:
+        init_auth_state()
 
-    if is_logged_in():
-        user = get_current_user() or {}
-        col_info, col_action = st.columns([4, 1])
-        with col_info:
-            st.success(f"Masuk sebagai **{user.get('username', '-')}** (role: `{user.get('role', '-')}`)")
-        with col_action:
+        if is_logged_in():
+            user = get_current_user() or {}
+            st.success(f"Masuk sebagai **{user.get('username', '-')}**")
+            st.caption(f"Role: `{user.get('role', '-')}`")
+
             if st.button("Logout", use_container_width=True):
                 logout()
-        return
+            return
 
-    col_info, col_action = st.columns([4, 1])
-    with col_info:
-        st.info("Anda belum login")
-    with col_action:
-        if st.button("Login", use_container_width=True, type="primary"):
-            open_login_popup(form_key="login_form_home")
+        st.subheader("🔐 Login")
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Masuk", use_container_width=True)
+
+        if submit:
+            if login(username.strip(), password):
+                st.success("Login berhasil")
+                st.rerun()
+            else:
+                st.error("Username atau password salah / akun nonaktif")
 
 
 def require_login() -> None:
-    if is_logged_in():
-        return
-
-    st.warning("Silakan login terlebih dahulu untuk mengakses halaman ini.")
-    open_login_popup(form_key="login_form_guard")
-    st.stop()
+    if not is_logged_in():
+        st.warning("Silakan login terlebih dahulu dari sidebar.")
+        st.stop()
 
 
 def require_role(role: str) -> None:
