@@ -143,7 +143,7 @@ class Config:
         'customerrequestdate','plandate','grandtotal','classcode','gpscustomernumber',
         'shipmentmode','plantcode','orderquantity','customercontractid','custarticleno',
     ]
-    DATE_TOKENS = ['po date','crd','pd','fpd','posdd','lpd','podd','vas cut-off date','document date']
+    DATE_TOKENS = ['po date','crd','pd','fpd','posdd','lpd','podd','vas cut-off date','document date', 'prod. team atp']
 
     OUTPUT_COLUMNS = [
         'Remark','Select','Status','Working Status','Working Status Descr.',
