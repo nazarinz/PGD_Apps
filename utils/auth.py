@@ -12,7 +12,7 @@ from utils.database import get_user_by_id, get_user_by_username
 
 SESSION_AUTH_KEY = "auth_user"
 SESSION_AUTH_SIG = "auth_sig"
-AUTH_DISABLED = False
+AUTH_DISABLED = True
 
 
 def _session_secret() -> str:
