@@ -158,6 +158,7 @@ def parse_invoice(file_obj, filename: str) -> InvoiceData:
     # Get invoice number — normalize to strip " FMS"/" FVB" suffix from filename fallback
     raw_inv = header.get("Invoice No.", "").strip() or Path(filename).stem
     inv_no = re.sub(r'[\s_]+(FMS|FVB)$', '', raw_inv, flags=re.IGNORECASE).strip()
+    header["Invoice No."] = inv_no  # write back so Excel header block shows it
 
     return InvoiceData(
         invoice_no=inv_no,
