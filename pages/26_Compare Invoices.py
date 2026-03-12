@@ -108,6 +108,25 @@ def _build_header_lookup() -> dict[str, str]:
 _HEADER_LOOKUP = _build_header_lookup()
 
 
+def _clean_key(cell: Any) -> str:
+    """Normalize a cell value to a lookup key.
+    Strips colons, dots, spaces in any order so 'Invoice No. :' → 'invoice no'
+    """
+    s = str(cell).strip()
+    # Remove trailing colon + dot combinations e.g. " :", ". :", "."
+    s = s.rstrip(": ").rstrip(".").rstrip(": ").rstrip(".").strip()
+    return s.lower()
+
+
+def _next_val(row: list, j: int) -> str:
+    """Return first non-empty value to the right of position j."""
+    for offset in range(1, len(row) - j):
+        v = _norm(row[j + offset])
+        if v:
+            return v
+    return ""
+
+
 def parse_invoice(file_obj, filename: str) -> InvoiceData:
     df_raw = pd.read_excel(file_obj, header=None, dtype=str)
     rows = df_raw.fillna("").values.tolist()
@@ -115,25 +134,37 @@ def parse_invoice(file_obj, filename: str) -> InvoiceData:
     header: dict[str, str] = {}
     item_header_row = -1
 
+    # ── Pass 1: scan every cell for header labels ─────────────────────────────
     for i, row in enumerate(rows):
         for j, cell in enumerate(row):
-            key = str(cell).strip().rstrip(":").rstrip(".").strip().lower()
+            key = _clean_key(cell)
             if key in _HEADER_LOOKUP:
                 f = _HEADER_LOOKUP[key]
-                val = ""
-                for offset in range(1, min(5, len(row) - j)):
-                    candidate = _norm(row[j + offset])
-                    if candidate:
-                        val = candidate
-                        break
-                if not val and ":" in str(cell):
-                    val = str(cell).split(":", 1)[-1].strip()
-                if not header.get(f):
-                    header[f] = val
+                if not header.get(f):           # keep first match
+                    header[f] = _next_val(row, j)
 
         if any(str(c).strip() == "Item Seq." for c in row):
             item_header_row = i
 
+    # ── Pass 2: dedicated hunt for Invoice No. if still missing ───────────────
+    # Scan all cells; when we find a label-like cell containing "invoice no",
+    # grab the nearest non-empty value in the same row OR the row below.
+    if not header.get("Invoice No."):
+        for i, row in enumerate(rows):
+            for j, cell in enumerate(row):
+                if "invoice no" in _clean_key(cell):
+                    # Try same row first
+                    val = _next_val(row, j)
+                    # Try next row at same column if still empty
+                    if not val and i + 1 < len(rows):
+                        val = _norm(rows[i + 1][j]) or _next_val(rows[i + 1], j - 1)
+                    if val:
+                        header["Invoice No."] = val
+                        break
+            if header.get("Invoice No."):
+                break
+
+    # ── Parse item rows ───────────────────────────────────────────────────────
     items: list[dict[str, Any]] = []
     total_row = None
 
@@ -155,10 +186,10 @@ def parse_invoice(file_obj, filename: str) -> InvoiceData:
 
     file_type = _detect_type(items)
 
-    # Get invoice number — normalize to strip " FMS"/" FVB" suffix from filename fallback
+    # Final invoice number — strip filename suffix if value came from stem
     raw_inv = header.get("Invoice No.", "").strip() or Path(filename).stem
     inv_no = re.sub(r'[\s_]+(FMS|FVB)$', '', raw_inv, flags=re.IGNORECASE).strip()
-    header["Invoice No."] = inv_no  # write back so Excel header block shows it
+    header["Invoice No."] = inv_no   # ensure Excel output always shows it
 
     return InvoiceData(
         invoice_no=inv_no,
