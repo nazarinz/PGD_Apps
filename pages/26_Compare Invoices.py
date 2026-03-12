@@ -79,6 +79,23 @@ def _norm(val: Any) -> str:
     return str(val).strip()
 
 
+import re as _re
+
+def _normalize_cell_key(cell: str) -> str:
+    return cell.strip().rstrip(":").rstrip(".").strip().lower()
+
+# Loose lowercase lookup for header fields
+_HEADER_LOWER: dict[str, str] = {}
+for _f in HEADER_FIELDS:
+    _HEADER_LOWER[_normalize_cell_key(_f)] = _f
+_HEADER_LOWER["invoice no"]   = "Invoice No."
+_HEADER_LOWER["gross weight"] = "Gross Weight"
+
+def _normalize_invoice_no(raw: str) -> str:
+    """Strip trailing FMS/FVB label that may come from filename fallback."""
+    return _re.sub(r'\s+(FMS|FVB)$', '', raw.strip(), flags=_re.IGNORECASE)
+
+
 def parse_invoice(file_obj, filename: str) -> InvoiceData:
     df_raw = pd.read_excel(file_obj, header=None, dtype=str)
     rows = df_raw.fillna("").values.tolist()
@@ -88,11 +105,22 @@ def parse_invoice(file_obj, filename: str) -> InvoiceData:
 
     for i, row in enumerate(rows):
         for j, cell in enumerate(row):
-            cell_s = str(cell).strip().rstrip(":")
-            for f in HEADER_FIELDS:
-                if cell_s == f or cell_s == f.rstrip("."):
-                    val = _norm(rows[i][j + 1] if j + 1 < len(rows[i]) else "")
-                    header[f] = val
+            key = _normalize_cell_key(str(cell))
+            if key in _HEADER_LOWER:
+                field = _HEADER_LOWER[key]
+                val = ""
+                # Look in adjacent cells (j+1 .. j+3)
+                for offset in range(1, min(4, len(row) - j)):
+                    candidate = _norm(row[j + offset])
+                    if candidate:
+                        val = candidate
+                        break
+                # Fallback: value embedded after colon in same cell
+                if not val and ":" in str(cell):
+                    val = str(cell).split(":", 1)[-1].strip()
+                if not header.get(field):
+                    header[field] = val
+
         if any(str(c).strip() == "Item Seq." for c in row):
             item_header_row = i
 
@@ -115,7 +143,9 @@ def parse_invoice(file_obj, filename: str) -> InvoiceData:
                     for col in ITEM_COLS}
             items.append(item)
 
-    inv_no = header.get("Invoice No.", Path(filename).stem)
+    raw_inv = header.get("Invoice No.", "") or Path(filename).stem
+    inv_no  = _normalize_invoice_no(raw_inv)
+
     return InvoiceData(invoice_no=inv_no, header=header, items=items,
                        total_row=total_row, source_file=filename)
 
