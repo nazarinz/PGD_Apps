@@ -185,7 +185,7 @@ def compare_value(val_a: str, val_b: str, mode: str):
         return "YES" if val_a == val_b else "NO"
     elif mode == "num":
         try:
-            return round(float(val_b) - float(val_a), 4)
+            return round(float(val_a) - float(val_b), 4)
         except (ValueError, TypeError):
             return "N/A"
     return "?"
