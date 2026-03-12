@@ -154,7 +154,10 @@ def parse_invoice(file_obj, filename: str) -> InvoiceData:
             items.append(item)
 
     file_type = _detect_type(items)
-    inv_no = header.get("Invoice No.", "") or Path(filename).stem
+
+    # Get invoice number — normalize to strip " FMS"/" FVB" suffix from filename fallback
+    raw_inv = header.get("Invoice No.", "").strip() or Path(filename).stem
+    inv_no = re.sub(r'[\s_]+(FMS|FVB)$', '', raw_inv, flags=re.IGNORECASE).strip()
 
     return InvoiceData(
         invoice_no=inv_no,
@@ -394,6 +397,12 @@ if uploads:
 
     for err in parse_errors:
         st.error(f"⚠ Gagal parse: {err}")
+
+    # Debug expander — shows raw parsed header so user can diagnose issues
+    with st.expander("🔍 Debug: lihat hasil parse (klik jika ada masalah)"):
+        for d in parsed:
+            st.markdown(f"**{d.source_file}** → Tipe: `{d.file_type}` | Invoice No: `{d.invoice_no}`")
+            st.json(d.header, expanded=False)
 
 st.divider()
 
