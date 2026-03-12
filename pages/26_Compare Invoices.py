@@ -292,14 +292,24 @@ def _write_items_block(ws, r: int, data: InvoiceData, col_color: str, diffs: lis
 
 
 def _write_ok_row(ws, r: int, diffs: list[Diff]) -> None:
-    diff_cols = {d.field for d in diffs if d.scope in ("item", "total")}
+    # Item-level diffs (by column name)
+    item_diff_cols   = {d.field for d in diffs if d.scope in ("item", "total")}
+    # Header-level diffs (Amount / Gross Weight)
+    header_diff_cols = {d.field for d in diffs if d.scope == "header"}
+
     ws.cell(r, 1, "CHECK").font = _font(color="FFFFFF", size=9)
     ws.cell(r, 1).fill = _fill("444444")
     ws.cell(r, 1).alignment = Alignment(horizontal="center")
+
+    # Header compare result (Amount + Gross Weight) shown in the SO/PO No cell
+    header_ok = not header_diff_cols  # True if Amount AND Gross Weight both match
+
     for ci, col in enumerate(ITEM_COLS, 1):
         if col in SKIP_ITEM_COMPARE:
-            lbl, clr = "SKIP", C_YELLOW
-        elif col in diff_cols:
+            # Repurpose SO/PO No cell → shows header Amount & Gross Weight compare result
+            lbl = "OK" if header_ok else "DIFF"
+            clr = C_GREEN if header_ok else C_RED
+        elif col in item_diff_cols:
             lbl, clr = "DIFF", C_RED
         else:
             lbl, clr = "OK", C_GREEN
