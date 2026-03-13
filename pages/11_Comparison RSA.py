@@ -14,6 +14,7 @@ Updates:
 - Add combined 'Infor Customer PO item' column (Line Aggregator + SC Segmentation (new Infor column) + normalized Segment Attribute Desc)
 - Add compare: SAP 'Segment Attribute' vs Infor normalized 'Segment Attribute Desc' -> Result_Segment Attribute Desc
 - FIX: Delay comparison now normalizes both SAP (XX-XXXX) and Infor (XXXX) to canonical form before comparing
+- ADD: 'Sales Channel' and 'Storage Location' columns from Infor data added to output
 """
 
 import re
@@ -77,6 +78,8 @@ DESIRED_ORDER = [
     # Segment Attribute Desc comparison (both from Infor)
     "infor Segment Attribute","infor Segment Attribute Desc","Result_Segment Attribute Desc",
     "infor SC Segmentation",
+    # Sales Channel and Storage Location from Infor
+    "infor Sales Channel","infor Storage Location",
     "Segment","S&P LPD","Currency"
 ]
 
@@ -453,6 +456,15 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
                     on="PO No.(Full)", how="left"
                 )
 
+    # Ensure Sales Channel and Storage Location carried over to grouped table
+    for extra_col in ["Sales Channel", "Storage Location"]:
+        if extra_col in df_infor.columns and extra_col not in df_infor_grouped.columns:
+            if "PO No.(Full)" in df_infor.columns:
+                df_infor_grouped = df_infor_grouped.merge(
+                    df_infor.groupby("PO No.(Full)", dropna=False)[extra_col].agg(keep_or_join).reset_index(),
+                    on="PO No.(Full)", how="left"
+                )
+
     # make keys
     if "CRD" in df_infor_grouped.columns:
         df_infor_grouped["CRD_key"] = to_dt_series(df_infor_grouped["CRD"])
@@ -471,12 +483,13 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
     df_sap["CRD_key"] = to_dt_series(df_sap["CRD"]) if "CRD" in df_sap.columns else pd.NaT
     df_sap["PD_key"]  = to_dt_series(df_sap["PD"]) if "PD" in df_sap.columns else pd.NaT
 
-    # prepare infor pick
+    # prepare infor pick — includes Sales Channel and Storage Location
     infor_cols_for_merge = [
         "Order Status","Article No","LPD","PODD","PSDD","FPD","CRD","PD",
         "Delay/Early - Confirmation CRD","Delay - PO PSDD Update","Delay - PO PD Update",
         "Quantity","Shipment Method","Issue Date",
-        "Customer PO item","Line Aggregator","Infor Customer PO item","Market PO Number"
+        "Customer PO item","Line Aggregator","Infor Customer PO item","Market PO Number",
+        "Sales Channel","Storage Location"
     ]
     if "Customer Number" in df_infor_grouped.columns:
         infor_cols_for_merge.append("Customer Number")
