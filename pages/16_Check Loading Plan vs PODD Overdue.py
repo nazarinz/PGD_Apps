@@ -255,35 +255,33 @@ def process_files(zrsd_file, plan_files, date_format):
 
         entries = plan_so_map[so]  # list of (source, date)
 
-        # Pisahkan tanggal per sumber
-        sap_dates  = sorted({d for src, d in entries if src == "SAP"})
-        fvb_dates  = sorted({d for src, d in entries if src == "FVB"})
-        all_dates  = sorted({d for _, d in entries})
+        # Tanggal unik gabungan, diformat M/D/YYYY
+        all_dates = sorted({d for _, d in entries})
+        all_dates_str = ", ".join(d.strftime("%-m/%-d/%Y") for d in all_dates)
 
-        sap_dates_str = ", ".join(str(d) for d in sap_dates) if sap_dates else "-"
-        fvb_dates_str = ", ".join(str(d) for d in fvb_dates) if fvb_dates else "-"
-        plan_dates_str = f"SAP: {sap_dates_str} | FVB: {fvb_dates_str}"
+        # Tanggal untuk Remark (format YYYY-MM-DD)
+        all_dates_remark = ", ".join(str(d) for d in all_dates)
 
-        # Tentukan sumber mana yang menyimpan SO ini
+        # Sumber SO
         sources_found = []
-        if sap_dates:
+        if any(src == "SAP" for src, _ in entries):
             sources_found.append("SAP")
-        if fvb_dates:
+        if any(src == "FVB" for src, _ in entries):
             sources_found.append("FVB")
         source_label = "+".join(sources_found)
 
         if podd_date in all_dates:
             return (
-                f"✅ MATCH – Date Match (via {source_label})",
+                "✅ MATCH – Date Match",
                 "match",
-                plan_dates_str,
+                all_dates_str,
                 source_label,
             )
         else:
             return (
-                f"⚠️ IN PLAN – Date Mismatch (Plan: {plan_dates_str})",
+                f"⚠️ IN PLAN – Date Mismatch (Plan: {all_dates_remark})",
                 "mismatch",
-                plan_dates_str,
+                all_dates_str,
                 source_label,
             )
 
