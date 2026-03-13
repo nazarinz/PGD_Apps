@@ -328,10 +328,18 @@ if 'results' in st.session_state:
     st.dataframe(df, use_container_width=True)
 
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
 
-        from openpyxl.styles import numbers
+    # ── Sisipkan kolom DN dan FGR setelah kolom PODD ──────────────────────
+    podd_idx = df.columns.get_loc('PODD') if 'PODD' in df.columns else len(df.columns) - 1
+    df_export = df.copy()
+    df_export.insert(podd_idx + 1, 'DN',  "")
+    df_export.insert(podd_idx + 2, 'FGR', "")
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export.to_excel(writer, index=False)
+
+        from openpyxl.styles import Font, PatternFill, Alignment, numbers
+
         worksheet = writer.sheets['Sheet1']
 
         known_date_columns = [
@@ -340,16 +348,30 @@ if 'results' in st.session_state:
             'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
         ]
 
-        date_col_indices = []
-        for i, col in enumerate(df.columns, start=1):
-            if any(col.lower() == known.lower() for known in known_date_columns):
-                date_col_indices.append(i)
+        # Kolom yang diberi warna kuning
+        yellow_columns = {'DN', 'FGR', 'Remark Loading Plan', 'Status', 'Plan Dates', 'SO Source'}
 
-        for col_idx in date_col_indices:
-            col_letter = worksheet.cell(row=1, column=col_idx).column_letter
-            for row in range(2, worksheet.max_row + 1):
-                cell = worksheet[f'{col_letter}{row}']
-                if cell.value:
+        YELLOW = PatternFill(fill_type="solid", fgColor="FFFF00")
+        GREY   = PatternFill(fill_type="solid", fgColor="D9D9D9")
+        FONT   = Font(name="Calibri", size=9)
+        ALIGN  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        # Terapkan style ke semua sel (header + data)
+        for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, max_col=worksheet.max_column):
+            for cell in row:
+                col_name = df_export.columns[cell.column - 1]
+
+                # Font & alignment
+                cell.font      = FONT
+                cell.alignment = ALIGN
+
+                # Warna fill
+                cell.fill = YELLOW if col_name in yellow_columns else GREY
+
+                # Format tanggal
+                if (cell.row > 1
+                        and any(col_name.lower() == k.lower() for k in known_date_columns)
+                        and cell.value):
                     cell.number_format = 'M/D/YYYY'
 
     st.download_button(
