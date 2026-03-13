@@ -81,6 +81,10 @@ CANDIDATES = [
     "sales_order", "salesorder", "so", "so_no", "sono", "so_number",
 ]
 
+FVB_CANDIDATES = [
+    "fvb_so", "fvbso", "fvb_so", "fvb_sales_order", "fvb",
+]
+
 def norm_col_name(c: str) -> str:
     c = str(c).strip().lower()
     c = re.sub(r"\s+", " ", c)
@@ -105,10 +109,37 @@ def detect_so_column(df: pd.DataFrame):
     return None
 
 
+def detect_fvb_so_column(df: pd.DataFrame):
+    """Deteksi kolom FVB SO. Return nama kolom asli atau None."""
+    cols_norm = [norm_col_name(c) for c in df.columns]
+
+    # 1) Eksak dari kandidat FVB
+    for cand in FVB_CANDIDATES:
+        nc = norm_col_name(cand)
+        if nc in cols_norm:
+            return df.columns[cols_norm.index(nc)]
+
+    # 2) Heuristik: nama kolom mengandung "fvb"
+    for i, cn in enumerate(cols_norm):
+        if "fvb" in cn:
+            return df.columns[i]
+
+    return None
+
+
+def clean_so_series(series: pd.Series) -> pd.Series:
+    """Normalisasi nilai SO: strip, hapus .0, filter angka saja."""
+    return (
+        series
+        .astype(str)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+
+
 # =========================================================
 def extract_date_from_filename_ddmm(filename):
-    # Remove extension first
-    name = filename.rsplit(".", 1)[0]  # "22.01.ods" -> "22.01"
+    name = filename.rsplit(".", 1)[0]
     try:
         parts = name.split(".")
         if len(parts) != 2:
@@ -125,7 +156,6 @@ def extract_date_from_filename_ddmm(filename):
 
 # =========================================================
 def process_files(zrsd_file, plan_files, date_format):
-    # Define columns that should be read as string to preserve leading zeros
     text_columns = {
         'PO No.(Full)': str,
         'PO No.(Short)': str,
@@ -137,41 +167,37 @@ def process_files(zrsd_file, plan_files, date_format):
         'SO': str,
         'Material': str
     }
-    
-    # Read ZRSD with specific dtypes for text columns
+
     df_013 = pd.read_excel(io.BytesIO(zrsd_file.getvalue()), dtype=text_columns)
-    
-    # Filter data
+
     fcr_date_check = pd.to_datetime(df_013['FCR Date'], errors='coerce').isna()
     podd_check = pd.to_datetime(df_013['PODD'], errors='coerce')
-    
+
     today = pd.Timestamp.today().normalize()
     end_date = today + pd.Timedelta(days=3)
 
     df_filtered = df_013[fcr_date_check & (podd_check <= end_date)].copy()
-    
-    # Define known date columns to format
+
     known_date_columns = [
-        'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date', 
+        'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
         'PODD', 'PD', 'PO Date', 'Actual PGI', 'Delivery Date',
         'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
     ]
-    
-    # Convert date columns to proper datetime (keep as datetime, not string)
+
     for col in df_filtered.columns:
-        # Only process if column name is in known date columns (case-insensitive)
         if any(col.lower() == known.lower() for known in known_date_columns):
-            # Ensure it's datetime type
             if not pd.api.types.is_datetime64_any_dtype(df_filtered[col]):
                 df_filtered[col] = pd.to_datetime(df_filtered[col], errors='coerce')
 
+    # plan_so_map: SO (int) → list of dates
+    # SO bisa berasal dari kolom SAP_ODR_NO maupun FVB SO
     plan_so_map = defaultdict(list)
 
     # ===================== READ LOADING PLAN =====================
     for file in plan_files:
         try:
             st.info(f"📂 Membaca {file.name}...")
-            
+
             df_plan, sheet = read_daily_loading_plan(file)
             plan_date = extract_date_from_filename_ddmm(file.name)
 
@@ -179,24 +205,35 @@ def process_files(zrsd_file, plan_files, date_format):
                 st.error(f"❌ {file.name}: Format nama file salah (harus DD.MM seperti 22.01)")
                 continue
 
-            so_col = detect_so_column(df_plan)
-            if not so_col:
-                st.error(f"❌ {file.name}: Kolom SO tidak ditemukan")
+            # ── Kolom SO #1: SAP_ODR_NO ──────────────────────────────────
+            so_col_sap = detect_so_column(df_plan)
+            if not so_col_sap:
+                st.error(f"❌ {file.name}: Kolom SAP SO tidak ditemukan")
                 st.write("Kolom yang tersedia:", list(df_plan.columns))
                 continue
 
-            st.success(f"✅ {file.name} → SO: `{so_col}`, Tanggal: {plan_date.date()}")
+            # ── Kolom SO #2: FVB SO ───────────────────────────────────────
+            so_col_fvb = detect_fvb_so_column(df_plan)
 
-            df_plan["SO_Clean"] = (
-                df_plan[so_col]
-                .astype(str)
-                .str.strip()
-                .str.replace(r"\.0$", "", regex=True)
+            # Log info kolom yang ditemukan
+            fvb_label = f"`{so_col_fvb}`" if so_col_fvb else "tidak ditemukan"
+            st.success(
+                f"✅ {file.name} → SAP SO: `{so_col_sap}` | "
+                f"FVB SO: {fvb_label} | Tanggal: {plan_date.date()}"
             )
 
-            for so in df_plan["SO_Clean"].dropna().unique():
-                if so.isdigit():
-                    plan_so_map[int(so)].append(plan_date.date())
+            # ── Masukkan SO dari kolom SAP ke map ─────────────────────────
+            df_plan["__SO_sap__"] = clean_so_series(df_plan[so_col_sap])
+            for so in df_plan["__SO_sap__"].dropna().unique():
+                if str(so).isdigit():
+                    plan_so_map[int(so)].append(("SAP", plan_date.date()))
+
+            # ── Masukkan SO dari kolom FVB ke map (jika ada) ──────────────
+            if so_col_fvb and so_col_fvb in df_plan.columns:
+                df_plan["__SO_fvb__"] = clean_so_series(df_plan[so_col_fvb])
+                for so in df_plan["__SO_fvb__"].dropna().unique():
+                    if str(so).isdigit():
+                        plan_so_map[int(so)].append(("FVB", plan_date.date()))
 
         except Exception as e:
             st.error(f"❌ {file.name}: {str(e)}")
@@ -211,27 +248,53 @@ def process_files(zrsd_file, plan_files, date_format):
             so = int(so_raw.replace(".0", ""))
             podd_date = pd.to_datetime(row['PODD'], errors='coerce').date()
         except:
-            return "⚠️ Invalid Data", "mismatch", ""
+            return "⚠️ Invalid Data", "mismatch", "", ""
 
         if so not in plan_so_map:
-            return "❌ NOT IN LOADING PLAN", "not_found", ""
+            return "❌ NOT IN LOADING PLAN", "not_found", "", ""
 
-        plan_dates = plan_so_map[so]
-        plan_dates_str = ", ".join([str(d) for d in sorted(plan_dates)])
-        
-        if podd_date in plan_dates:
-            return "✅ MATCH – Date Match", "match", plan_dates_str
+        entries = plan_so_map[so]  # list of (source, date)
+
+        # Pisahkan tanggal per sumber
+        sap_dates  = sorted({d for src, d in entries if src == "SAP"})
+        fvb_dates  = sorted({d for src, d in entries if src == "FVB"})
+        all_dates  = sorted({d for _, d in entries})
+
+        sap_dates_str = ", ".join(str(d) for d in sap_dates) if sap_dates else "-"
+        fvb_dates_str = ", ".join(str(d) for d in fvb_dates) if fvb_dates else "-"
+        plan_dates_str = f"SAP: {sap_dates_str} | FVB: {fvb_dates_str}"
+
+        # Tentukan sumber mana yang menyimpan SO ini
+        sources_found = []
+        if sap_dates:
+            sources_found.append("SAP")
+        if fvb_dates:
+            sources_found.append("FVB")
+        source_label = "+".join(sources_found)
+
+        if podd_date in all_dates:
+            return (
+                f"✅ MATCH – Date Match (via {source_label})",
+                "match",
+                plan_dates_str,
+                source_label,
+            )
         else:
-            return f"⚠️ IN PLAN – Date Mismatch (Plan: {plan_dates_str})", "mismatch", plan_dates_str
+            return (
+                f"⚠️ IN PLAN – Date Mismatch (Plan: {plan_dates_str})",
+                "mismatch",
+                plan_dates_str,
+                source_label,
+            )
 
-    # Add new columns WITHOUT modifying existing ones
     result_df = df_filtered.apply(
         lambda row: pd.Series(check_remark(row)), axis=1
     )
-    
+
     df_filtered['Remark Loading Plan'] = result_df[0]
-    df_filtered['Status'] = result_df[1]
-    df_filtered['Plan Dates'] = result_df[2]
+    df_filtered['Status']              = result_df[1]
+    df_filtered['Plan Dates']          = result_df[2]
+    df_filtered['SO Source']           = result_df[3]   # kolom baru: SAP / FVB / SAP+FVB
 
     return df_filtered
 
@@ -242,7 +305,6 @@ def process_files(zrsd_file, plan_files, date_format):
 st.title("📋 Loading Plan Checker")
 
 st.sidebar.header("⚙️ Pengaturan")
-
 st.sidebar.markdown("---")
 
 with st.sidebar:
@@ -270,31 +332,27 @@ if 'results' in st.session_state:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
-        
-        # Apply date format to Excel cells
+
         from openpyxl.styles import numbers
         worksheet = writer.sheets['Sheet1']
-        
-        # Define known date columns
+
         known_date_columns = [
-            'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date', 
+            'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
             'PODD', 'PD', 'PO Date', 'Actual PGI', 'Delivery Date',
             'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
         ]
-        
-        # Get column indices for date columns
+
         date_col_indices = []
         for i, col in enumerate(df.columns, start=1):
             if any(col.lower() == known.lower() for known in known_date_columns):
                 date_col_indices.append(i)
-        
-        # Apply shortdate format to date columns
+
         for col_idx in date_col_indices:
             col_letter = worksheet.cell(row=1, column=col_idx).column_letter
             for row in range(2, worksheet.max_row + 1):
                 cell = worksheet[f'{col_letter}{row}']
                 if cell.value:
-                    cell.number_format = 'M/D/YYYY'  # Shortdate format
+                    cell.number_format = 'M/D/YYYY'
 
     st.download_button(
         "📥 Download Excel",
