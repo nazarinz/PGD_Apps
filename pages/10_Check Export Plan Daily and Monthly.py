@@ -366,9 +366,10 @@ def process_files(base_file, ref_files) -> SOResult:
     ].copy()
 
     # Kumpulkan semua SO yang match dari kedua kolom
+    # Filter dengan all_ref_sos agar hanya SO yang benar-benar ada di referensi
     matched_sap = set(matches["__SO_norm_SAP__"].dropna().astype(str).unique())
     matched_fvb = set(matches["__SO_norm_FVB__"].dropna().astype(str).unique())
-    matched_so_list = sorted(matched_sap | matched_fvb)
+    matched_so_list = sorted((matched_sap | matched_fvb) & all_ref_sos)
 
     log_df = (pd.DataFrame(log_rows, columns=["File", "Sheet", "Reason"])
               if log_rows else pd.DataFrame(columns=["File","Sheet","Reason"]))
