@@ -24,7 +24,6 @@ def _read_excel_or_ods(file_bytes: bytes, suffix: str) -> Dict[str, pd.DataFrame
     if sfx in (".xlsx", ".xlsm"):
         return pd.read_excel(b, engine="openpyxl", sheet_name=None)
     elif sfx == ".xls":
-        # xlrd old .xls; jika gagal, coba openpyxl
         try:
             return pd.read_excel(io.BytesIO(file_bytes), engine="xlrd", sheet_name=None)
         except Exception:
@@ -71,6 +70,11 @@ def read_any(uploaded_file) -> Dict[str, pd.DataFrame]:
 CANDIDATES = [
     "sap_odr_no", "sap_odrno", "sap_order_no", "sap_odr_number",
     "sales_order", "salesorder", "so", "so_no", "sono", "so_number",
+]
+
+# Kandidat khusus untuk kolom FVB SO di base file
+FVB_CANDIDATES = [
+    "fvb_so", "fvbso", "fvb so", "fvb_sales_order", "fvb",
 ]
 
 def norm_col_name(c: str) -> str:
@@ -142,6 +146,28 @@ def detect_so_column(df: pd.DataFrame):
                     return tmp_map[cn], f"Header-sniff row {r}: fallback {cn}"
     return None, "Tidak ditemukan kolom yang cocok"
 
+
+def detect_fvb_so_column(df: pd.DataFrame) -> Tuple[Optional[str], str]:
+    """Deteksi kolom FVB SO khusus untuk base file."""
+    if df is None or df.empty:
+        return None, "DataFrame kosong"
+    df_n, mapping = normalize_columns(df)
+    cols_norm = list(df_n.columns)
+
+    # 1) Eksak dari daftar kandidat FVB
+    for cand in FVB_CANDIDATES:
+        nc = norm_col_name(cand)
+        if nc in cols_norm:
+            return mapping[nc], f"Exact FVB candidate match: {nc}"
+
+    # 2) Heuristik: kolom yang mengandung "fvb"
+    for cn in cols_norm:
+        if "fvb" in cn:
+            return mapping[cn], f"Heuristic: contains 'fvb' → {cn}"
+
+    return None, "Kolom FVB SO tidak ditemukan"
+
+
 def reheader_with_row(df: pd.DataFrame, header_row_index: int = 2) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -194,16 +220,20 @@ def normalize_so_series(s: pd.Series) -> pd.Series:
 class SOResult:
     base_file_name: str
     base_sheet_name: str
+    # --- Kolom SO pertama (SAP_ODR_NO) ---
     base_col: str
     base_reason: str
+    # --- Kolom SO kedua (FVB SO) ---
+    base_col_fvb: Optional[str]
+    base_reason_fvb: str
     ref_count: int
     matches: pd.DataFrame
     not_found: pd.DataFrame
     empty_so: pd.DataFrame
-    base_df_out: pd.DataFrame        # punya kolom __SO_norm__
-    ref_tables: list                 # list of dict: {file, sheet, so_col, df}
+    base_df_out: pd.DataFrame        # punya kolom __SO_norm_SAP__ dan __SO_norm_FVB__
+    ref_tables: list
     log_df: pd.DataFrame
-    matched_so_list: list
+    matched_so_list: list            # gabungan SO match dari kedua kolom
 
 # =========================
 # Proses utama (sekali klik)
@@ -219,7 +249,6 @@ def process_files(base_file, ref_files) -> SOResult:
     if base_sheet_name is None:
         base_sheet_name = next(iter(base_sheets.keys()))
 
-    # Baca ulang tanpa header untuk reheader baris ke-3
     if hasattr(base_file, "getvalue"):
         raw_bytes = base_file.getvalue()
     else:
@@ -230,35 +259,42 @@ def process_files(base_file, ref_files) -> SOResult:
         raw_bytes = base_file.read()
 
     ext = "." + base_file.name.split(".")[-1].lower()
-    if ext == ".ods":
-        engine = "odf"
-    elif ext in (".xlsx", ".xlsm"):
-        engine = "openpyxl"
-    elif ext == ".xls":
-        engine = "xlrd"
-    elif ext == ".xlsb":
-        engine = "pyxlsb"
-    else:
-        engine = "openpyxl"
+    engine_map = {".ods": "odf", ".xlsx": "openpyxl", ".xlsm": "openpyxl",
+                  ".xls": "xlrd", ".xlsb": "pyxlsb"}
+    engine = engine_map.get(ext, "openpyxl")
 
     book_headerless = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=None, engine=engine, header=None)
     _base_df_raw = book_headerless[base_sheet_name]
     base_df = reheader_with_row(_base_df_raw, header_row_index=2)
 
-    # Deteksi kolom SO
+    # ── Kolom SO #1: SAP_ODR_NO ──────────────────────────────────────────────
     base_col = pick_column(base_df, "SAP_ODR_NO")
     base_reason = "Forced: SAP_ODR_NO | header=baris 3"
     if not base_col:
         base_col, base_reason = detect_so_column(base_df)
         base_reason = f"{base_reason} | header=baris 3"
+    if base_col is None:
+        base_col = base_df.columns[0]
+        base_reason = f"Fallback: pakai kolom pertama ({base_col})"
+
+    # ── Kolom SO #2: FVB SO ───────────────────────────────────────────────────
+    base_col_fvb = pick_column(base_df, "FVB SO")
+    if not base_col_fvb:
+        base_col_fvb, base_reason_fvb = detect_fvb_so_column(base_df)
+    else:
+        base_reason_fvb = "Forced: FVB SO | header=baris 3"
+    if base_col_fvb is None:
+        base_reason_fvb = "Kolom FVB SO tidak ditemukan di base file"
+    # ─────────────────────────────────────────────────────────────────────────
 
     base_df_out = base_df.copy()
-    if base_col is None:
-        base_col = base_df_out.columns[0]
-        base_reason = f"Fallback: pakai kolom pertama ({base_col})"
-    base_df_out["__SO_norm__"] = normalize_so_series(base_df_out[base_col])
+    base_df_out["__SO_norm_SAP__"] = normalize_so_series(base_df_out[base_col])
+    if base_col_fvb and base_col_fvb in base_df_out.columns:
+        base_df_out["__SO_norm_FVB__"] = normalize_so_series(base_df_out[base_col_fvb])
+    else:
+        base_df_out["__SO_norm_FVB__"] = pd.NA
 
-    # Kumpulkan SO referensi + simpan tabel referensi
+    # Kumpulkan SO referensi
     all_ref_sos: Set[str] = set()
     so_to_files: Dict[str, Set[str]] = {}
     log_rows: List[Tuple[str, str, str]] = []
@@ -275,8 +311,7 @@ def process_files(base_file, ref_files) -> SOResult:
 
                 col, reason = detect_so_column(df2)
                 log_rows.append((f.name, sh, reason))
-                
-                # FIX: Check if column still exists after cleanup
+
                 if not col or col not in df2.columns:
                     if col:
                         log_rows.append((f.name, sh, f"Kolom '{col}' terdeteksi tapi hilang setelah cleanup"))
@@ -296,35 +331,63 @@ def process_files(base_file, ref_files) -> SOResult:
                     "file": f.name,
                     "sheet": sh,
                     "so_col": col,
-                    "df": df2,  # sudah ada __SO_norm__
+                    "df": df2,
                 })
 
-    # Hasil utama
+    # ── Matching: cek KEDUA kolom SO terhadap referensi ──────────────────────
     out = base_df_out.copy()
-    out["Found_in_reference"] = out["__SO_norm__"].apply(lambda x: (x in all_ref_sos) if pd.notna(x) else False)
-    out["Source_Files"] = out["__SO_norm__"].apply(
-        lambda x: ", ".join(sorted(so_to_files.get(x, []))) if pd.notna(x) and x in so_to_files else ""
-    )
-    matches   = out[out["Found_in_reference"] == True].copy()
-    not_found = out[(out["__SO_norm__"].notna()) & (out["Found_in_reference"] == False)].copy()
-    empty_so  = out[out["__SO_norm__"].isna()].copy()
-    matched_so_list = sorted(matches["__SO_norm__"].dropna().astype(str).unique().tolist())
 
-    log_df = pd.DataFrame(log_rows, columns=["File", "Sheet", "Reason"]) if log_rows else pd.DataFrame(columns=["File","Sheet","Reason"])
+    def _found(row):
+        sap = row["__SO_norm_SAP__"]
+        fvb = row["__SO_norm_FVB__"]
+        return (pd.notna(sap) and sap in all_ref_sos) or (pd.notna(fvb) and fvb in all_ref_sos)
+
+    def _source_files(row):
+        files = set()
+        sap = row["__SO_norm_SAP__"]
+        fvb = row["__SO_norm_FVB__"]
+        if pd.notna(sap) and sap in so_to_files:
+            files |= so_to_files[sap]
+        if pd.notna(fvb) and fvb in so_to_files:
+            files |= so_to_files[fvb]
+        return ", ".join(sorted(files)) if files else ""
+
+    out["Found_in_reference"] = out.apply(_found, axis=1)
+    out["Source_Files"]       = out.apply(_source_files, axis=1)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    matches   = out[out["Found_in_reference"] == True].copy()
+    not_found = out[
+        (~out["Found_in_reference"]) &
+        (out["__SO_norm_SAP__"].notna() | out["__SO_norm_FVB__"].notna())
+    ].copy()
+    empty_so = out[
+        out["__SO_norm_SAP__"].isna() & out["__SO_norm_FVB__"].isna()
+    ].copy()
+
+    # Kumpulkan semua SO yang match dari kedua kolom
+    matched_sap = set(matches["__SO_norm_SAP__"].dropna().astype(str).unique())
+    matched_fvb = set(matches["__SO_norm_FVB__"].dropna().astype(str).unique())
+    matched_so_list = sorted(matched_sap | matched_fvb)
+
+    log_df = (pd.DataFrame(log_rows, columns=["File", "Sheet", "Reason"])
+              if log_rows else pd.DataFrame(columns=["File","Sheet","Reason"]))
 
     return SOResult(
-        base_file_name = base_file.name,
+        base_file_name  = base_file.name,
         base_sheet_name = base_sheet_name,
-        base_col = base_col,
-        base_reason = base_reason,
-        ref_count = len(ref_files or []),
-        matches = matches,
-        not_found = not_found,
-        empty_so = empty_so,
-        base_df_out = base_df_out,
-        ref_tables = ref_tables,
-        log_df = log_df,
-        matched_so_list = matched_so_list
+        base_col        = base_col,
+        base_reason     = base_reason,
+        base_col_fvb    = base_col_fvb,
+        base_reason_fvb = base_reason_fvb,
+        ref_count       = len(ref_files or []),
+        matches         = matches,
+        not_found       = not_found,
+        empty_so        = empty_so,
+        base_df_out     = base_df_out,
+        ref_tables      = ref_tables,
+        log_df          = log_df,
+        matched_so_list = matched_so_list,
     )
 
 # =========================
@@ -344,7 +407,6 @@ with col2:
         accept_multiple_files=True
     )
 
-# Tombol
 colA, colB = st.columns([1,1])
 with colA:
     do_process = st.button("▶️ Proses", type="primary")
@@ -355,7 +417,6 @@ if do_reset:
     st.session_state.pop("so_detect_result", None)
     st.success("Hasil dipulihkan. Silakan klik Proses lagi setelah pilih file.")
 
-# Jalankan proses hanya saat klik Proses
 if do_process:
     if not base_file:
         st.error("Unggah dulu **Daily file**.")
@@ -363,14 +424,23 @@ if do_process:
     st.session_state["so_detect_result"] = process_files(base_file, ref_files)
 
 # =========================
-# Render dari cache (tanpa proses ulang)
+# Render dari cache
 # =========================
 if "so_detect_result" in st.session_state:
     res: SOResult = st.session_state["so_detect_result"]
 
     st.subheader("📄 Daily file (base)")
     st.write(f"**File:** {res.base_file_name} — **Sheet:** {res.base_sheet_name}")
-    st.success(f"Kolom SO terdeteksi: **{res.base_col}** ({res.base_reason})")
+
+    # Tampilkan info kedua kolom SO
+    col_info1, col_info2 = st.columns(2)
+    with col_info1:
+        st.success(f"Kolom SO #1 (SAP): **{res.base_col}**\n\n_{res.base_reason}_")
+    with col_info2:
+        if res.base_col_fvb:
+            st.success(f"Kolom SO #2 (FVB): **{res.base_col_fvb}**\n\n_{res.base_reason_fvb}_")
+        else:
+            st.warning(f"Kolom SO #2 (FVB): Tidak ditemukan\n\n_{res.base_reason_fvb}_")
 
     st.subheader("✅ Matches")
     st.dataframe(res.matches.head(1000), use_container_width=True)
@@ -383,7 +453,7 @@ if "so_detect_result" in st.session_state:
         st.subheader("🧾 Deteksi Kolom (Log)")
         st.dataframe(res.log_df, use_container_width=True)
 
-    # ===== Drill-down: DEFAULT tampilkan SEMUA SO match =====
+    # ===== Drill-down =====
     st.markdown("---")
     st.subheader("🔎 Detail SO yang Match (Drill-down)")
 
@@ -401,20 +471,38 @@ if "so_detect_result" in st.session_state:
         if selected_sos:
             with st.expander("Filter tabel Matches ke SO terpilih (opsional)", expanded=False):
                 if st.checkbox("Aktifkan filter Matches"):
-                    st.dataframe(res.matches[res.matches["__SO_norm__"].isin(selected_sos)], use_container_width=True)
+                    mask = (
+                        res.matches["__SO_norm_SAP__"].isin(selected_sos) |
+                        res.matches["__SO_norm_FVB__"].isin(selected_sos)
+                    )
+                    st.dataframe(res.matches[mask], use_container_width=True)
 
             for so in selected_sos:
                 st.markdown(f"### SO: **{so}**")
 
-                # 1) Baris di base
-                base_rows = res.base_df_out[res.base_df_out["__SO_norm__"] == so]
+                # Cari baris di base — cocok di SAP ATAU FVB
+                mask_base = (
+                    (res.base_df_out["__SO_norm_SAP__"] == so) |
+                    (res.base_df_out["__SO_norm_FVB__"] == so)
+                )
+                base_rows = res.base_df_out[mask_base]
+
+                # Tunjukkan kolom mana yang cocok
+                matched_via = []
+                if (res.base_df_out["__SO_norm_SAP__"] == so).any():
+                    matched_via.append(f"SAP_ODR_NO (`{res.base_col}`)")
+                if (res.base_df_out["__SO_norm_FVB__"] == so).any():
+                    matched_via.append(f"FVB SO (`{res.base_col_fvb}`)")
+                if matched_via:
+                    st.caption(f"✅ SO ini ditemukan via: {' & '.join(matched_via)}")
+
                 st.write("**Daily (base) — Rows**")
                 if base_rows.empty:
                     st.info("Tidak ada baris di base untuk SO ini.")
                 else:
                     st.dataframe(base_rows, use_container_width=True)
 
-                # 2) Baris di setiap referensi
+                # Baris di referensi
                 any_ref = False
                 for item in res.ref_tables:
                     df_ref = item["df"]
@@ -440,8 +528,18 @@ if "so_detect_result" in st.session_state:
         res.not_found.to_excel(writer, index=False, sheet_name="Not_Found")
         res.empty_so.to_excel(writer, index=False, sheet_name="Empty_SO")
         meta = pd.DataFrame({
-            "Key": ["Base file", "Base sheet", "SO column (base)", "Reason", "Ref files count", "Generated at"],
-            "Value": [res.base_file_name, res.base_sheet_name, res.base_col or "(manual)", res.base_reason, res.ref_count, ts],
+            "Key": [
+                "Base file", "Base sheet",
+                "SO column #1 (SAP)", "Reason #1",
+                "SO column #2 (FVB)", "Reason #2",
+                "Ref files count", "Generated at"
+            ],
+            "Value": [
+                res.base_file_name, res.base_sheet_name,
+                res.base_col or "(manual)", res.base_reason,
+                res.base_col_fvb or "(tidak ditemukan)", res.base_reason_fvb,
+                res.ref_count, ts,
+            ],
         })
         meta.to_excel(writer, index=False, sheet_name="Meta")
     output_buffer.seek(0)
