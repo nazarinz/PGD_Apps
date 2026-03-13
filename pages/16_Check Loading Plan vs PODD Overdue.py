@@ -385,6 +385,6 @@ if 'results' in st.session_state:
     st.download_button(
         "📥 Download Excel",
         output.getvalue(),
-        file_name=f"loading_plan_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        file_name=f"Loading Plan Check - {datetime.now().strftime('%Y%m%d')}.xlsx",
         use_container_width=True
     )
