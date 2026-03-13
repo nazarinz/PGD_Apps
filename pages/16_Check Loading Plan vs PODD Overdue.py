@@ -351,28 +351,36 @@ if 'results' in st.session_state:
         # Kolom yang diberi warna kuning
         yellow_columns = {'DN', 'FGR', 'Remark Loading Plan', 'Status', 'Plan Dates', 'SO Source'}
 
-        YELLOW = PatternFill(fill_type="solid", fgColor="FFFF00")
-        GREY   = PatternFill(fill_type="solid", fgColor="D9D9D9")
-        FONT   = Font(name="Calibri", size=9)
-        ALIGN  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        YELLOW     = PatternFill(fill_type="solid", fgColor="FFFF00")
+        GREY       = PatternFill(fill_type="solid", fgColor="D9D9D9")
+        NO_FILL    = PatternFill(fill_type=None)
+        FONT       = Font(name="Calibri", size=9)
+        FONT_HDR   = Font(name="Calibri", size=9, bold=True)
+        ALIGN_HDR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ALIGN_DATA = Alignment(horizontal="center", vertical="center", wrap_text=False)
 
-        # Terapkan style ke semua sel (header + data)
-        for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, max_col=worksheet.max_column):
+        # ── Baris 1 (header): warna + wrap text ──────────────────────────
+        for cell in worksheet[1]:
+            col_name       = df_export.columns[cell.column - 1]
+            cell.font      = FONT_HDR
+            cell.alignment = ALIGN_HDR
+            cell.fill      = YELLOW if col_name in yellow_columns else GREY
+
+        # ── Baris 2+ (data): font & alignment saja, tanpa warna/wrap ─────
+        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, max_col=worksheet.max_column):
             for cell in row:
-                col_name = df_export.columns[cell.column - 1]
-
-                # Font & alignment
+                col_name       = df_export.columns[cell.column - 1]
                 cell.font      = FONT
-                cell.alignment = ALIGN
-
-                # Warna fill
-                cell.fill = YELLOW if col_name in yellow_columns else GREY
+                cell.alignment = ALIGN_DATA
+                cell.fill      = NO_FILL
 
                 # Format tanggal
-                if (cell.row > 1
-                        and any(col_name.lower() == k.lower() for k in known_date_columns)
+                if (any(col_name.lower() == k.lower() for k in known_date_columns)
                         and cell.value):
                     cell.number_format = 'M/D/YYYY'
+
+        # ── Freeze panes: baris 1 dan kolom 7 (H2) ───────────────────────
+        worksheet.freeze_panes = "H2"
 
     st.download_button(
         "📥 Download Excel",
