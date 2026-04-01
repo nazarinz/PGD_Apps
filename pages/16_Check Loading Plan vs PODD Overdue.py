@@ -85,6 +85,7 @@ FVB_CANDIDATES = [
     "fvb_so", "fvbso", "fvb_so", "fvb_sales_order", "fvb",
 ]
 
+
 def norm_col_name(c: str) -> str:
     c = str(c).strip().lower()
     c = re.sub(r"\s+", " ", c)
@@ -92,6 +93,7 @@ def norm_col_name(c: str) -> str:
     c = c.replace(" ", "_")
     c = re.sub(r"_+", "_", c)
     return c
+
 
 def detect_so_column(df: pd.DataFrame):
     cols = [norm_col_name(c) for c in df.columns]
@@ -189,8 +191,7 @@ def process_files(zrsd_file, plan_files, date_format):
             if not pd.api.types.is_datetime64_any_dtype(df_filtered[col]):
                 df_filtered[col] = pd.to_datetime(df_filtered[col], errors='coerce')
 
-    # plan_so_map: SO (int) → list of dates
-    # SO bisa berasal dari kolom SAP_ODR_NO maupun FVB SO
+    # plan_so_map: SO (int) → list of (source, date) tuples
     plan_so_map = defaultdict(list)
 
     # ===================== READ LOADING PLAN =====================
@@ -289,10 +290,17 @@ def process_files(zrsd_file, plan_files, date_format):
         lambda row: pd.Series(check_remark(row)), axis=1
     )
 
-    df_filtered['Remark Loading Plan'] = result_df[0]
-    df_filtered['Status']              = result_df[1]
-    df_filtered['Plan Dates']          = result_df[2]
-    df_filtered['SO Source']           = result_df[3]   # kolom baru: SAP / FVB / SAP+FVB
+    # ── Guard: df_filtered kosong → result_df tidak punya kolom integer ──
+    if result_df.empty or 0 not in result_df.columns:
+        df_filtered['Remark Loading Plan'] = pd.Series(dtype=str)
+        df_filtered['Status']              = pd.Series(dtype=str)
+        df_filtered['Plan Dates']          = pd.Series(dtype=str)
+        df_filtered['SO Source']           = pd.Series(dtype=str)
+    else:
+        df_filtered['Remark Loading Plan'] = result_df[0]
+        df_filtered['Status']              = result_df[1]
+        df_filtered['Plan Dates']          = result_df[2]
+        df_filtered['SO Source']           = result_df[3]
 
     return df_filtered
 
@@ -325,66 +333,70 @@ if 'results' in st.session_state:
     df = st.session_state['results']
 
     st.subheader("📊 Hasil Pengecekan")
-    st.dataframe(df, use_container_width=True)
 
-    output = io.BytesIO()
+    if df.empty:
+        st.info("ℹ️ Tidak ada data yang memenuhi filter (FCR Date kosong & PODD ≤ H+3).")
+    else:
+        st.dataframe(df, use_container_width=True)
 
-    # ── Sisipkan kolom DN dan FGR setelah kolom PODD ──────────────────────
-    podd_idx = df.columns.get_loc('PODD') if 'PODD' in df.columns else len(df.columns) - 1
-    df_export = df.copy()
-    df_export.insert(podd_idx + 1, 'DN',  "")
-    df_export.insert(podd_idx + 2, 'FGR', "")
+        output = io.BytesIO()
 
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False)
+        # ── Sisipkan kolom DN dan FGR setelah kolom PODD ──────────────────────
+        podd_idx = df.columns.get_loc('PODD') if 'PODD' in df.columns else len(df.columns) - 1
+        df_export = df.copy()
+        df_export.insert(podd_idx + 1, 'DN',  "")
+        df_export.insert(podd_idx + 2, 'FGR', "")
 
-        from openpyxl.styles import Font, PatternFill, Alignment, numbers
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_export.to_excel(writer, index=False)
 
-        worksheet = writer.sheets['Sheet1']
+            from openpyxl.styles import Font, PatternFill, Alignment
 
-        known_date_columns = [
-            'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
-            'PODD', 'PD', 'PO Date', 'Actual PGI', 'Delivery Date',
-            'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
-        ]
+            worksheet = writer.sheets['Sheet1']
 
-        # Kolom yang diberi warna kuning
-        yellow_columns = {'DN', 'FGR', 'Remark Loading Plan', 'Status', 'Plan Dates', 'SO Source'}
+            known_date_columns = [
+                'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
+                'PODD', 'PD', 'PO Date', 'Actual PGI', 'Delivery Date',
+                'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
+            ]
 
-        YELLOW     = PatternFill(fill_type="solid", fgColor="FFFF00")
-        GREY       = PatternFill(fill_type="solid", fgColor="D9D9D9")
-        NO_FILL    = PatternFill(fill_type=None)
-        FONT       = Font(name="Calibri", size=9)
-        FONT_HDR   = Font(name="Calibri", size=9, bold=True)
-        ALIGN_HDR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ALIGN_DATA = Alignment(horizontal="center", vertical="center", wrap_text=False)
+            # Kolom yang diberi warna kuning
+            yellow_columns = {'DN', 'FGR', 'Remark Loading Plan', 'Status', 'Plan Dates', 'SO Source'}
 
-        # ── Baris 1 (header): warna + wrap text ──────────────────────────
-        for cell in worksheet[1]:
-            col_name       = df_export.columns[cell.column - 1]
-            cell.font      = FONT_HDR
-            cell.alignment = ALIGN_HDR
-            cell.fill      = YELLOW if col_name in yellow_columns else GREY
+            YELLOW     = PatternFill(fill_type="solid", fgColor="FFFF00")
+            GREY       = PatternFill(fill_type="solid", fgColor="D9D9D9")
+            NO_FILL    = PatternFill(fill_type=None)
+            FONT       = Font(name="Calibri", size=9)
+            FONT_HDR   = Font(name="Calibri", size=9, bold=True)
+            ALIGN_HDR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            ALIGN_DATA = Alignment(horizontal="center", vertical="center", wrap_text=False)
 
-        # ── Baris 2+ (data): font & alignment saja, tanpa warna/wrap ─────
-        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, max_col=worksheet.max_column):
-            for cell in row:
+            # ── Baris 1 (header): warna + wrap text ──────────────────────────
+            for cell in worksheet[1]:
                 col_name       = df_export.columns[cell.column - 1]
-                cell.font      = FONT
-                cell.alignment = ALIGN_DATA
-                cell.fill      = NO_FILL
+                cell.font      = FONT_HDR
+                cell.alignment = ALIGN_HDR
+                cell.fill      = YELLOW if col_name in yellow_columns else GREY
 
-                # Format tanggal
-                if (any(col_name.lower() == k.lower() for k in known_date_columns)
-                        and cell.value):
-                    cell.number_format = 'M/D/YYYY'
+            # ── Baris 2+ (data): font & alignment saja, tanpa warna/wrap ─────
+            for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, max_col=worksheet.max_column):
+                for cell in row:
+                    col_name       = df_export.columns[cell.column - 1]
+                    cell.font      = FONT
+                    cell.alignment = ALIGN_DATA
+                    cell.fill      = NO_FILL
 
-        # ── Freeze panes: baris 1 dan kolom 7 (H2) ───────────────────────
-        worksheet.freeze_panes = "H2"
+                    # Format tanggal
+                    if (any(col_name.lower() == k.lower() for k in known_date_columns)
+                            and cell.value):
+                        cell.number_format = 'M/D/YYYY'
 
-    st.download_button(
-        "📥 Download Excel",
-        output.getvalue(),
-        file_name=f"Loading Plan Check - {datetime.now().strftime('%Y%m%d')}.xlsx",
-        use_container_width=True
-    )
+            # ── Freeze panes: baris 1 dan kolom 7 (H2) ───────────────────────
+            worksheet.freeze_panes = "H2"
+
+        st.download_button(
+            "📥 Download Excel",
+            output.getvalue(),
+            file_name=f"Loading Plan Check - {datetime.now().strftime('%Y%m%d')}.xlsx",
+            use_container_width=True
+        )
