@@ -60,20 +60,33 @@ def load_excel(file):
     df.columns = df.columns.str.strip()
     return df
 
+def _find_ctn_qty_col(df):
+    """Find the 'Carton Qty per Size' column flexibly — works for L15, L19, etc."""
+    for col in df.columns:
+        if "Carton Qty per Size" in col:
+            return col
+    return None
+
 def xl_sizes_for_po(df, po):
     rows = df[df["Order #"].str.strip() == po.strip()].copy()
+    ctn_col = _find_ctn_qty_col(df)
     out = []
     for _, r in rows.iterrows():
         try: qty = int(float(r.get("Quantity", 0)))
         except: qty = 0
+        try:
+            ctn_qty = int(float(r.get(ctn_col, 0))) if ctn_col else None
+        except:
+            ctn_qty = None
         out.append({
-            "UK Size":   str(r.get("Manufacturing Size", "")).strip(),
-            "US Size":   str(r.get("Customer Size", "")).strip(),
-            "Infor Qty": qty,
-            "XL Line":   str(r.get("Item Line Number", "")).strip(),
+            "UK Size":        str(r.get("Manufacturing Size", "")).strip(),
+            "US Size":        str(r.get("Customer Size", "")).strip(),
+            "Infor Qty":      qty,
+            "Infor Qty/CTN":  ctn_qty,
+            "XL Line":        str(r.get("Item Line Number", "")).strip(),
         })
     return pd.DataFrame(out) if out else pd.DataFrame(
-        columns=["UK Size", "US Size", "Infor Qty", "XL Line"])
+        columns=["UK Size", "US Size", "Infor Qty", "Infor Qty/CTN", "XL Line"])
 
 def xl_hdr_for_po(df, po):
     r = df[df["Order #"].str.strip() == po.strip()]
@@ -84,7 +97,7 @@ def xl_hdr_for_po(df, po):
         "Article":     str(r.get("Article Number", "")).strip(),
         "Model":       str(r.get("Model Name", "")).strip(),
         "Ship Method": str(r.get("Shipment Method", "")),
-        "Pack Mode":   str(r.get("VAS/SHAS L15 \u2013 Packing Mode", "")),
+        "Pack Mode":   str(r.get("Pack Mode", r.get("VAS/SHAS L15 \u2013 Packing Mode", ""))),
         "Destination": str(r.get("FinalDestinationName", "")),
     }
 
@@ -95,8 +108,6 @@ def _f(pat, text, default=""):
     return m.group(1).strip() if m else default
 
 def normalize_size(s):
-    """Normalize size strings so Infor and SAP can match.
-    E.g. '10-K' and '10K-' might refer to the same size – keep canonical form."""
     return s.strip()
 
 def parse_pdf(file, filename=""):
@@ -119,10 +130,6 @@ def parse_pdf(file, filename=""):
                 "Source File": filename,
             }
 
-            # ── FIX: size pattern now correctly captures -K suffix ──
-            # Old (broken): r"\s+([\d]+[-K]?[-]?)\s+([\d]+[-K]?[-]?)\s+[\d.]+"
-            # [-K]? only captured ONE character: either '-' OR 'K', never '-K' together.
-            # New: (?:-K|K|-)? tries '-K' first (longest match), then 'K', then '-'.
             pat = re.compile(
                 r"(\d+[-\u2013]\d+|\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
                 r"\s+(\d+(?:-K|K|-)?)\s+(\d+(?:-K|K|-)?)\s+[\d.]+"
@@ -153,6 +160,8 @@ def compare_po_fields(xl_df, pdf_data, po):
     pg = pdf_data.get(po, {}); ph = pg.get("header", {}); ps = pg.get("sizes", pd.DataFrame())
 
     rows = []
+
+    # ── Total Qty ──
     infor_total = int(xs["Infor Qty"].sum()) if not xs.empty else 0
     sap_total   = int(ph.get("Total Pairs", 0) or 0)
     rows.append({
@@ -162,19 +171,29 @@ def compare_po_fields(xl_df, pdf_data, po):
         "Status":      "\u2705 MATCH" if infor_total == sap_total else "\u274c MISMATCH",
     })
 
+    # ── Merge sizes ──
     if not xs.empty and ps is not None and not ps.empty:
-        mg = pd.merge(xs[["UK Size", "Infor Qty"]], ps[["UK Size", "SAP Qty"]], on="UK Size", how="outer")
+        mg = pd.merge(
+            xs[["UK Size", "Infor Qty", "Infor Qty/CTN"]],
+            ps[["UK Size", "SAP Qty", "Qty/CTN"]],
+            on="UK Size", how="outer"
+        )
     elif not xs.empty:
-        mg = xs[["UK Size", "Infor Qty"]].copy(); mg["SAP Qty"] = 0
+        mg = xs[["UK Size", "Infor Qty", "Infor Qty/CTN"]].copy()
+        mg["SAP Qty"]  = 0
+        mg["Qty/CTN"]  = None
     elif ps is not None and not ps.empty:
-        mg = ps[["UK Size", "SAP Qty"]].copy(); mg["Infor Qty"] = 0
+        mg = ps[["UK Size", "SAP Qty", "Qty/CTN"]].copy()
+        mg["Infor Qty"]     = 0
+        mg["Infor Qty/CTN"] = None
     else:
-        mg = pd.DataFrame(columns=["UK Size", "Infor Qty", "SAP Qty"])
+        mg = pd.DataFrame(columns=["UK Size", "Infor Qty", "Infor Qty/CTN", "SAP Qty", "Qty/CTN"])
 
     if not mg.empty:
-        mg["Infor Qty"] = mg["Infor Qty"].fillna(0).astype(int)
-        mg["SAP Qty"]   = mg["SAP Qty"].fillna(0).astype(int)
+        mg["Infor Qty"]     = mg["Infor Qty"].fillna(0).astype(int)
+        mg["SAP Qty"]       = mg["SAP Qty"].fillna(0).astype(int)
         mg = mg.sort_values("UK Size").reset_index(drop=True)
+
         for _, row in mg.iterrows():
             iv, sv = int(row["Infor Qty"]), int(row["SAP Qty"])
             rows.append({
@@ -184,35 +203,81 @@ def compare_po_fields(xl_df, pdf_data, po):
                 "Status":      "\u2705 MATCH" if iv == sv else "\u274c MISMATCH",
             })
 
+        # ── Qty/CTN per size comparison ──
+        has_infor_ctn = "Infor Qty/CTN" in mg.columns and mg["Infor Qty/CTN"].notna().any()
+        has_sap_ctn   = "Qty/CTN" in mg.columns and mg["Qty/CTN"].notna().any()
+
+        if has_infor_ctn or has_sap_ctn:
+            for _, row in mg.iterrows():
+                iv_ctn = row.get("Infor Qty/CTN")
+                sv_ctn = row.get("Qty/CTN")
+                # Only add row if at least one side has data
+                if pd.isna(iv_ctn) and pd.isna(sv_ctn):
+                    continue
+                iv_ctn_i = int(iv_ctn) if pd.notna(iv_ctn) else None
+                sv_ctn_i = int(sv_ctn) if pd.notna(sv_ctn) else None
+                if iv_ctn_i is None:
+                    status = "ONLY IN SAP"
+                elif sv_ctn_i is None:
+                    status = "ONLY IN INFOR"
+                elif iv_ctn_i == sv_ctn_i:
+                    status = "\u2705 MATCH"
+                else:
+                    status = "\u274c MISMATCH"
+                rows.append({
+                    "Field":       f"Qty/CTN Size {row['UK Size']}",
+                    "Infor Value": iv_ctn_i if iv_ctn_i is not None else "",
+                    "SAP Value":   sv_ctn_i if sv_ctn_i is not None else "",
+                    "Status":      status,
+                })
+
     return pd.DataFrame(rows)
 
 
 def compare_po_size_detail(xl_df, pdf_data, po):
     xs = xl_sizes_for_po(xl_df, po)
     pg = pdf_data.get(po, {}); ps = pg.get("sizes", pd.DataFrame())
-    COLS = ["UK Size", "US Size", "XL Line", "Infor Qty",
-            "CTN Range", "CTNs", "Qty/CTN", "SAP Qty", "Diff", "Status"]
+    COLS = ["UK Size", "US Size", "XL Line",
+            "Infor Qty", "Infor Qty/CTN",
+            "CTN Range", "CTNs", "Qty/CTN", "SAP Qty",
+            "Diff", "Diff Qty/CTN", "Status", "Status Qty/CTN"]
 
     if not xs.empty and ps is not None and not ps.empty:
-        xl_c  = xs[["UK Size", "US Size", "Infor Qty", "XL Line"]]
-        sap_c = ps[["UK Size", "US Size", "SAP Qty", "CTN Range", "CTNs", "Qty/CTN"]].rename(
+        xl_c  = xs[["UK Size", "US Size", "Infor Qty", "Infor Qty/CTN", "XL Line"]]
+        sap_c = ps[["UK Size", "US Size", "SAP Qty", "Qty/CTN", "CTN Range", "CTNs"]].rename(
             columns={"US Size": "_sap_us"})
         mg = pd.merge(xl_c, sap_c, on="UK Size", how="outer")
         mg["US Size"] = mg["US Size"].combine_first(mg["_sap_us"])
         mg = mg.drop(columns=["_sap_us"], errors="ignore")
     elif not xs.empty:
-        mg = xs[["UK Size", "US Size", "Infor Qty", "XL Line"]].copy()
+        mg = xs[["UK Size", "US Size", "Infor Qty", "Infor Qty/CTN", "XL Line"]].copy()
         mg["SAP Qty"] = 0
-        for col in ["CTN Range", "CTNs", "Qty/CTN"]: mg[col] = ""
+        mg["Qty/CTN"] = None
+        for col in ["CTN Range", "CTNs"]: mg[col] = ""
     elif ps is not None and not ps.empty:
-        mg = ps[["UK Size", "US Size", "SAP Qty", "CTN Range", "CTNs", "Qty/CTN"]].copy()
-        mg["Infor Qty"] = 0; mg["XL Line"] = ""
+        mg = ps[["UK Size", "US Size", "SAP Qty", "Qty/CTN", "CTN Range", "CTNs"]].copy()
+        mg["Infor Qty"]     = 0
+        mg["Infor Qty/CTN"] = None
+        mg["XL Line"]       = ""
     else:
         return pd.DataFrame(columns=COLS)
 
-    mg["Infor Qty"] = mg["Infor Qty"].fillna(0).astype(int)
-    mg["SAP Qty"]   = mg["SAP Qty"].fillna(0).astype(int)
-    mg["Diff"]      = mg["Infor Qty"] - mg["SAP Qty"]
+    mg["Infor Qty"]     = mg["Infor Qty"].fillna(0).astype(int)
+    mg["SAP Qty"]       = mg["SAP Qty"].fillna(0).astype(int)
+    mg["Diff"]          = mg["Infor Qty"] - mg["SAP Qty"]
+
+    # Qty/CTN diff
+    def _ctn_diff(row):
+        iv = row.get("Infor Qty/CTN")
+        sv = row.get("Qty/CTN")
+        if pd.isna(iv) or pd.isna(sv):
+            return None
+        try:
+            return int(iv) - int(sv)
+        except:
+            return None
+
+    mg["Diff Qty/CTN"] = mg.apply(_ctn_diff, axis=1)
 
     def _st(row):
         no_sap   = str(row.get("CTN Range", "")).strip() in ("", "nan", "None", "NaN")
@@ -221,7 +286,31 @@ def compare_po_size_detail(xl_df, pdf_data, po):
         if no_infor: return "ONLY IN SAP"
         return "\u2705 MATCH" if row["Diff"] == 0 else "\u274c MISMATCH"
 
-    mg["Status"] = mg.apply(_st, axis=1)
+    def _st_ctn(row):
+        iv = row.get("Infor Qty/CTN")
+        sv = row.get("Qty/CTN")
+        no_sap   = str(row.get("CTN Range", "")).strip() in ("", "nan", "None", "NaN")
+        no_infor = str(row.get("XL Line",   "")).strip() in ("", "nan", "None", "NaN")
+        if no_sap:             return "ONLY IN INFOR"
+        if no_infor:           return "ONLY IN SAP"
+        if pd.isna(iv):        return "NO INFOR DATA"
+        if pd.isna(sv):        return "NO SAP DATA"
+        try:
+            return "\u2705 MATCH" if int(iv) == int(sv) else "\u274c MISMATCH"
+        except:
+            return "\u274c MISMATCH"
+
+    mg["Status"]         = mg.apply(_st, axis=1)
+    mg["Status Qty/CTN"] = mg.apply(_st_ctn, axis=1)
+
+    # Coerce Infor Qty/CTN for display
+    mg["Infor Qty/CTN"] = mg["Infor Qty/CTN"].apply(
+        lambda x: int(x) if pd.notna(x) else "")
+    mg["Qty/CTN"] = mg["Qty/CTN"].apply(
+        lambda x: int(x) if pd.notna(x) else "")
+    mg["Diff Qty/CTN"] = mg["Diff Qty/CTN"].apply(
+        lambda x: int(x) if pd.notna(x) else "")
+
     for col in COLS:
         if col not in mg.columns: mg[col] = ""
     return mg[COLS].sort_values("UK Size").reset_index(drop=True)
@@ -250,6 +339,8 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
         "\u274c MISMATCH": (C["RED"],    "FFFFFF"),
         "ONLY IN INFOR":   (C["ORANGE"], "FFFFFF"),
         "ONLY IN SAP":     (C["ORANGE"], "FFFFFF"),
+        "NO INFOR DATA":   (C["ORANGE"], "FFFFFF"),
+        "NO SAP DATA":     (C["ORANGE"], "FFFFFF"),
     }
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -276,7 +367,7 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     ws1.merge_cells("A3:I3")
     c = ws1["A3"]
     c.value = (
-        "\u2139\ufe0f  Compared: Total Qty (Pairs) + Qty per Size  |  "
+        "\u2139\ufe0f  Compared: Total Qty (Pairs) + Qty per Size + Qty/CTN per Size  |  "
         "Info only (not compared): Article \u00b7 Model"
     )
     c.font = Font(name="Calibri", italic=True, size=9, color=C["INFO_FG"])
@@ -362,7 +453,7 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     ws2.merge_cells("A2:F2")
     c = ws2["A2"]
     c.value = (
-        "\u2139\ufe0f  Compared: Total Qty (Pairs) + Qty per UK Size  |  "
+        "\u2139\ufe0f  Compared: Total Qty (Pairs) + Qty per UK Size + Qty/CTN per UK Size  |  "
         "Blue = Infor value  |  Green = SAP value  |  Purple = Diff (Infor \u2212 SAP)"
     )
     c.font = Font(name="Calibri", italic=True, size=9, color=C["INFO_FG"])
@@ -377,11 +468,11 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     ws2.row_dimensions[4].height = 18
     ws2_cols = [
         (1, "PO Number",                C["KEY_HDR"],   16),
-        (2, "Field",                    C["KEY_HDR"],   28),
+        (2, "Field",                    C["KEY_HDR"],   32),
         (3, "Infor Value",              C["INFOR_HDR"], 16),
         (4, "SAP Value",                C["SAP_HDR"],   16),
         (5, "Diff\n(Infor\u2212SAP)",   C["CALC_HDR"],  12),
-        (6, "Status",                   C["CALC_HDR"],  16),
+        (6, "Status",                   C["CALC_HDR"],  18),
     ]
     for col, lbl, bg, w in ws2_cols:
         wc(ws2, 4, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
@@ -424,7 +515,7 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     ws3 = wb.create_sheet("Size Detail")
     ws3.sheet_view.showGridLines = False
 
-    ws3.merge_cells("A1:O1")
+    ws3.merge_cells("A1:Q1")
     c = ws3["A1"]
     c.value = (
         "SIZE DETAIL \u2014 Semua PO  |  "
@@ -433,46 +524,90 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     c.font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
     c.fill = fill(C["DGRAY"]); c.alignment = left(); ws3.row_dimensions[1].height = 22
 
-    ws3.merge_cells("A2:O2")
+    ws3.merge_cells("A2:Q2")
     c = ws3["A2"]
     c.value = (
         "PO / UK Size / US Size = key bersama  |  "
-        "Article(Infor), Model(Infor), XL Line, Infor Qty = FROM INFOR  |  "
+        "Article(Infor), Model(Infor), XL Line, Infor Qty, Infor Qty/CTN = FROM INFOR  |  "
         "Article(SAP), Model(SAP), CTN Range, CTNs, Qty/CTN, SAP Qty = FROM SAP  |  "
-        "Diff, Status = CALCULATED"
+        "Diff, Diff Qty/CTN, Status, Status Qty/CTN = CALCULATED"
     )
     c.font = Font(name="Calibri", italic=True, size=8, color="37474F")
     c.fill = fill("FAFAFA"); c.alignment = left(); ws3.row_dimensions[2].height = 14
 
+    # Column spans — now 17 columns total
     ws3.row_dimensions[3].height = 20
-    span(ws3, 3,  1,  1, "\U0001f511 KEY",                          C["KEY_HDR"])
-    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",       C["INFOR_HDR"])
-    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",         C["SAP_HDR"])
-    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",       C["INFOR_HDR"])
-    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",         C["SAP_HDR"])
-    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",                 C["KEY_HDR"])
-    span(ws3, 3,  8,  9, "\U0001f4ca FROM INFOR \u2014 compared",   C["INFOR_HDR"])
-    span(ws3, 3, 10, 13, "\U0001f4c4 FROM SAP \u2014 compared",     C["SAP_HDR"])
-    span(ws3, 3, 14, 15, "\U0001f7e3 CALCULATED",                   C["CALC_HDR"])
+    span(ws3, 3,  1,  1, "\U0001f511 KEY",                                C["KEY_HDR"])
+    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
+    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
+    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
+    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
+    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",                       C["KEY_HDR"])
+    span(ws3, 3,  8,  9, "\U0001f4ca FROM INFOR \u2014 compared",         C["INFOR_HDR"])
+    span(ws3, 3, 10, 13, "\U0001f4c4 FROM SAP \u2014 compared",           C["SAP_HDR"])
+    span(ws3, 3, 14, 17, "\U0001f7e3 CALCULATED",                         C["CALC_HDR"])
 
     ws3.row_dimensions[4].height = 32
     sd_cols = [
-        ( 1, "PO\nNumber",             C["KEY_HDR"],   14),
-        ( 2, "Article\n(Infor)",       C["INFOR_HDR"], 13),
-        ( 3, "Article\n(SAP)",         C["SAP_HDR"],   13),
-        ( 4, "Model\n(Infor)",         C["INFOR_HDR"], 22),
-        ( 5, "Model\n(SAP)",           C["SAP_HDR"],   22),
-        ( 6, "UK\nSize",               C["KEY_HDR"],    9),
-        ( 7, "US\nSize",               C["KEY_HDR"],    9),
-        ( 8, "XL Line\n\u2190Infor",  C["INFOR_HDR"],  9),
-        ( 9, "Infor Qty\n(pairs)",     C["INFOR_HDR"], 12),
-        (10, "CTN Range\n\u2190SAP",   C["SAP_HDR"],   13),
-        (11, "CTNs\n\u2190SAP",        C["SAP_HDR"],    8),
-        (12, "Qty/CTN\n\u2190SAP",     C["SAP_HDR"],    9),
-        (13, "SAP Qty\n(pairs)",       C["SAP_HDR"],   12),
-        (14, "Diff\n(Infor\u2212SAP)", C["CALC_HDR"],  10),
-        (15, "Status",                 C["CALC_HDR"],  18),
+        ( 1, "PO\nNumber",              C["KEY_HDR"],   14),
+        ( 2, "Article\n(Infor)",        C["INFOR_HDR"], 13),
+        ( 3, "Article\n(SAP)",          C["SAP_HDR"],   13),
+        ( 4, "Model\n(Infor)",          C["INFOR_HDR"], 22),
+        ( 5, "Model\n(SAP)",            C["SAP_HDR"],   22),
+        ( 6, "UK\nSize",                C["KEY_HDR"],    9),
+        ( 7, "US\nSize",                C["KEY_HDR"],    9),
+        ( 8, "XL Line\n\u2190Infor",   C["INFOR_HDR"],  9),
+        ( 9, "Infor Qty\n(pairs)",      C["INFOR_HDR"], 12),
+        (10, "CTN Range\n\u2190SAP",    C["SAP_HDR"],   13),
+        (11, "CTNs\n\u2190SAP",         C["SAP_HDR"],    8),
+        (12, "Qty/CTN\n\u2190SAP",      C["SAP_HDR"],    9),
+        (13, "SAP Qty\n(pairs)",        C["SAP_HDR"],   12),
+        (14, "Diff\n(Infor\u2212SAP)",  C["CALC_HDR"],  10),
+        (15, "Status\nQty",             C["CALC_HDR"],  16),
+        (16, "Infor\nQty/CTN\u2190",    C["INFOR_HDR"], 12),
+        # col 16 header needs to appear in INFOR band — we'll override span below
+        # Actually easier to keep CALCULATED band for cols 14-17 and add Infor Qty/CTN separate
     ]
+    # Override: col 16 is Infor Qty/CTN (Infor), col 17 is Diff + Status Qty/CTN (CALC)
+    # Redefine cleanly:
+    sd_cols = [
+        ( 1, "PO\nNumber",               C["KEY_HDR"],   14),
+        ( 2, "Article\n(Infor)",         C["INFOR_HDR"], 13),
+        ( 3, "Article\n(SAP)",           C["SAP_HDR"],   13),
+        ( 4, "Model\n(Infor)",           C["INFOR_HDR"], 22),
+        ( 5, "Model\n(SAP)",             C["SAP_HDR"],   22),
+        ( 6, "UK\nSize",                 C["KEY_HDR"],    9),
+        ( 7, "US\nSize",                 C["KEY_HDR"],    9),
+        ( 8, "XL Line\n\u2190Infor",    C["INFOR_HDR"],  9),
+        ( 9, "Infor Qty\n(pairs)",       C["INFOR_HDR"], 13),
+        (10, "Infor\nQty/CTN",           C["INFOR_HDR"], 13),
+        (11, "CTN Range\n\u2190SAP",     C["SAP_HDR"],   13),
+        (12, "CTNs\n\u2190SAP",          C["SAP_HDR"],    8),
+        (13, "SAP\nQty/CTN",             C["SAP_HDR"],   12),
+        (14, "SAP Qty\n(pairs)",         C["SAP_HDR"],   12),
+        (15, "Diff Qty\n(I\u2212S)",     C["CALC_HDR"],  10),
+        (16, "Status\nQty",              C["CALC_HDR"],  16),
+        (17, "Diff\nQty/CTN",            C["CALC_HDR"],  12),
+        (18, "Status\nQty/CTN",          C["CALC_HDR"],  18),
+    ]
+
+    # Re-do row 3 spans for 18 columns
+    ws3.merge_cells("A1:R1")
+    ws3.merge_cells("A2:R2")
+    # Redo span row 3 with correct column groupings for 18 cols
+    # Clear previous spans
+    for cc in range(1, 19):
+        ws3.cell(row=3, column=cc).value = None
+    span(ws3, 3,  1,  1, "\U0001f511 KEY",                                C["KEY_HDR"])
+    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
+    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
+    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
+    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
+    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",                       C["KEY_HDR"])
+    span(ws3, 3,  8, 10, "\U0001f4ca FROM INFOR \u2014 compared",         C["INFOR_HDR"])
+    span(ws3, 3, 11, 14, "\U0001f4c4 FROM SAP \u2014 compared",           C["SAP_HDR"])
+    span(ws3, 3, 15, 18, "\U0001f7e3 CALCULATED",                         C["CALC_HDR"])
+
     for col, lbl, bg, w in sd_cols:
         wc(ws3, 4, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
         ws3.column_dimensions[get_column_letter(col)].width = w
@@ -484,40 +619,57 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
         if sd.empty: continue
         for _, row in sd.iterrows():
             st         = row.get("Status", "")
+            st_ctn     = row.get("Status Qty/CTN", "")
             s_bg, s_fc = STATUS_STYLE.get(st, (C["WHITE"], "000000"))
+            sc_bg, sc_fc = STATUS_STYLE.get(st_ctn, (C["WHITE"], "000000"))
             alt        = C["LGRAY"] if ri3 % 2 == 0 else C["WHITE"]
             ws3.row_dimensions[ri3].height = 14
 
             try:    diff_i = int(row.get("Diff", 0))
             except: diff_i = 0
 
+            try:    diff_ctn = int(row.get("Diff Qty/CTN", 0))
+            except: diff_ctn = 0
+
             is_mm      = (st == "\u274c MISMATCH")
+            is_mm_ctn  = (st_ctn == "\u274c MISMATCH")
             only_infor = (st == "ONLY IN INFOR")
             only_sap   = (st == "ONLY IN SAP")
 
-            iq_bg  = "BBDEFB" if is_mm else (C["INFOR_BG"] if not only_sap   else "FFCDD2")
-            sq_bg  = "C8E6C9" if is_mm else (C["SAP_BG"]   if not only_infor else "FFCDD2")
-            ctn_bg = C["SAP_BG"]   if not only_infor else "FFCDD2"
-            xl_bg  = C["INFOR_BG"] if not only_sap   else "FFCDD2"
+            iq_bg   = "BBDEFB" if is_mm      else (C["INFOR_BG"] if not only_sap   else "FFCDD2")
+            iqc_bg  = "BBDEFB" if is_mm_ctn  else (C["INFOR_BG"] if not only_sap   else "FFCDD2")
+            sq_bg   = "C8E6C9" if is_mm      else (C["SAP_BG"]   if not only_infor else "FFCDD2")
+            sqc_bg  = "C8E6C9" if is_mm_ctn  else (C["SAP_BG"]   if not only_infor else "FFCDD2")
+            ctn_bg  = C["SAP_BG"]   if not only_infor else "FFCDD2"
+            xl_bg   = C["INFOR_BG"] if not only_sap   else "FFCDD2"
 
-            wc(ws3, ri3,  1, po,                           bg=C["KEY_BG"],   fnt=cfont(bold=True, sz=9),            aln=left())
-            wc(ws3, ri3,  2, info["Article (Infor)"],      bg=C["INFOR_BG"], fnt=cfont(sz=9, color=C["INFO_FG"]),   aln=left())
-            wc(ws3, ri3,  3, info["Article (SAP)"],        bg=C["SAP_BG"],   fnt=cfont(sz=9, color="1B5E20"),       aln=left())
-            wc(ws3, ri3,  4, info["Model (Infor)"],        bg=C["INFOR_BG"], fnt=cfont(sz=9, color=C["INFO_FG"]),   aln=left())
-            wc(ws3, ri3,  5, info["Model (SAP)"],          bg=C["SAP_BG"],   fnt=cfont(sz=9, color="1B5E20"),       aln=left())
-            wc(ws3, ri3,  6, row.get("UK Size", ""),       bg=C["KEY_BG"],   fnt=cfont(bold=True, sz=9),            aln=center())
-            wc(ws3, ri3,  7, row.get("US Size", ""),       bg=C["KEY_BG"],   fnt=cfont(sz=9),                       aln=center())
-            wc(ws3, ri3,  8, row.get("XL Line", ""),       bg=xl_bg,         fnt=cfont(sz=9, color=C["INFO_FG"]),   aln=center())
-            wc(ws3, ri3,  9, int(row.get("Infor Qty", 0)), bg=iq_bg,         fnt=cfont(bold=is_mm, color="0D47A1", sz=9), aln=center())
-            wc(ws3, ri3, 10, row.get("CTN Range", ""),     bg=ctn_bg,        fnt=cfont(sz=9, color="1B5E20"),       aln=center())
-            wc(ws3, ri3, 11, row.get("CTNs", ""),          bg=ctn_bg,        fnt=cfont(sz=9, color="1B5E20"),       aln=center())
-            wc(ws3, ri3, 12, row.get("Qty/CTN", ""),       bg=ctn_bg,        fnt=cfont(sz=9, color="1B5E20"),       aln=center())
-            wc(ws3, ri3, 13, int(row.get("SAP Qty", 0)),   bg=sq_bg,         fnt=cfont(bold=is_mm, color="1B5E20", sz=9), aln=center())
-            wc(ws3, ri3, 14,
+            infor_ctn_val = row.get("Infor Qty/CTN", "")
+            sap_ctn_val   = row.get("Qty/CTN", "")
+            diff_ctn_disp = f"{diff_ctn:+}" if isinstance(diff_ctn, int) and diff_ctn != 0 else (0 if diff_ctn == 0 else "")
+
+            wc(ws3, ri3,  1, po,                              bg=C["KEY_BG"],   fnt=cfont(bold=True, sz=9),            aln=left())
+            wc(ws3, ri3,  2, info["Article (Infor)"],         bg=C["INFOR_BG"], fnt=cfont(sz=9, color=C["INFO_FG"]),   aln=left())
+            wc(ws3, ri3,  3, info["Article (SAP)"],           bg=C["SAP_BG"],   fnt=cfont(sz=9, color="1B5E20"),       aln=left())
+            wc(ws3, ri3,  4, info["Model (Infor)"],           bg=C["INFOR_BG"], fnt=cfont(sz=9, color=C["INFO_FG"]),   aln=left())
+            wc(ws3, ri3,  5, info["Model (SAP)"],             bg=C["SAP_BG"],   fnt=cfont(sz=9, color="1B5E20"),       aln=left())
+            wc(ws3, ri3,  6, row.get("UK Size", ""),          bg=C["KEY_BG"],   fnt=cfont(bold=True, sz=9),            aln=center())
+            wc(ws3, ri3,  7, row.get("US Size", ""),          bg=C["KEY_BG"],   fnt=cfont(sz=9),                       aln=center())
+            wc(ws3, ri3,  8, row.get("XL Line", ""),          bg=xl_bg,         fnt=cfont(sz=9, color=C["INFO_FG"]),   aln=center())
+            wc(ws3, ri3,  9, int(row.get("Infor Qty", 0)),    bg=iq_bg,         fnt=cfont(bold=is_mm, color="0D47A1", sz=9), aln=center())
+            wc(ws3, ri3, 10, infor_ctn_val,                   bg=iqc_bg,        fnt=cfont(bold=is_mm_ctn, color="0D47A1", sz=9), aln=center())
+            wc(ws3, ri3, 11, row.get("CTN Range", ""),        bg=ctn_bg,        fnt=cfont(sz=9, color="1B5E20"),       aln=center())
+            wc(ws3, ri3, 12, row.get("CTNs", ""),             bg=ctn_bg,        fnt=cfont(sz=9, color="1B5E20"),       aln=center())
+            wc(ws3, ri3, 13, sap_ctn_val,                     bg=sqc_bg,        fnt=cfont(bold=is_mm_ctn, color="1B5E20", sz=9), aln=center())
+            wc(ws3, ri3, 14, int(row.get("SAP Qty", 0)),      bg=sq_bg,         fnt=cfont(bold=is_mm, color="1B5E20", sz=9), aln=center())
+            wc(ws3, ri3, 15,
                f"{diff_i:+}" if diff_i != 0 else 0,
                bg="FFEBEE" if diff_i != 0 else C["CALC_BG"],
                fnt=cfont(bold=diff_i != 0, color=C["RED"] if diff_i != 0 else "000000", sz=9), aln=center())
-            wc(ws3, ri3, 15, st, bg=s_bg, fnt=hfont(color=s_fc, sz=9), aln=center())
+            wc(ws3, ri3, 16, st,   bg=s_bg,  fnt=hfont(color=s_fc, sz=9),  aln=center())
+            wc(ws3, ri3, 17, diff_ctn_disp,
+               bg="FFEBEE" if diff_ctn != 0 else C["CALC_BG"],
+               fnt=cfont(bold=diff_ctn != 0, color=C["RED"] if diff_ctn != 0 else "000000", sz=9), aln=center())
+            wc(ws3, ri3, 18, st_ctn, bg=sc_bg, fnt=hfont(color=sc_fc, sz=9), aln=center())
             ri3 += 1
 
     ws3.freeze_panes = "A5"
@@ -536,7 +688,7 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
 
     ws4.merge_cells("A2:F2")
     c = ws4["A2"]
-    c.value = "Biru = nilai Infor  |  Hijau = nilai SAP  |  Ungu = selisih (Infor \u2212 SAP)"
+    c.value = "Biru = nilai Infor  |  Hijau = nilai SAP  |  Ungu = selisih (Infor \u2212 SAP)  |  Includes Qty and Qty/CTN mismatches"
     c.font = Font(name="Calibri", italic=True, size=9, color="37474F")
     c.fill = fill("FFF3E0"); c.alignment = left(); ws4.row_dimensions[2].height = 13
 
@@ -549,7 +701,7 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     ws4.row_dimensions[4].height = 18
     disc_cols = [
         (1, "PO Number",             C["KEY_HDR"],   16),
-        (2, "Field",                 C["KEY_HDR"],   28),
+        (2, "Field",                 C["KEY_HDR"],   32),
         (3, "Infor Value",           C["INFOR_HDR"], 14),
         (4, "SAP Value",             C["SAP_HDR"],   14),
         (5, "Diff (Infor\u2212SAP)", C["CALC_HDR"],  12),
@@ -630,9 +782,9 @@ st.markdown(
 
 st.title("\U0001f4e6 Infor vs SAP Carton \u2014 Field-by-Field PO Comparator")
 st.caption(
-    "**Compared:** Total Qty (Pairs) \u00b7 Qty per Size  |  "
+    "**Compared:** Total Qty (Pairs) \u00b7 Qty per Size \u00b7 **Qty/CTN per Size (NEW)**  |  "
     "**Info only (not compared):** Article \u00b7 Model  |  "
-    "**Size detail columns:** UK/US Size \u00b7 XL Line \u00b7 CTN Range \u00b7 CTNs \u00b7 Qty/CTN"
+    "**Size detail columns:** UK/US Size \u00b7 XL Line \u00b7 CTN Range \u00b7 CTNs \u00b7 Infor Qty/CTN \u00b7 SAP Qty/CTN"
 )
 
 col1, col2 = st.columns(2)
@@ -652,6 +804,17 @@ if xl_file and pdf_file:
         all_pos    = sorted(set(xl_pos + pdf_pos))
         match_pos  = [p for p in pdf_pos if p in set(xl_pos)]
         xl_pos_set = set(xl_pos)
+
+        # Detect Infor Qty/CTN column
+        ctn_col_found = _find_ctn_qty_col(xl_df)
+
+    if ctn_col_found:
+        st.success(f"\u2705 Kolom Infor Qty/CTN ditemukan: **`{ctn_col_found}`**")
+    else:
+        st.warning(
+            "\u26a0\ufe0f Kolom 'Carton Qty per Size' tidak ditemukan di file Infor. "
+            "Comparison Qty/CTN akan dilewati. Pastikan nama kolom mengandung 'Carton Qty per Size'."
+        )
 
     sum_rows = []
     for po in all_pos:
@@ -686,7 +849,7 @@ if xl_file and pdf_file:
     st.divider()
     st.subheader("\U0001f4cb PO Compare Summary \u2014 adidas Infor vs SAP Carton")
     st.info(
-        "\u2139\ufe0f **Fields compared:** Total Qty (Pairs) + Qty per Size.  "
+        "\u2139\ufe0f **Fields compared:** Total Qty (Pairs) + Qty per Size + **Qty/CTN per Size**.  "
         "Article & Model **not compared** \u2014 info only.",
         icon=None,
     )
@@ -717,7 +880,7 @@ if xl_file and pdf_file:
 
     with tab1:
         st.caption(
-            "**Compared fields:** `Total Qty (Pairs)` + `Qty Size X` per UK Size. "
+            "**Compared fields:** `Total Qty (Pairs)` + `Qty Size X` + `Qty/CTN Size X` per UK Size. "
             "Article & Model **not shown here**."
         )
         det_rows = []
@@ -732,6 +895,7 @@ if xl_file and pdf_file:
             def _cs(val):
                 if val == "\u2705 MATCH":    return "background-color:#c8f7c5;color:#1B5E20;font-weight:bold"
                 if val == "\u274c MISMATCH": return "background-color:#ffcdd2;color:#B71C1C;font-weight:bold"
+                if "ONLY" in str(val):       return "background-color:#ffe0b2;color:#E65100;font-weight:bold"
                 return ""
 
             def _cv(row):
@@ -751,7 +915,8 @@ if xl_file and pdf_file:
     with tab2:
         st.caption(
             "**All columns per size row.** Article & Model = \U0001f535 info (not compared). "
-            "XL Line=Infor · CTN Range/CTNs/Qty/CTN=SAP."
+            "XL Line + Infor Qty/CTN = Infor · CTN Range/CTNs/SAP Qty/CTN/SAP Qty = SAP · "
+            "Diff/Status = Calculated."
         )
         sd_rows = []
         for po in all_pos:
@@ -783,10 +948,13 @@ if xl_file and pdf_file:
             def _info_col(val): return "background-color:#E3F2FD;color:#0D47A1"
 
             present_info = [c for c in INFO_COLS if c in sd_df.columns]
+            status_cols  = [c for c in ["Status", "Status Qty/CTN"] if c in sd_df.columns]
+            diff_cols    = [c for c in ["Diff", "Diff Qty/CTN"] if c in sd_df.columns]
+
             st.dataframe(
                 sd_df.style
-                    .map(_sst, subset=["Status"])
-                    .map(_sdiff, subset=["Diff"])
+                    .map(_sst, subset=status_cols)
+                    .map(_sdiff, subset=diff_cols)
                     .map(_info_col, subset=present_info),
                 use_container_width=True, hide_index=True,
                 height=min(700, 80 + len(sd_df) * 34),
@@ -859,8 +1027,14 @@ else:
         |---|---|
         | Total Qty (Pairs) | ✅ Yes |
         | Qty Size X (per UK Size) | ✅ Yes |
+        | **Qty/CTN Size X (per UK Size)** | ✅ **Yes (NEW)** |
         | Article | ❌ No — info only |
         | Model | ❌ No — info only |
+
+        **Infor column for Qty/CTN**: any column whose name contains `Carton Qty per Size`
+        (e.g. `VAS/SHAS L19 – Carton Qty per Size`, `VAS/SHAS L15 – Carton Qty per Size`).
+
+        **SAP column for Qty/CTN**: `PER PRS` column parsed as `Qty/CTN`.
 
         **Excel sheets:** `PO Compare Summary` · `PO Compare Detail` · `Size Detail` · `Discrepancies Only` · `Raw Infor Data`
 
