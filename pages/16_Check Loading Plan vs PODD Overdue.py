@@ -115,13 +115,11 @@ def detect_fvb_so_column(df: pd.DataFrame):
     """Deteksi kolom FVB SO. Return nama kolom asli atau None."""
     cols_norm = [norm_col_name(c) for c in df.columns]
 
-    # 1) Eksak dari kandidat FVB
     for cand in FVB_CANDIDATES:
         nc = norm_col_name(cand)
         if nc in cols_norm:
             return df.columns[cols_norm.index(nc)]
 
-    # 2) Heuristik: nama kolom mengandung "fvb"
     for i, cn in enumerate(cols_norm):
         if "fvb" in cn:
             return df.columns[i]
@@ -206,30 +204,31 @@ def process_files(zrsd_file, plan_files, date_format):
                 st.error(f"❌ {file.name}: Format nama file salah (harus DD.MM seperti 22.01)")
                 continue
 
-            # ── Kolom SO #1: SAP_ODR_NO ──────────────────────────────────
+            # ── Deteksi kolom SO ──────────────────────────────────────────
             so_col_sap = detect_so_column(df_plan)
-            if not so_col_sap:
-                st.error(f"❌ {file.name}: Kolom SAP SO tidak ditemukan")
+            so_col_fvb = detect_fvb_so_column(df_plan)
+
+            # Batalkan hanya jika KEDUANYA tidak ditemukan
+            if not so_col_sap and not so_col_fvb:
+                st.error(f"❌ {file.name}: Tidak ada kolom SAP SO maupun FVB SO")
                 st.write("Kolom yang tersedia:", list(df_plan.columns))
                 continue
 
-            # ── Kolom SO #2: FVB SO ───────────────────────────────────────
-            so_col_fvb = detect_fvb_so_column(df_plan)
-
-            # Log info kolom yang ditemukan
+            sap_label = f"`{so_col_sap}`" if so_col_sap else "tidak ditemukan"
             fvb_label = f"`{so_col_fvb}`" if so_col_fvb else "tidak ditemukan"
             st.success(
-                f"✅ {file.name} → SAP SO: `{so_col_sap}` | "
+                f"✅ {file.name} → SAP SO: {sap_label} | "
                 f"FVB SO: {fvb_label} | Tanggal: {plan_date.date()}"
             )
 
-            # ── Masukkan SO dari kolom SAP ke map ─────────────────────────
-            df_plan["__SO_sap__"] = clean_so_series(df_plan[so_col_sap])
-            for so in df_plan["__SO_sap__"].dropna().unique():
-                if str(so).isdigit():
-                    plan_so_map[int(so)].append(("SAP", plan_date.date()))
+            # ── SAP SO (opsional) ─────────────────────────────────────────
+            if so_col_sap and so_col_sap in df_plan.columns:
+                df_plan["__SO_sap__"] = clean_so_series(df_plan[so_col_sap])
+                for so in df_plan["__SO_sap__"].dropna().unique():
+                    if str(so).isdigit():
+                        plan_so_map[int(so)].append(("SAP", plan_date.date()))
 
-            # ── Masukkan SO dari kolom FVB ke map (jika ada) ──────────────
+            # ── FVB SO (opsional) ─────────────────────────────────────────
             if so_col_fvb and so_col_fvb in df_plan.columns:
                 df_plan["__SO_fvb__"] = clean_so_series(df_plan[so_col_fvb])
                 for so in df_plan["__SO_fvb__"].dropna().unique():
