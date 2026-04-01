@@ -515,7 +515,8 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     ws3 = wb.create_sheet("Size Detail")
     ws3.sheet_view.showGridLines = False
 
-    ws3.merge_cells("A1:Q1")
+    # 18 columns: A(1)–R(18)
+    ws3.merge_cells("A1:R1")
     c = ws3["A1"]
     c.value = (
         "SIZE DETAIL \u2014 Semua PO  |  "
@@ -524,89 +525,51 @@ def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     c.font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
     c.fill = fill(C["DGRAY"]); c.alignment = left(); ws3.row_dimensions[1].height = 22
 
-    ws3.merge_cells("A2:Q2")
+    ws3.merge_cells("A2:R2")
     c = ws3["A2"]
     c.value = (
         "PO / UK Size / US Size = key bersama  |  "
         "Article(Infor), Model(Infor), XL Line, Infor Qty, Infor Qty/CTN = FROM INFOR  |  "
-        "Article(SAP), Model(SAP), CTN Range, CTNs, Qty/CTN, SAP Qty = FROM SAP  |  "
-        "Diff, Diff Qty/CTN, Status, Status Qty/CTN = CALCULATED"
+        "Article(SAP), Model(SAP), CTN Range, CTNs, SAP Qty/CTN, SAP Qty = FROM SAP  |  "
+        "Diff Qty, Status Qty, Diff Qty/CTN, Status Qty/CTN = CALCULATED"
     )
     c.font = Font(name="Calibri", italic=True, size=8, color="37474F")
     c.fill = fill("FAFAFA"); c.alignment = left(); ws3.row_dimensions[2].height = 14
 
-    # Column spans — now 17 columns total
+    # Row 3 — category band spans (18 columns, written once, no overlap)
     ws3.row_dimensions[3].height = 20
-    span(ws3, 3,  1,  1, "\U0001f511 KEY",                                C["KEY_HDR"])
-    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
-    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
-    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
-    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
-    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",                       C["KEY_HDR"])
-    span(ws3, 3,  8,  9, "\U0001f4ca FROM INFOR \u2014 compared",         C["INFOR_HDR"])
-    span(ws3, 3, 10, 13, "\U0001f4c4 FROM SAP \u2014 compared",           C["SAP_HDR"])
-    span(ws3, 3, 14, 17, "\U0001f7e3 CALCULATED",                         C["CALC_HDR"])
+    span(ws3, 3,  1,  1, "\U0001f511 KEY",                        C["KEY_HDR"])
+    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",     C["INFOR_HDR"])
+    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",       C["SAP_HDR"])
+    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",     C["INFOR_HDR"])
+    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",       C["SAP_HDR"])
+    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",               C["KEY_HDR"])
+    span(ws3, 3,  8, 10, "\U0001f4ca FROM INFOR \u2014 compared", C["INFOR_HDR"])
+    span(ws3, 3, 11, 14, "\U0001f4c4 FROM SAP \u2014 compared",   C["SAP_HDR"])
+    span(ws3, 3, 15, 18, "\U0001f7e3 CALCULATED",                 C["CALC_HDR"])
 
+    # Row 4 — column headers (18 columns, defined once)
     ws3.row_dimensions[4].height = 32
     sd_cols = [
-        ( 1, "PO\nNumber",              C["KEY_HDR"],   14),
-        ( 2, "Article\n(Infor)",        C["INFOR_HDR"], 13),
-        ( 3, "Article\n(SAP)",          C["SAP_HDR"],   13),
-        ( 4, "Model\n(Infor)",          C["INFOR_HDR"], 22),
-        ( 5, "Model\n(SAP)",            C["SAP_HDR"],   22),
-        ( 6, "UK\nSize",                C["KEY_HDR"],    9),
-        ( 7, "US\nSize",                C["KEY_HDR"],    9),
-        ( 8, "XL Line\n\u2190Infor",   C["INFOR_HDR"],  9),
-        ( 9, "Infor Qty\n(pairs)",      C["INFOR_HDR"], 12),
-        (10, "CTN Range\n\u2190SAP",    C["SAP_HDR"],   13),
-        (11, "CTNs\n\u2190SAP",         C["SAP_HDR"],    8),
-        (12, "Qty/CTN\n\u2190SAP",      C["SAP_HDR"],    9),
-        (13, "SAP Qty\n(pairs)",        C["SAP_HDR"],   12),
-        (14, "Diff\n(Infor\u2212SAP)",  C["CALC_HDR"],  10),
-        (15, "Status\nQty",             C["CALC_HDR"],  16),
-        (16, "Infor\nQty/CTN\u2190",    C["INFOR_HDR"], 12),
-        # col 16 header needs to appear in INFOR band — we'll override span below
-        # Actually easier to keep CALCULATED band for cols 14-17 and add Infor Qty/CTN separate
+        ( 1, "PO\nNumber",             C["KEY_HDR"],   14),
+        ( 2, "Article\n(Infor)",       C["INFOR_HDR"], 13),
+        ( 3, "Article\n(SAP)",         C["SAP_HDR"],   13),
+        ( 4, "Model\n(Infor)",         C["INFOR_HDR"], 22),
+        ( 5, "Model\n(SAP)",           C["SAP_HDR"],   22),
+        ( 6, "UK\nSize",               C["KEY_HDR"],    9),
+        ( 7, "US\nSize",               C["KEY_HDR"],    9),
+        ( 8, "XL Line\n\u2190Infor",  C["INFOR_HDR"],  9),
+        ( 9, "Infor Qty\n(pairs)",     C["INFOR_HDR"], 13),
+        (10, "Infor\nQty/CTN",         C["INFOR_HDR"], 13),
+        (11, "CTN Range\n\u2190SAP",   C["SAP_HDR"],   13),
+        (12, "CTNs\n\u2190SAP",        C["SAP_HDR"],    8),
+        (13, "SAP\nQty/CTN",           C["SAP_HDR"],   12),
+        (14, "SAP Qty\n(pairs)",       C["SAP_HDR"],   12),
+        (15, "Diff Qty\n(I\u2212S)",   C["CALC_HDR"],  10),
+        (16, "Status\nQty",            C["CALC_HDR"],  16),
+        (17, "Diff\nQty/CTN",          C["CALC_HDR"],  12),
+        (18, "Status\nQty/CTN",        C["CALC_HDR"],  18),
     ]
-    # Override: col 16 is Infor Qty/CTN (Infor), col 17 is Diff + Status Qty/CTN (CALC)
-    # Redefine cleanly:
-    sd_cols = [
-        ( 1, "PO\nNumber",               C["KEY_HDR"],   14),
-        ( 2, "Article\n(Infor)",         C["INFOR_HDR"], 13),
-        ( 3, "Article\n(SAP)",           C["SAP_HDR"],   13),
-        ( 4, "Model\n(Infor)",           C["INFOR_HDR"], 22),
-        ( 5, "Model\n(SAP)",             C["SAP_HDR"],   22),
-        ( 6, "UK\nSize",                 C["KEY_HDR"],    9),
-        ( 7, "US\nSize",                 C["KEY_HDR"],    9),
-        ( 8, "XL Line\n\u2190Infor",    C["INFOR_HDR"],  9),
-        ( 9, "Infor Qty\n(pairs)",       C["INFOR_HDR"], 13),
-        (10, "Infor\nQty/CTN",           C["INFOR_HDR"], 13),
-        (11, "CTN Range\n\u2190SAP",     C["SAP_HDR"],   13),
-        (12, "CTNs\n\u2190SAP",          C["SAP_HDR"],    8),
-        (13, "SAP\nQty/CTN",             C["SAP_HDR"],   12),
-        (14, "SAP Qty\n(pairs)",         C["SAP_HDR"],   12),
-        (15, "Diff Qty\n(I\u2212S)",     C["CALC_HDR"],  10),
-        (16, "Status\nQty",              C["CALC_HDR"],  16),
-        (17, "Diff\nQty/CTN",            C["CALC_HDR"],  12),
-        (18, "Status\nQty/CTN",          C["CALC_HDR"],  18),
-    ]
-
-    # Re-do row 3 spans for 18 columns
-    ws3.merge_cells("A1:R1")
-    ws3.merge_cells("A2:R2")
-    # Redo span row 3 with correct column groupings for 18 cols
-    # Clear previous spans
-    for cc in range(1, 19):
-        ws3.cell(row=3, column=cc).value = None
-    span(ws3, 3,  1,  1, "\U0001f511 KEY",                                C["KEY_HDR"])
-    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
-    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
-    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",             C["INFOR_HDR"])
-    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",               C["SAP_HDR"])
-    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",                       C["KEY_HDR"])
-    span(ws3, 3,  8, 10, "\U0001f4ca FROM INFOR \u2014 compared",         C["INFOR_HDR"])
-    span(ws3, 3, 11, 14, "\U0001f4c4 FROM SAP \u2014 compared",           C["SAP_HDR"])
-    span(ws3, 3, 15, 18, "\U0001f7e3 CALCULATED",                         C["CALC_HDR"])
 
     for col, lbl, bg, w in sd_cols:
         wc(ws3, 4, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
