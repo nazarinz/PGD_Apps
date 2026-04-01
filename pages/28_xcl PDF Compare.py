@@ -8,204 +8,53 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from datetime import datetime
 
-st.set_page_config(
-    page_title="Infor vs SAP Comparator",
-    page_icon="📦",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Infor vs SAP Comparator", page_icon="\U0001f4e6", layout="wide")
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'IBM Plex Sans', sans-serif;
-}
-
-.stApp { background-color: #F0F2F6; }
-.block-container { padding: 1.5rem 2rem 3rem 2rem; max-width: 1400px; }
-
-/* Header */
-.app-header {
-    background: linear-gradient(135deg, #0A1628 0%, #1A3A5C 100%);
-    border-radius: 12px;
-    padding: 24px 32px;
-    margin-bottom: 24px;
-    border-left: 5px solid #00D4AA;
-}
-.app-header h1 {
-    color: #FFFFFF;
-    font-size: 1.6rem;
-    font-weight: 700;
-    margin: 0 0 4px 0;
-    font-family: 'IBM Plex Sans', sans-serif;
-}
-.app-header p {
-    color: #94A3B8;
-    font-size: 0.85rem;
-    margin: 0;
-}
-
-/* KPI Cards */
-.kpi-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin: 20px 0; }
-.kpi-card {
-    background: white;
-    border-radius: 10px;
-    padding: 16px;
-    text-align: center;
-    border-top: 4px solid #E2E8F0;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}
-.kpi-card.ok   { border-top-color: #10B981; }
-.kpi-card.bad  { border-top-color: #EF4444; }
-.kpi-card.warn { border-top-color: #F59E0B; }
-.kpi-card.blue { border-top-color: #3B82F6; }
-.kpi-number { font-size: 2rem; font-weight: 700; color: #1E293B; line-height: 1; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
-.kpi-label  { font-size: 0.72rem; color: #64748B; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-.kpi-card.ok   .kpi-number { color: #10B981; }
-.kpi-card.bad  .kpi-number { color: #EF4444; }
-.kpi-card.warn .kpi-number { color: #F59E0B; }
-
-/* PO Card */
-.po-card {
-    background: white;
-    border-radius: 12px;
-    margin-bottom: 16px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-    overflow: hidden;
-}
-.po-card-header {
-    padding: 14px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-.po-card-header.ok   { background: linear-gradient(90deg, #F0FDF4, #DCFCE7); border-left: 5px solid #10B981; }
-.po-card-header.bad  { background: linear-gradient(90deg, #FFF1F2, #FFE4E6); border-left: 5px solid #EF4444; }
-.po-card-header.warn { background: linear-gradient(90deg, #FFFBEB, #FEF3C7); border-left: 5px solid #F59E0B; }
-.po-number { font-size: 1.1rem; font-weight: 700; color: #1E293B; font-family: 'IBM Plex Mono', monospace; }
-.po-badge {
-    padding: 4px 14px;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.po-badge.ok   { background: #10B981; color: white; }
-.po-badge.bad  { background: #EF4444; color: white; }
-.po-badge.warn { background: #F59E0B; color: white; }
-
-/* Compare Table */
-.cmp-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
-.cmp-table th {
-    background: #1E293B;
-    color: white;
-    padding: 10px 14px;
-    text-align: center;
-    font-weight: 600;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-}
-.cmp-table th.left { text-align: left; }
-.cmp-table td {
-    padding: 9px 14px;
-    border-bottom: 1px solid #F1F5F9;
-    text-align: center;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.82rem;
-}
-.cmp-table td.label {
-    text-align: left;
-    font-family: 'IBM Plex Sans', sans-serif;
-    font-weight: 500;
-    color: #374151;
-}
-.cmp-table tr:hover td { background: #F8FAFC; }
-.cmp-table tr.match td { }
-.cmp-table tr.mismatch td.val { background: #FEF2F2; color: #B91C1C; font-weight: 700; }
-.cmp-table tr.only-infor td { background: #FFFBEB; }
-.cmp-table tr.only-sap td   { background: #EFF6FF; }
-
-.badge-match    { background:#D1FAE5; color:#065F46; padding:3px 10px; border-radius:999px; font-weight:700; font-size:0.72rem; font-family:'IBM Plex Sans',sans-serif; }
-.badge-mismatch { background:#FEE2E2; color:#991B1B; padding:3px 10px; border-radius:999px; font-weight:700; font-size:0.72rem; font-family:'IBM Plex Sans',sans-serif; }
-.badge-only-i   { background:#FEF3C7; color:#92400E; padding:3px 10px; border-radius:999px; font-weight:700; font-size:0.72rem; font-family:'IBM Plex Sans',sans-serif; }
-.badge-only-s   { background:#DBEAFE; color:#1E40AF; padding:3px 10px; border-radius:999px; font-weight:700; font-size:0.72rem; font-family:'IBM Plex Sans',sans-serif; }
-
-/* Info row in size table */
-.info-cell { color: #3B82F6; font-size: 0.78rem; font-style: italic; font-family:'IBM Plex Sans',sans-serif; }
-
-/* Progress bar */
-.match-bar-wrap { background: #E2E8F0; border-radius: 999px; height: 8px; overflow: hidden; margin: 8px 0 4px 0; }
-.match-bar-fill { height: 100%; border-radius: 999px; transition: width 0.5s; }
-
-/* Section label */
-.section-label {
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: #94A3B8;
-    margin: 20px 0 8px 0;
-}
-
-/* Upload zone */
-.upload-card {
-    background: white;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    border: 2px dashed #CBD5E1;
-}
-
-/* Tab style override */
-.stTabs [data-baseweb="tab-list"] {
-    background: white;
-    border-radius: 10px 10px 0 0;
-    padding: 4px 8px 0;
-    gap: 4px;
-    border-bottom: 2px solid #E2E8F0;
-}
-.stTabs [data-baseweb="tab"] {
-    border-radius: 8px 8px 0 0;
-    font-weight: 600;
-    font-size: 0.85rem;
-    padding: 10px 20px;
-    color: #64748B;
-}
-.stTabs [aria-selected="true"] {
-    background: #0A1628 !important;
-    color: white !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ── Colors & Style Helpers (Excel) ────────────────────────────────────────────
+# ── Colors ────────────────────────────────────────────────────────────────────
 C = dict(
     GREEN="00C853", RED="D50000", ORANGE="E65100",
     LGRAY="F5F5F5", DGRAY="424242", WHITE="FFFFFF",
     TEAL="00695C", DARKGREEN="1B5E20", BLUE_HDR="1A237E",
     INFO_BG="E3F2FD", INFO_FG="0D47A1",
+    # ── source-color system ──
+    INFOR_HDR="1565C0",  # dark blue  header  → FROM INFOR
+    INFOR_BG ="BBDEFB",  # light blue data     → FROM INFOR
+    SAP_HDR  ="2E7D32",  # dark green header   → FROM SAP
+    SAP_BG   ="C8E6C9",  # light green data    → FROM SAP
+    CALC_HDR ="6A1B9A",  # dark purple header  → CALCULATED
+    CALC_BG  ="E1BEE7",  # light purple data   → CALCULATED
+    KEY_HDR  ="37474F",  # dark slate header   → KEY / SHARED
+    KEY_BG   ="ECEFF1",  # light slate data    → KEY / SHARED
 )
-def hfont(color="FFFFFF", sz=10): return Font(name="Arial", bold=True, color=color, size=sz)
-def cfont(bold=False, color="000000", sz=10): return Font(name="Arial", bold=bold, color=color, size=sz)
+
+def hfont(color="FFFFFF", sz=10): return Font(name="Calibri", bold=True, color=color, size=sz)
+def cfont(bold=False, color="000000", sz=10): return Font(name="Calibri", bold=bold, color=color, size=sz)
 def fill(h): return PatternFill("solid", start_color=h, fgColor=h)
 def center(): return Alignment(horizontal="center", vertical="center", wrap_text=True)
-def left(): return Alignment(horizontal="left", vertical="center", wrap_text=True)
+def left():   return Alignment(horizontal="left",   vertical="center", wrap_text=True)
 def bdr():
     s = Side(style="thin", color="BDBDBD")
     return Border(left=s, right=s, top=s, bottom=s)
+
 def wc(ws, r, c, v, bg=None, fnt=None, aln=None, b=True, nf=None):
     cell = ws.cell(row=r, column=c, value=v)
-    if bg:  cell.fill = fill(bg)
-    if fnt: cell.font = fnt
+    if bg:  cell.fill      = fill(bg)
+    if fnt: cell.font      = fnt
     if aln: cell.alignment = aln
-    if b:   cell.border = bdr()
+    if b:   cell.border    = bdr()
     if nf:  cell.number_format = nf
     return cell
+
+def span(ws, row, c1, c2, label, bg, fg="FFFFFF", sz=9):
+    """Write a merged label spanning c1..c2 on the given row."""
+    ws.merge_cells(start_row=row, start_column=c1, end_row=row, end_column=c2)
+    cell = ws.cell(row=row, column=c1, value=label)
+    cell.fill = fill(bg); cell.font = hfont(color=fg, sz=sz)
+    cell.alignment = center(); cell.border = bdr()
+    for cc in range(c1 + 1, c2 + 1):
+        ws.cell(row=row, column=cc).fill   = fill(bg)
+        ws.cell(row=row, column=cc).border = bdr()
+
 
 # ── Excel (Infor) Parsing ─────────────────────────────────────────────────────
 def load_excel(file):
@@ -220,8 +69,8 @@ def xl_sizes_for_po(df, po):
         try: qty = int(float(r.get("Quantity", 0)))
         except: qty = 0
         out.append({
-            "UK Size": str(r.get("Manufacturing Size", "")).strip(),
-            "US Size": str(r.get("Customer Size", "")).strip(),
+            "UK Size":   str(r.get("Manufacturing Size", "")).strip(),
+            "US Size":   str(r.get("Customer Size", "")).strip(),
             "Infor Qty": qty,
             "XL Line":   str(r.get("Item Line Number", "")).strip(),
         })
@@ -237,7 +86,7 @@ def xl_hdr_for_po(df, po):
         "Article":     str(r.get("Article Number", "")).strip(),
         "Model":       str(r.get("Model Name", "")).strip(),
         "Ship Method": str(r.get("Shipment Method", "")),
-        "Pack Mode":   str(r.get("VAS/SHAS L15 – Packing Mode", "")),
+        "Pack Mode":   str(r.get("VAS/SHAS L15 \u2013 Packing Mode", "")),
         "Destination": str(r.get("FinalDestinationName", "")),
     }
 
@@ -265,33 +114,29 @@ def parse_pdf(file, filename=""):
                 "Source File": filename,
             }
             pat = re.compile(
-                r"(\d+[-–]\d+|\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
+                r"(\d+[-\u2013]\d+|\d+)\s+(\d+)\s+(\d+)\s+(\d+)"
                 r"\s+([\d]+[-K]?[-]?)\s+([\d]+[-K]?[-]?)\s+[\d.]+"
             )
             rows = [
                 {"CTN Range": m.group(1), "CTNs": int(m.group(2)),
-                 "Qty/CTN": int(m.group(3)), "SAP Qty": int(m.group(4)),
-                 "UK Size": m.group(5).strip(), "US Size": m.group(6).strip()}
+                 "Qty/CTN":   int(m.group(3)), "SAP Qty": int(m.group(4)),
+                 "UK Size":   m.group(5).strip(), "US Size": m.group(6).strip()}
                 for m in pat.finditer(text)
             ]
-            result[po] = {
-                "header": hdr,
-                "sizes":  pd.DataFrame(rows) if rows else pd.DataFrame(),
-            }
+            result[po] = {"header": hdr,
+                          "sizes":  pd.DataFrame(rows) if rows else pd.DataFrame()}
     return result
 
 # ── Comparison Logic ──────────────────────────────────────────────────────────
 def compare_po_fields(xl_df, pdf_data, po):
     xs = xl_sizes_for_po(xl_df, po)
-    pg = pdf_data.get(po, {})
-    ph = pg.get("header", {})
-    ps = pg.get("sizes", pd.DataFrame())
+    pg = pdf_data.get(po, {}); ph = pg.get("header", {}); ps = pg.get("sizes", pd.DataFrame())
     rows = []
     infor_total = int(xs["Infor Qty"].sum()) if not xs.empty else 0
     sap_total   = int(ph.get("Total Pairs", 0) or 0)
     rows.append({"Field": "Total Qty (Pairs)", "Infor Value": infor_total,
                  "SAP Value": sap_total,
-                 "Status": "✅ MATCH" if infor_total == sap_total else "❌ MISMATCH"})
+                 "Status": "\u2705 MATCH" if infor_total == sap_total else "\u274c MISMATCH"})
     if not xs.empty and ps is not None and not ps.empty:
         mg = pd.merge(xs[["UK Size","Infor Qty"]], ps[["UK Size","SAP Qty"]], on="UK Size", how="outer")
     elif not xs.empty:
@@ -307,13 +152,12 @@ def compare_po_fields(xl_df, pdf_data, po):
         for _, row in mg.iterrows():
             iv, sv = int(row["Infor Qty"]), int(row["SAP Qty"])
             rows.append({"Field": f"Qty Size {row['UK Size']}", "Infor Value": iv,
-                         "SAP Value": sv, "Status": "✅ MATCH" if iv==sv else "❌ MISMATCH"})
+                         "SAP Value": sv, "Status": "\u2705 MATCH" if iv==sv else "\u274c MISMATCH"})
     return pd.DataFrame(rows)
 
 def compare_po_size_detail(xl_df, pdf_data, po):
     xs = xl_sizes_for_po(xl_df, po)
-    pg = pdf_data.get(po, {})
-    ps = pg.get("sizes", pd.DataFrame())
+    pg = pdf_data.get(po, {}); ps = pg.get("sizes", pd.DataFrame())
     COLS = ["UK Size","US Size","XL Line","Infor Qty","CTN Range","CTNs","Qty/CTN","SAP Qty","Diff","Status"]
     if not xs.empty and ps is not None and not ps.empty:
         xl_c  = xs[["UK Size","US Size","Infor Qty","XL Line"]]
@@ -338,7 +182,7 @@ def compare_po_size_detail(xl_df, pdf_data, po):
         no_infor = str(row.get("XL Line","")).strip()   in ("","nan","None","NaN")
         if no_sap:   return "ONLY IN INFOR"
         if no_infor: return "ONLY IN SAP"
-        return "MATCH" if row["Diff"]==0 else "MISMATCH"
+        return "\u2705 MATCH" if row["Diff"]==0 else "\u274c MISMATCH"
     mg["Status"] = mg.apply(_st, axis=1)
     for col in COLS:
         if col not in mg.columns: mg[col] = ""
@@ -347,589 +191,595 @@ def compare_po_size_detail(xl_df, pdf_data, po):
 def po_info(xl_df, pdf_data, po):
     xh = xl_hdr_for_po(xl_df, po)
     ph = pdf_data.get(po, {}).get("header", {})
-    return {
-        "Article (Infor)": xh.get("Article",""),
-        "Article (SAP)":   ph.get("Article",""),
-        "Model (Infor)":   xh.get("Model",""),
-        "Model (SAP)":     ph.get("Model",""),
-        "Total Pairs (SAP)": ph.get("Total Pairs",""),
-        "Pack Mode (SAP)":   ph.get("Pack Mode",""),
-        "Total CTNs (SAP)":  ph.get("Total CTNs",""),
-    }
+    return {"Article (Infor)": xh.get("Article",""), "Article (SAP)": ph.get("Article",""),
+            "Model (Infor)":   xh.get("Model",""),   "Model (SAP)":   ph.get("Model","")}
 
-# ── HTML Rendering Helpers ────────────────────────────────────────────────────
-def status_badge(status):
-    if status == "MATCH":         return '<span class="badge-match">✓ MATCH</span>'
-    if status == "MISMATCH":      return '<span class="badge-mismatch">✗ MISMATCH</span>'
-    if status == "ONLY IN INFOR": return '<span class="badge-only-i">⬛ INFOR ONLY</span>'
-    if status == "ONLY IN SAP":   return '<span class="badge-only-s">⬛ SAP ONLY</span>'
-    return status
 
-def render_po_header(po, n_match, n_mismatch, n_only, in_pdf, in_xl):
-    if not in_pdf:   cls, badge_cls, badge_txt = "warn", "warn", "⚠ NO SAP DATA"
-    elif not in_xl:  cls, badge_cls, badge_txt = "warn", "warn", "⚠ NO INFOR DATA"
-    elif n_mismatch == 0 and n_only == 0: cls, badge_cls, badge_txt = "ok", "ok", "✓ ALL MATCH"
-    else:            cls, badge_cls, badge_txt = "bad", "bad", f"✗ {n_mismatch + n_only} ISSUE(S)"
-    total = n_match + n_mismatch + n_only
-    pct   = int(n_match / total * 100) if total > 0 else 0
-    bar_color = "#10B981" if pct==100 else "#EF4444" if pct < 70 else "#F59E0B"
-    return cls, f"""
-    <div class="po-card-header {cls}">
-        <div>
-            <div class="po-number">PO&nbsp;{po}</div>
-            <div style="font-size:0.78rem;color:#64748B;margin-top:2px;">
-                {n_match} match · {n_mismatch} mismatch · {n_only} only-in-one-system
-            </div>
-            <div class="match-bar-wrap" style="width:200px">
-                <div class="match-bar-fill" style="width:{pct}%;background:{bar_color}"></div>
-            </div>
-            <div style="font-size:0.7rem;color:{bar_color};font-weight:700;">{pct}% matched</div>
-        </div>
-        <span class="po-badge {badge_cls}">{badge_txt}</span>
-    </div>
-    """
-
-def render_size_table(sd, info):
-    rows_html = ""
-    for _, row in sd.iterrows():
-        st   = row.get("Status","")
-        diff = row.get("Diff", 0)
-        try: diff_i = int(diff)
-        except: diff_i = 0
-
-        if st == "MATCH":
-            tr_cls   = "match"
-            val_cls  = ""
-            diff_cell = f'<td style="color:#10B981;font-weight:700;">0</td>'
-        elif st == "MISMATCH":
-            tr_cls   = "mismatch"
-            val_cls  = " val"
-            diff_cell = f'<td style="color:#EF4444;font-weight:700;">{diff_i:+d}</td>'
-        elif st == "ONLY IN INFOR":
-            tr_cls   = "only-infor"
-            val_cls  = ""
-            diff_cell= f'<td style="color:#F59E0B;font-weight:700;">–</td>'
-        else:
-            tr_cls   = "only-sap"
-            val_cls  = ""
-            diff_cell= f'<td style="color:#3B82F6;font-weight:700;">–</td>'
-
-        infor_qty = int(row.get("Infor Qty", 0)) if str(row.get("Infor Qty","")).strip() not in ("","nan") else "–"
-        sap_qty   = int(row.get("SAP Qty", 0))   if str(row.get("SAP Qty","")).strip()   not in ("","nan") else "–"
-        ctn_range = row.get("CTN Range","") or "–"
-        ctns      = row.get("CTNs","")      or "–"
-        qpc       = row.get("Qty/CTN","")   or "–"
-        xl_line   = row.get("XL Line","")   or "–"
-
-        rows_html += f"""
-        <tr class="{tr_cls}">
-            <td class="label">{row.get('UK Size','')}</td>
-            <td>{row.get('US Size','')}</td>
-            <td style="color:#6B7280;font-size:0.75rem;">{xl_line}</td>
-            <td class="{val_cls}" style="font-weight:600;">{infor_qty}</td>
-            <td class="{val_cls}" style="font-weight:600;">{sap_qty}</td>
-            {diff_cell}
-            <td style="font-size:0.75rem;color:#6B7280;">{ctn_range}</td>
-            <td style="font-size:0.75rem;color:#6B7280;">{ctns}</td>
-            <td style="font-size:0.75rem;color:#6B7280;">{qpc}</td>
-            <td style="text-align:center;">{status_badge(st)}</td>
-        </tr>
-        """
-
-    return f"""
-    <table class="cmp-table">
-        <thead>
-            <tr>
-                <th class="left">UK Size</th>
-                <th>US Size</th>
-                <th>XL Line</th>
-                <th style="background:#1A3A5C;">Infor Qty</th>
-                <th style="background:#1A3A5C;">SAP Qty</th>
-                <th style="background:#DC2626;">Diff</th>
-                <th style="background:#374151;">CTN Range</th>
-                <th style="background:#374151;">CTNs</th>
-                <th style="background:#374151;">Qty/CTN</th>
-                <th style="background:#374151;">Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {rows_html}
-        </tbody>
-    </table>
-    """
-
-def render_info_strip(info):
-    def pair(label, v1, v2):
-        match_icon = "✓" if v1 and v2 and v1==v2 else ("–" if not v1 or not v2 else "≠")
-        color = "#10B981" if match_icon=="✓" else "#94A3B8" if match_icon=="–" else "#F59E0B"
-        return f"""
-        <div style="flex:1;min-width:180px;background:#F8FAFC;border-radius:8px;padding:10px 14px;border:1px solid #E2E8F0;">
-            <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#94A3B8;font-weight:700;margin-bottom:4px;">{label}</div>
-            <div style="font-size:0.78rem;color:#1E293B;font-weight:600;">📊 {v1 or '<em style="color:#CBD5E1">–</em>'}</div>
-            <div style="font-size:0.78rem;color:#1E293B;font-weight:600;margin-top:2px;">📄 {v2 or '<em style="color:#CBD5E1">–</em>'}</div>
-            <div style="font-size:0.72rem;color:{color};font-weight:700;margin-top:4px;">{match_icon}</div>
-        </div>
-        """
-    return f"""
-    <div style="display:flex;gap:10px;flex-wrap:wrap;padding:14px 20px;background:#FAFBFC;border-top:1px solid #F1F5F9;">
-        {pair("Article", info.get("Article (Infor)",""), info.get("Article (SAP)",""))}
-        {pair("Model",   info.get("Model (Infor)",""),   info.get("Model (SAP)",""))}
-        <div style="flex:1;min-width:120px;background:#F8FAFC;border-radius:8px;padding:10px 14px;border:1px solid #E2E8F0;">
-            <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#94A3B8;font-weight:700;margin-bottom:4px;">SAP Pack Mode</div>
-            <div style="font-size:0.88rem;color:#1E293B;font-weight:700;">{info.get("Pack Mode (SAP)","–") or "–"}</div>
-        </div>
-        <div style="flex:1;min-width:120px;background:#F8FAFC;border-radius:8px;padding:10px 14px;border:1px solid #E2E8F0;">
-            <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#94A3B8;font-weight:700;margin-bottom:4px;">SAP Total CTNs</div>
-            <div style="font-size:0.88rem;color:#1E293B;font-weight:700;">{info.get("Total CTNs (SAP)","–") or "–"}</div>
-        </div>
-        <div style="flex:1;min-width:140px;background:#F8FAFC;border-radius:8px;padding:10px 14px;border:1px solid #E2E8F0;">
-            <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#94A3B8;font-weight:700;margin-bottom:4px;">SAP Total Pairs</div>
-            <div style="font-size:0.88rem;color:#1E293B;font-weight:700;">{info.get("Total Pairs (SAP)","–") or "–"}</div>
-        </div>
-    </div>
-    """
-
-# ── Legend ────────────────────────────────────────────────────────────────────
-def render_legend():
-    return """
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;
-                background:white;border-radius:8px;padding:10px 16px;
-                border:1px solid #E2E8F0;margin-bottom:16px;font-size:0.78rem;">
-        <strong style="color:#374151;margin-right:4px;">Legend:</strong>
-        <span class="badge-match">✓ MATCH</span>
-        <span style="color:#6B7280">Qty Infor = SAP</span>
-        &nbsp;·&nbsp;
-        <span class="badge-mismatch">✗ MISMATCH</span>
-        <span style="color:#6B7280">Qty berbeda</span>
-        &nbsp;·&nbsp;
-        <span class="badge-only-i">⬛ INFOR ONLY</span>
-        <span style="color:#6B7280">Ada di Infor, tidak di SAP</span>
-        &nbsp;·&nbsp;
-        <span class="badge-only-s">⬛ SAP ONLY</span>
-        <span style="color:#6B7280">Ada di SAP, tidak di Infor</span>
-    </div>
-    """
-
-# ── Excel Report Builder ──────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# EXCEL REPORT
+# ══════════════════════════════════════════════════════════════════════════════
 def build_report(xl_df, pdf_data, all_pos, xl_filename, pdf_filename):
     wb = Workbook()
     xl_pos_set = set(xl_df["Order #"].str.strip().tolist())
-    ST_STYLE = {
-        "✅ MATCH":      (C["GREEN"],  "FFFFFF"),
-        "❌ MISMATCH":   (C["RED"],    "FFFFFF"),
-        "ONLY IN INFOR": (C["ORANGE"], "FFFFFF"),
-        "ONLY IN SAP":   (C["ORANGE"], "FFFFFF"),
+
+    STATUS_STYLE = {
+        "\u2705 MATCH":      (C["GREEN"],  "FFFFFF"),
+        "\u274c MISMATCH":   (C["RED"],    "FFFFFF"),
+        "ONLY IN INFOR":     (C["ORANGE"], "FFFFFF"),
+        "ONLY IN SAP":       (C["ORANGE"], "FFFFFF"),
     }
 
-    # Sheet 1 — Summary
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 1 — PO Compare Summary
+    # ══════════════════════════════════════════════════════════════════════════
     ws1 = wb.active; ws1.title = "PO Compare Summary"
     ws1.sheet_view.showGridLines = False
-    ws1.merge_cells("A1:G1")
-    c = ws1["A1"]; c.value = "PO COMPARE SUMMARY — Infor vs SAP Carton"
-    c.font = Font(name="Arial", bold=True, size=13, color="FFFFFF")
-    c.fill = fill(C["DGRAY"]); c.alignment = center(); ws1.row_dimensions[1].height = 28
-    ws1.merge_cells("A2:G2")
+
+    # Title
+    ws1.merge_cells("A1:I1")
+    c = ws1["A1"]
+    c.value = "PO COMPARE SUMMARY \u2014 Infor vs SAP Carton"
+    c.font = Font(name="Calibri", bold=True, size=14, color="FFFFFF")
+    c.fill = fill(C["DGRAY"]); c.alignment = center(); ws1.row_dimensions[1].height = 30
+
+    ws1.merge_cells("A2:I2")
     c = ws1["A2"]
     c.value = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  Infor: {xl_filename}  |  SAP: {pdf_filename}"
-    c.font = Font(name="Arial", size=9, color="616161")
+    c.font = Font(name="Calibri", size=9, color="616161")
     c.fill = fill(C["LGRAY"]); c.alignment = left(); ws1.row_dimensions[2].height = 14
-    hdrs = ["PO Number","Infor File","SAP File(s)","Total Fields","✅ Match","❌ Mismatch","Result"]
-    for ci, h in enumerate(hdrs, 1):
-        wc(ws1, 4, ci, h, bg=C["DGRAY"], fnt=hfont(), aln=center())
-    ws1.row_dimensions[4].height = 16
-    for ri, po in enumerate(all_pos, 5):
-        df_f = compare_po_fields(xl_df, pdf_data, po)
+
+    ws1.merge_cells("A3:I3")
+    c = ws1["A3"]
+    c.value = "\u2139\ufe0f  Compared: Total Qty (Pairs) + Qty per Size  |  Info only (not compared): Article \u00b7 Model"
+    c.font = Font(name="Calibri", italic=True, size=9, color=C["INFO_FG"])
+    c.fill = fill(C["INFO_BG"]); c.alignment = left(); ws1.row_dimensions[3].height = 14
+
+    # Color legend
+    ws1.merge_cells("A4:I4")
+    c = ws1["A4"]
+    c.value = (
+        "Column color guide:   "
+        "\u25a0 DARK BLUE = data dari Infor   "
+        "\u25a0 DARK GREEN = data dari SAP   "
+        "\u25a0 DARK PURPLE = hasil kalkulasi   "
+        "\u25a0 DARK GRAY = key bersama"
+    )
+    c.font = Font(name="Calibri", bold=True, size=9, color="FFFFFF")
+    c.fill = fill("263238"); c.alignment = left(); ws1.row_dimensions[4].height = 14
+
+    # Source-group band (row 5) — merged spans
+    # Cols: A(1)=PO, B(2)=InforFile, C(3)=ArticleI, D(4)=SAPFile, E(5)=ArticleS, F(6)=TotalF, G(7)=Match, H(8)=Mismatch, I(9)=Result
+    ws1.row_dimensions[5].height = 18
+    span(ws1, 5, 1, 1, "\U0001f511 KEY",                       C["KEY_HDR"])
+    span(ws1, 5, 2, 3, "\U0001f4ca FROM INFOR",                C["INFOR_HDR"])
+    span(ws1, 5, 4, 5, "\U0001f4c4 FROM SAP",                  C["SAP_HDR"])
+    span(ws1, 5, 6, 8, "\U0001f7e3 COMPARE RESULT",            C["CALC_HDR"])
+    span(ws1, 5, 9, 9, "\U0001f7e3 OVERALL",                   C["CALC_HDR"])
+
+    # Column labels (row 6)
+    ws1.row_dimensions[6].height = 28
+    col_defs = [
+        # (col, label,              source_bg,       width)
+        (1, "PO Number",            C["KEY_HDR"],    16),
+        (2, "Infor File",           C["INFOR_HDR"],  30),
+        (3, "Article\n(Infor)",     C["INFOR_HDR"],  14),
+        (4, "SAP File(s)",          C["SAP_HDR"],    30),
+        (5, "Article\n(SAP)",       C["SAP_HDR"],    14),
+        (6, "Total\nFields",        C["CALC_HDR"],   11),
+        (7, "\u2705 Match",         C["CALC_HDR"],   10),
+        (8, "\u274c Mismatch",      C["CALC_HDR"],   12),
+        (9, "Result",               C["CALC_HDR"],   18),
+    ]
+    for col, lbl, bg, w in col_defs:
+        wc(ws1, 6, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
+        ws1.column_dimensions[get_column_letter(col)].width = w
+
+    for ri, po in enumerate(all_pos, 7):
+        df_f    = compare_po_fields(xl_df, pdf_data, po)
         total_f = len(df_f)
-        n_m  = (df_f["Status"]=="✅ MATCH").sum()    if not df_f.empty else 0
-        n_mm = (df_f["Status"]=="❌ MISMATCH").sum() if not df_f.empty else 0
+        n_m     = (df_f["Status"]=="\u2705 MATCH").sum()    if not df_f.empty else 0
+        n_mm    = (df_f["Status"]=="\u274c MISMATCH").sum() if not df_f.empty else 0
         sap_src = pdf_data.get(po,{}).get("header",{}).get("Source File", pdf_filename)
-        if po not in pdf_data:     r_txt,r_bg,r_fc = "⚠️ NO SAP DATA",   C["ORANGE"],"FFFFFF"
-        elif po not in xl_pos_set: r_txt,r_bg,r_fc = "⚠️ NO INFOR DATA", C["ORANGE"],"FFFFFF"
-        elif n_mm==0:              r_txt,r_bg,r_fc = "✅ ALL OK",          C["GREEN"], "FFFFFF"
-        else:                      r_txt,r_bg,r_fc = f"❌ {n_mm} ISSUE(S)",C["RED"],  "FFFFFF"
+        info    = po_info(xl_df, pdf_data, po)
+
+        if po not in pdf_data:       r_txt,r_bg = "\u26a0\ufe0f NO SAP DATA",   C["ORANGE"]
+        elif po not in xl_pos_set:   r_txt,r_bg = "\u26a0\ufe0f NO INFOR DATA", C["ORANGE"]
+        elif n_mm==0:                r_txt,r_bg = "\u2705 ALL OK",               C["GREEN"]
+        else:                        r_txt,r_bg = f"\u274c {n_mm} ISSUE(S)",     C["RED"]
+
         alt = C["LGRAY"] if ri%2==0 else C["WHITE"]
         ws1.row_dimensions[ri].height = 15
-        for ci, v in enumerate([po,xl_filename,sap_src,total_f,n_m,n_mm,r_txt], 1):
-            if ci==7: wc(ws1, ri, ci, v, bg=r_bg, fnt=hfont(color=r_fc), aln=center())
-            elif ci==5: wc(ws1, ri, ci, v, bg=alt, fnt=cfont(bold=True,color=C["DARKGREEN"],sz=9), aln=center())
-            elif ci==6 and n_mm>0: wc(ws1, ri, ci, v, bg=alt, fnt=cfont(bold=True,color=C["RED"],sz=9), aln=center())
-            else: wc(ws1, ri, ci, v, bg=alt, fnt=cfont(sz=9), aln=left() if ci<=3 else center())
-    for ci, w in enumerate([16,36,36,13,10,13,18], 1):
-        ws1.column_dimensions[get_column_letter(ci)].width = w
-    ws1.freeze_panes = "A5"
 
-    # Sheet 2 — Detail
+        wc(ws1, ri, 1, po,                      bg=C["KEY_BG"],   fnt=cfont(bold=True,sz=9),  aln=left())
+        wc(ws1, ri, 2, xl_filename,              bg=C["INFOR_BG"], fnt=cfont(sz=8),            aln=left())
+        wc(ws1, ri, 3, info["Article (Infor)"],  bg=C["INFOR_BG"], fnt=cfont(sz=9),            aln=center())
+        wc(ws1, ri, 4, sap_src,                  bg=C["SAP_BG"],   fnt=cfont(sz=8),            aln=left())
+        wc(ws1, ri, 5, info["Article (SAP)"],    bg=C["SAP_BG"],   fnt=cfont(sz=9),            aln=center())
+        wc(ws1, ri, 6, total_f,                  bg=alt,           fnt=cfont(sz=9),            aln=center())
+        wc(ws1, ri, 7, n_m,    bg=alt, fnt=cfont(bold=True,color=C["DARKGREEN"],sz=9), aln=center())
+        wc(ws1, ri, 8, n_mm if n_mm>0 else 0,
+           bg=alt, fnt=cfont(bold=n_mm>0, color=C["RED"] if n_mm>0 else "000000", sz=9), aln=center())
+        wc(ws1, ri, 9, r_txt,  bg=r_bg, fnt=hfont(sz=9), aln=center())
+
+    ws1.freeze_panes = "A7"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 2 — PO Compare Detail (field-by-field)
+    # ══════════════════════════════════════════════════════════════════════════
     ws2 = wb.create_sheet("PO Compare Detail")
     ws2.sheet_view.showGridLines = False
-    ws2.merge_cells("A1:E1")
-    c = ws2["A1"]; c.value = "PO COMPARE DETAIL — Field by Field"
-    c.font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
-    c.fill = fill(C["DGRAY"]); c.alignment = center(); ws2.row_dimensions[1].height = 24
-    det_hdrs = ["PO Number","Field","Infor Value","SAP Value","Status"]
-    for ci, h in enumerate(det_hdrs, 1):
-        wc(ws2, 2, ci, h, bg="37474F", fnt=hfont(), aln=center())
-    ws2.row_dimensions[2].height = 16
-    ri2 = 3
+
+    ws2.merge_cells("A1:F1")
+    c = ws2["A1"]
+    c.value = "PO COMPARE DETAIL \u2014 Field-by-Field"
+    c.font = Font(name="Calibri", bold=True, size=12, color="FFFFFF")
+    c.fill = fill(C["DGRAY"]); c.alignment = center(); ws2.row_dimensions[1].height = 26
+
+    ws2.merge_cells("A2:F2")
+    c = ws2["A2"]
+    c.value = "\u2139\ufe0f  Compared: Total Qty (Pairs) + Qty per UK Size  |  Blue = Infor value  |  Green = SAP value  |  Purple = Diff (Infor \u2212 SAP)"
+    c.font = Font(name="Calibri", italic=True, size=9, color=C["INFO_FG"])
+    c.fill = fill(C["INFO_BG"]); c.alignment = left(); ws2.row_dimensions[2].height = 14
+
+    # Source-band row 3
+    ws2.row_dimensions[3].height = 18
+    span(ws2, 3, 1, 2, "\U0001f511 KEY",        C["KEY_HDR"])
+    span(ws2, 3, 3, 3, "\U0001f4ca FROM INFOR", C["INFOR_HDR"])
+    span(ws2, 3, 4, 4, "\U0001f4c4 FROM SAP",   C["SAP_HDR"])
+    span(ws2, 3, 5, 6, "\U0001f7e3 CALCULATED", C["CALC_HDR"])
+
+    # Column labels row 4
+    ws2.row_dimensions[4].height = 18
+    ws2_cols = [
+        (1, "PO Number",     C["KEY_HDR"],   16),
+        (2, "Field",         C["KEY_HDR"],   28),
+        (3, "Infor Value",   C["INFOR_HDR"], 16),
+        (4, "SAP Value",     C["SAP_HDR"],   16),
+        (5, "Diff\n(Infor\u2212SAP)", C["CALC_HDR"], 12),
+        (6, "Status",        C["CALC_HDR"],  16),
+    ]
+    for col, lbl, bg, w in ws2_cols:
+        wc(ws2, 4, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
+        ws2.column_dimensions[get_column_letter(col)].width = w
+
+    ri2 = 5
     for po in all_pos:
         df_f = compare_po_fields(xl_df, pdf_data, po)
         if df_f.empty: continue
         for _, row in df_f.iterrows():
-            st = row["Status"]; is_m = (st=="✅ MATCH")
+            st = row["Status"]; is_m = (st=="\u2705 MATCH")
             alt = C["LGRAY"] if ri2%2==0 else C["WHITE"]
-            ws2.row_dimensions[ri2].height = 14
-            for ci, v in enumerate([po,row["Field"],row["Infor Value"],row["SAP Value"],st], 1):
-                if ci==5: wc(ws2, ri2, ci, v, bg=C["GREEN"] if is_m else C["RED"], fnt=cfont(bold=True,color="FFFFFF",sz=9), aln=center())
-                elif ci in (3,4) and not is_m: wc(ws2, ri2, ci, v, bg="FFEBEE", fnt=cfont(bold=True,color=C["RED"],sz=9), aln=center())
-                elif ci==1: wc(ws2, ri2, ci, v, bg=alt, fnt=cfont(bold=True,sz=9), aln=left())
-                else: wc(ws2, ri2, ci, v, bg=alt, fnt=cfont(sz=9), aln=left() if ci==2 else center())
-            ri2 += 1
-    for ci, w in enumerate([16,24,16,16,14], 1):
-        ws2.column_dimensions[get_column_letter(ci)].width = w
-    ws2.freeze_panes = "A3"
+            iv, sv = row["Infor Value"], row["SAP Value"]
+            try:    diff = int(iv) - int(sv)
+            except: diff = ""
 
-    # Sheet 3 — Size Detail
+            ws2.row_dimensions[ri2].height = 14
+            wc(ws2, ri2, 1, po,          bg=C["KEY_BG"],   fnt=cfont(bold=True, sz=9), aln=left())
+            wc(ws2, ri2, 2, row["Field"],bg=alt,           fnt=cfont(sz=9),            aln=left())
+            # Infor value: brighter blue tint on mismatch
+            wc(ws2, ri2, 3, iv,
+               bg="BBDEFB" if not is_m else C["INFOR_BG"],
+               fnt=cfont(bold=not is_m, color="0D47A1", sz=9), aln=center())
+            # SAP value: brighter green tint on mismatch
+            wc(ws2, ri2, 4, sv,
+               bg="C8E6C9" if not is_m else C["SAP_BG"],
+               fnt=cfont(bold=not is_m, color="1B5E20", sz=9), aln=center())
+            # Diff
+            diff_val = f"{diff:+}" if isinstance(diff,int) and diff!=0 else (0 if diff==0 else "")
+            wc(ws2, ri2, 5, diff_val,
+               bg="FFEBEE" if not is_m else C["CALC_BG"],
+               fnt=cfont(bold=not is_m, color=C["RED"] if not is_m else "6A1B9A", sz=9), aln=center())
+            # Status
+            wc(ws2, ri2, 6, st,
+               bg=C["GREEN"] if is_m else C["RED"],
+               fnt=hfont(sz=9), aln=center())
+            ri2 += 1
+
+    ws2.freeze_panes = "A5"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 3 — Size Detail
+    # ══════════════════════════════════════════════════════════════════════════
     ws3 = wb.create_sheet("Size Detail")
     ws3.sheet_view.showGridLines = False
-    ws3.merge_cells("A1:M1")
-    c = ws3["A1"]; c.value = "SIZE DETAIL — All POs"
-    c.font = Font(name="Arial", bold=True, size=11, color="FFFFFF")
-    c.fill = fill(C["DGRAY"]); c.alignment = left(); ws3.row_dimensions[1].height = 20
-    sd_hdrs = ["PO Number","Article (Infor)","Article (SAP)","Model (Infor)","Model (SAP)",
-               "UK Size","US Size","XL Line","Infor Qty","CTN Range","CTNs","Qty/CTN","SAP Qty","Diff","Status"]
-    for ci, h in enumerate(sd_hdrs, 1):
-        wc(ws3, 2, ci, h, bg="37474F", fnt=hfont(), aln=center())
-    ws3.row_dimensions[2].height = 16
-    ri3 = 3
+
+    # Title
+    ws3.merge_cells("A1:O1")
+    c = ws3["A1"]
+    c.value = "SIZE DETAIL \u2014 Semua PO  |  Warna kolom: \u25a0 Biru=Infor  \u25a0 Hijau=SAP  \u25a0 Ungu=Kalkulasi  \u25a0 Abu=Key bersama"
+    c.font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
+    c.fill = fill(C["DGRAY"]); c.alignment = left(); ws3.row_dimensions[1].height = 22
+
+    # Legend
+    ws3.merge_cells("A2:O2")
+    c = ws3["A2"]
+    c.value = (
+        "PO / UK Size / US Size = key bersama  |  "
+        "Article(Infor), Model(Infor), XL Line, Infor Qty = FROM INFOR  |  "
+        "Article(SAP), Model(SAP), CTN Range, CTNs, Qty/CTN, SAP Qty = FROM SAP  |  "
+        "Diff, Status = CALCULATED"
+    )
+    c.font = Font(name="Calibri", italic=True, size=8, color="37474F")
+    c.fill = fill("FAFAFA"); c.alignment = left(); ws3.row_dimensions[2].height = 14
+
+    # Source-group band (row 3)
+    # Cols: 1=PO, 2=ArtI, 3=ArtS, 4=ModI, 5=ModS, 6=UKsz, 7=USsz,
+    #        8=XLLine, 9=InforQty, 10=CTNRange, 11=CTNs, 12=QtyPerCTN, 13=SAPQty,
+    #        14=Diff, 15=Status
+    ws3.row_dimensions[3].height = 20
+    span(ws3, 3,  1,  1, "\U0001f511 KEY",                           C["KEY_HDR"])
+    span(ws3, 3,  2,  2, "\U0001f4ca INFOR \u2014 info only",        C["INFOR_HDR"])
+    span(ws3, 3,  3,  3, "\U0001f4c4 SAP \u2014 info only",          C["SAP_HDR"])
+    span(ws3, 3,  4,  4, "\U0001f4ca INFOR \u2014 info only",        C["INFOR_HDR"])
+    span(ws3, 3,  5,  5, "\U0001f4c4 SAP \u2014 info only",          C["SAP_HDR"])
+    span(ws3, 3,  6,  7, "\U0001f511 KEY (shared)",                  C["KEY_HDR"])
+    span(ws3, 3,  8,  9, "\U0001f4ca FROM INFOR \u2014 compared",    C["INFOR_HDR"])
+    span(ws3, 3, 10, 13, "\U0001f4c4 FROM SAP \u2014 compared",      C["SAP_HDR"])
+    span(ws3, 3, 14, 15, "\U0001f7e3 CALCULATED",                    C["CALC_HDR"])
+
+    # Column labels (row 4)
+    ws3.row_dimensions[4].height = 32
+    sd_cols = [
+        # (col, label,                source_bg,       width)
+        ( 1, "PO\nNumber",            C["KEY_HDR"],    14),
+        ( 2, "Article\n(Infor)",      C["INFOR_HDR"],  13),
+        ( 3, "Article\n(SAP)",        C["SAP_HDR"],    13),
+        ( 4, "Model\n(Infor)",        C["INFOR_HDR"],  22),
+        ( 5, "Model\n(SAP)",          C["SAP_HDR"],    22),
+        ( 6, "UK\nSize",              C["KEY_HDR"],     9),
+        ( 7, "US\nSize",              C["KEY_HDR"],     9),
+        ( 8, "XL Line\n\u2190Infor", C["INFOR_HDR"],   9),
+        ( 9, "Infor Qty\n(pairs)",    C["INFOR_HDR"],  12),
+        (10, "CTN Range\n\u2190SAP",  C["SAP_HDR"],    13),
+        (11, "CTNs\n\u2190SAP",       C["SAP_HDR"],     8),
+        (12, "Qty/CTN\n\u2190SAP",    C["SAP_HDR"],     9),
+        (13, "SAP Qty\n(pairs)",      C["SAP_HDR"],    12),
+        (14, "Diff\n(Infor\u2212SAP)",C["CALC_HDR"],   10),
+        (15, "Status",                C["CALC_HDR"],   18),
+    ]
+    for col, lbl, bg, w in sd_cols:
+        wc(ws3, 4, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
+        ws3.column_dimensions[get_column_letter(col)].width = w
+
+    ri3 = 5
     for po in all_pos:
         info = po_info(xl_df, pdf_data, po)
         sd   = compare_po_size_detail(xl_df, pdf_data, po)
         if sd.empty: continue
         for _, row in sd.iterrows():
-            st = row.get("Status","")
-            s_bg, s_fc = ST_STYLE.get("✅ MATCH" if st=="MATCH" else "❌ MISMATCH" if st=="MISMATCH" else "ONLY IN INFOR", (C["WHITE"],"000000"))
-            alt = C["LGRAY"] if ri3%2==0 else C["WHITE"]
+            st         = row.get("Status","")
+            s_bg, s_fc = STATUS_STYLE.get(st, (C["WHITE"],"000000"))
+            alt        = C["LGRAY"] if ri3%2==0 else C["WHITE"]
             ws3.row_dimensions[ri3].height = 14
-            try: diff_i = int(row.get("Diff",0))
-            except: diff_i = 0
-            vals = [po, info["Article (Infor)"], info["Article (SAP)"],
-                    info["Model (Infor)"], info["Model (SAP)"],
-                    row.get("UK Size",""), row.get("US Size",""), row.get("XL Line",""),
-                    int(row.get("Infor Qty",0)), row.get("CTN Range",""),
-                    row.get("CTNs",""), row.get("Qty/CTN",""),
-                    int(row.get("SAP Qty",0)), diff_i, st]
-            for ci, v in enumerate(vals, 1):
-                if ci==15: wc(ws3, ri3, ci, v, bg=s_bg, fnt=cfont(bold=True,color=s_fc,sz=9), aln=center())
-                elif ci==14 and diff_i!=0: wc(ws3, ri3, ci, v, bg=C["RED"], fnt=hfont(sz=9), aln=center())
-                elif ci in (2,3,4,5): wc(ws3, ri3, ci, v, bg=C["INFO_BG"], fnt=cfont(sz=9,color=C["INFO_FG"]), aln=left())
-                else: wc(ws3, ri3, ci, v, bg=alt, fnt=cfont(sz=9), aln=left() if ci<=5 else center())
-            ri3 += 1
-    for ci, w in enumerate([14,12,12,22,22,9,9,9,10,13,8,9,10,8,16], 1):
-        ws3.column_dimensions[get_column_letter(ci)].width = w
-    ws3.freeze_panes = "A3"
 
-    # Sheet 4 — Discrepancies
+            try:    diff_i = int(row.get("Diff",0))
+            except: diff_i = 0
+
+            is_mm      = (st=="\u274c MISMATCH")
+            only_infor = (st=="ONLY IN INFOR")
+            only_sap   = (st=="ONLY IN SAP")
+
+            # Infor Qty: highlight blue when mismatch
+            iq_bg = "BBDEFB" if is_mm else (C["INFOR_BG"] if not only_sap   else "FFCDD2")
+            # SAP Qty: highlight green when mismatch
+            sq_bg = "C8E6C9" if is_mm else (C["SAP_BG"]   if not only_infor else "FFCDD2")
+            # CTN cols: light red if only_infor (SAP data missing)
+            ctn_bg = C["SAP_BG"] if not only_infor else "FFCDD2"
+            # XL Line: light red if only_sap (Infor data missing)
+            xl_bg  = C["INFOR_BG"] if not only_sap else "FFCDD2"
+
+            wc(ws3, ri3,  1, po,                            bg=C["KEY_BG"],   fnt=cfont(bold=True,sz=9), aln=left())
+            wc(ws3, ri3,  2, info["Article (Infor)"],       bg=C["INFOR_BG"], fnt=cfont(sz=9,color=C["INFO_FG"]), aln=left())
+            wc(ws3, ri3,  3, info["Article (SAP)"],         bg=C["SAP_BG"],   fnt=cfont(sz=9,color="1B5E20"), aln=left())
+            wc(ws3, ri3,  4, info["Model (Infor)"],         bg=C["INFOR_BG"], fnt=cfont(sz=9,color=C["INFO_FG"]), aln=left())
+            wc(ws3, ri3,  5, info["Model (SAP)"],           bg=C["SAP_BG"],   fnt=cfont(sz=9,color="1B5E20"), aln=left())
+            wc(ws3, ri3,  6, row.get("UK Size",""),         bg=C["KEY_BG"],   fnt=cfont(bold=True,sz=9), aln=center())
+            wc(ws3, ri3,  7, row.get("US Size",""),         bg=C["KEY_BG"],   fnt=cfont(sz=9), aln=center())
+            wc(ws3, ri3,  8, row.get("XL Line",""),         bg=xl_bg,  fnt=cfont(sz=9,color=C["INFO_FG"]), aln=center())
+            wc(ws3, ri3,  9, int(row.get("Infor Qty",0)),   bg=iq_bg,  fnt=cfont(bold=is_mm,color="0D47A1",sz=9), aln=center())
+            wc(ws3, ri3, 10, row.get("CTN Range",""),       bg=ctn_bg, fnt=cfont(sz=9,color="1B5E20"), aln=center())
+            wc(ws3, ri3, 11, row.get("CTNs",""),            bg=ctn_bg, fnt=cfont(sz=9,color="1B5E20"), aln=center())
+            wc(ws3, ri3, 12, row.get("Qty/CTN",""),         bg=ctn_bg, fnt=cfont(sz=9,color="1B5E20"), aln=center())
+            wc(ws3, ri3, 13, int(row.get("SAP Qty",0)),     bg=sq_bg,  fnt=cfont(bold=is_mm,color="1B5E20",sz=9), aln=center())
+            # Diff: red if non-zero
+            wc(ws3, ri3, 14,
+               f"{diff_i:+}" if diff_i!=0 else 0,
+               bg="FFEBEE" if diff_i!=0 else C["CALC_BG"],
+               fnt=cfont(bold=diff_i!=0, color=C["RED"] if diff_i!=0 else "000000", sz=9), aln=center())
+            wc(ws3, ri3, 15, st, bg=s_bg, fnt=hfont(color=s_fc,sz=9), aln=center())
+            ri3 += 1
+
+    ws3.freeze_panes = "A5"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 4 — Discrepancies Only
+    # ══════════════════════════════════════════════════════════════════════════
     ws4 = wb.create_sheet("Discrepancies Only")
     ws4.sheet_view.showGridLines = False
-    ws4.merge_cells("A1:E1")
-    c = ws4["A1"]; c.value = "DISCREPANCIES ONLY — ❌ MISMATCH rows"
-    c.font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
-    c.fill = fill(C["ORANGE"]); c.alignment = center(); ws4.row_dimensions[1].height = 22
-    for ci, h in enumerate(det_hdrs, 1):
-        wc(ws4, 2, ci, h, bg="37474F", fnt=hfont(), aln=center())
-    ws4.row_dimensions[2].height = 16
-    ri4 = 3
+
+    ws4.merge_cells("A1:F1")
+    c = ws4["A1"]
+    c.value = "\u274c DISCREPANCIES ONLY \u2014 Hanya baris Infor \u2260 SAP"
+    c.font = Font(name="Calibri", bold=True, size=12, color="FFFFFF")
+    c.fill = fill(C["ORANGE"]); c.alignment = center(); ws4.row_dimensions[1].height = 24
+
+    ws4.merge_cells("A2:F2")
+    c = ws4["A2"]
+    c.value = "Biru = nilai Infor  |  Hijau = nilai SAP  |  Ungu = selisih (Infor \u2212 SAP)"
+    c.font = Font(name="Calibri", italic=True, size=9, color="37474F")
+    c.fill = fill("FFF3E0"); c.alignment = left(); ws4.row_dimensions[2].height = 13
+
+    ws4.row_dimensions[3].height = 18
+    span(ws4, 3, 1, 2, "\U0001f511 KEY",        C["KEY_HDR"])
+    span(ws4, 3, 3, 3, "\U0001f4ca FROM INFOR", C["INFOR_HDR"])
+    span(ws4, 3, 4, 4, "\U0001f4c4 FROM SAP",   C["SAP_HDR"])
+    span(ws4, 3, 5, 6, "\U0001f7e3 CALCULATED", C["CALC_HDR"])
+
+    ws4.row_dimensions[4].height = 18
+    disc_cols = [
+        (1, "PO Number",            C["KEY_HDR"],   16),
+        (2, "Field",                C["KEY_HDR"],   28),
+        (3, "Infor Value",          C["INFOR_HDR"], 14),
+        (4, "SAP Value",            C["SAP_HDR"],   14),
+        (5, "Diff (Infor\u2212SAP)",C["CALC_HDR"],  12),
+        (6, "Status",               C["CALC_HDR"],  18),
+    ]
+    for col, lbl, bg, w in disc_cols:
+        wc(ws4, 4, col, lbl, bg=bg, fnt=hfont(sz=9), aln=center())
+        ws4.column_dimensions[get_column_letter(col)].width = w
+
+    ri4 = 5
     for po in all_pos:
         df_f   = compare_po_fields(xl_df, pdf_data, po)
         if df_f.empty: continue
-        issues = df_f[df_f["Status"]!="✅ MATCH"]
+        issues = df_f[df_f["Status"]!="\u2705 MATCH"]
         if issues.empty: continue
         for _, row in issues.iterrows():
             alt = C["LGRAY"] if ri4%2==0 else C["WHITE"]
+            iv, sv = row["Infor Value"], row["SAP Value"]
+            try:    diff = int(iv)-int(sv)
+            except: diff = ""
             ws4.row_dimensions[ri4].height = 14
-            for ci, v in enumerate([po,row["Field"],row["Infor Value"],row["SAP Value"],row["Status"]], 1):
-                if ci==5: wc(ws4, ri4, ci, v, bg=C["RED"], fnt=cfont(bold=True,color="FFFFFF",sz=9), aln=center())
-                elif ci in (3,4): wc(ws4, ri4, ci, v, bg="FFEBEE", fnt=cfont(bold=True,color=C["RED"],sz=9), aln=center())
-                elif ci==1: wc(ws4, ri4, ci, v, bg=alt, fnt=cfont(bold=True,sz=9), aln=left())
-                else: wc(ws4, ri4, ci, v, bg=alt, fnt=cfont(sz=9), aln=left() if ci==2 else center())
+            wc(ws4, ri4, 1, po,           bg=C["KEY_BG"],  fnt=cfont(bold=True,sz=9), aln=left())
+            wc(ws4, ri4, 2, row["Field"], bg=alt,          fnt=cfont(sz=9),           aln=left())
+            wc(ws4, ri4, 3, iv,           bg="BBDEFB",     fnt=cfont(bold=True,color="0D47A1",sz=9), aln=center())
+            wc(ws4, ri4, 4, sv,           bg="C8E6C9",     fnt=cfont(bold=True,color="1B5E20",sz=9), aln=center())
+            wc(ws4, ri4, 5, f"{diff:+}" if isinstance(diff,int) else "",
+               bg=C["CALC_BG"], fnt=cfont(bold=True,color="6A1B9A",sz=9), aln=center())
+            wc(ws4, ri4, 6, row["Status"],bg=C["RED"],     fnt=hfont(sz=9),           aln=center())
             ri4 += 1
-    if ri4==3:
-        c = ws4.cell(3,1,"✅ No discrepancies found — all qty fields match!")
-        c.font = Font(name="Arial", bold=True, color=C["GREEN"], size=11)
-    for ci, w in enumerate([16,24,16,16,14], 1):
-        ws4.column_dimensions[get_column_letter(ci)].width = w
-    ws4.freeze_panes = "A3"
 
-    # Sheet 5 — Raw
+    if ri4==5:
+        c = ws4.cell(5,1,"\u2705 Tidak ada discrepancy \u2014 semua field qty cocok!")
+        c.font = Font(name="Calibri", bold=True, color=C["GREEN"], size=11)
+
+    ws4.freeze_panes = "A5"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 5 — Raw Infor Data
+    # ══════════════════════════════════════════════════════════════════════════
     ws_r = wb.create_sheet("Raw Infor Data")
     ws_r.sheet_view.showGridLines = False
+
+    ws_r.merge_cells(f"A1:{get_column_letter(len(xl_df.columns))}1")
+    c = ws_r["A1"]
+    c.value = f"RAW INFOR DATA \u2014 source: {xl_filename}"
+    c.font = Font(name="Calibri", bold=True, size=11, color="FFFFFF")
+    c.fill = fill(C["INFOR_HDR"]); c.alignment = left(); ws_r.row_dimensions[1].height = 20
+
+    ws_r.merge_cells(f"A2:{get_column_letter(len(xl_df.columns))}2")
+    c = ws_r["A2"]
+    c.value = "Semua kolom asli dari file Infor Excel — tidak ada modifikasi"
+    c.font = Font(name="Calibri", italic=True, size=8, color=C["INFO_FG"])
+    c.fill = fill(C["INFOR_BG"]); c.alignment = left(); ws_r.row_dimensions[2].height = 13
+
     for ci, col in enumerate(xl_df.columns, 1):
-        wc(ws_r, 1, ci, col, bg=C["DGRAY"], fnt=hfont(sz=9), aln=center())
+        wc(ws_r, 3, ci, col, bg=C["INFOR_HDR"], fnt=hfont(sz=9), aln=center())
+    ws_r.row_dimensions[3].height = 18
     for ri, row in xl_df.iterrows():
         for ci, v in enumerate(row, 1):
-            wc(ws_r, ri+2, ci, v, fnt=cfont(sz=8), aln=left(),
-               bg=C["LGRAY"] if ri%2==0 else C["WHITE"])
+            wc(ws_r, ri+4, ci, v, fnt=cfont(sz=8), aln=left(),
+               bg=C["INFOR_BG"] if ri%2==0 else C["WHITE"])
     for ci, col in enumerate(xl_df.columns, 1):
         ws_r.column_dimensions[get_column_letter(ci)].width = max(10, min(28, len(str(col))+2))
-    ws_r.freeze_panes = "A2"
+    ws_r.freeze_panes = "A4"
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STREAMLIT UI
-# ═══════════════════════════════════════════════════════════════════════════════
 
-st.markdown("""
-<div class="app-header">
-    <h1>📦 Infor vs SAP — PO Comparator</h1>
-    <p>Bandingkan data Order (Infor Excel) dengan Carton Form (SAP PDF) · per PO · per Ukuran · per Qty</p>
-</div>
-""", unsafe_allow_html=True)
+# ── Streamlit UI (original, unchanged) ───────────────────────────────────────
+st.markdown(
+    "<style>.stApp{font-family:Arial,sans-serif}.block-container{padding-top:1.2rem}</style>",
+    unsafe_allow_html=True,
+)
 
-# ── Upload ────────────────────────────────────────────────────────────────────
+st.title("\U0001f4e6 Infor vs SAP Carton \u2014 Field-by-Field PO Comparator")
+st.caption(
+    "**Compared:** Total Qty (Pairs) \u00b7 Qty per Size  |  "
+    "**Info only (not compared):** Article \u00b7 Model  |  "
+    "**Size detail columns:** UK/US Size \u00b7 XL Line \u00b7 CTN Range \u00b7 CTNs \u00b7 Qty/CTN"
+)
+
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown("**📊 Infor File — Order List (Excel)**")
-    xl_file  = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"], label_visibility="collapsed")
-    if xl_file:  st.success(f"✓ {xl_file.name}")
+    st.subheader("\U0001f4ca Infor File \u2014 Order List (Excel)")
+    xl_file = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx", "xls"])
 with col2:
-    st.markdown("**📄 SAP Carton Form (PDF)**")
-    pdf_file = st.file_uploader("Upload PDF (multi-page)", type=["pdf"], label_visibility="collapsed")
-    if pdf_file: st.success(f"✓ {pdf_file.name}")
+    st.subheader("\U0001f4c4 SAP Carton Form (PDF)")
+    pdf_file = st.file_uploader("Upload PDF (multi-page)", type=["pdf"])
 
-if not (xl_file and pdf_file):
-    st.markdown("""
-    <div style="background:white;border-radius:12px;padding:28px 32px;margin-top:24px;
-                border:1px solid #E2E8F0;text-align:center;color:#94A3B8;">
-        <div style="font-size:2.5rem;margin-bottom:12px;">⬆️</div>
-        <div style="font-size:1rem;font-weight:600;color:#374151;margin-bottom:8px;">Upload kedua file untuk memulai</div>
-        <div style="font-size:0.82rem;">
-            <b>Match key:</b> <code>Order #</code> (Infor) = <code>Cust.PO</code> (SAP)<br>
-            <b>Yang dibandingkan:</b> Total Qty (Pairs) + Qty per UK Size<br>
-            <b>Info saja (tidak dibandingkan):</b> Article · Model
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
+if xl_file and pdf_file:
+    with st.spinner("Processing & matching data..."):
+        xl_df    = load_excel(xl_file)
+        pdf_data = parse_pdf(pdf_file, filename=pdf_file.name)
+        xl_pos     = xl_df["Order #"].str.strip().unique().tolist()
+        pdf_pos    = list(pdf_data.keys())
+        all_pos    = sorted(set(xl_pos + pdf_pos))
+        match_pos  = [p for p in pdf_pos if p in set(xl_pos)]
+        xl_pos_set = set(xl_pos)
 
-# ── Process ───────────────────────────────────────────────────────────────────
-with st.spinner("Memproses & mencocokkan data..."):
-    xl_df    = load_excel(xl_file)
-    pdf_data = parse_pdf(pdf_file, filename=pdf_file.name)
-    xl_pos     = xl_df["Order #"].str.strip().unique().tolist()
-    pdf_pos    = list(pdf_data.keys())
-    all_pos    = sorted(set(xl_pos + pdf_pos))
-    match_pos  = [p for p in pdf_pos if p in set(xl_pos)]
-    xl_pos_set = set(xl_pos)
-
-# Build summary data
-sum_rows = []
-for po in all_pos:
-    df_f    = compare_po_fields(xl_df, pdf_data, po)
-    n_m  = (df_f["Status"]=="✅ MATCH").sum()    if not df_f.empty else 0
-    n_mm = (df_f["Status"]=="❌ MISMATCH").sum() if not df_f.empty else 0
-    if po not in pdf_data:     result = "⚠️ NO SAP"
-    elif po not in xl_pos_set: result = "⚠️ NO INFOR"
-    elif n_mm==0:              result = "✅ ALL OK"
-    else:                      result = f"❌ {n_mm} ISSUE(S)"
-    sum_rows.append({"PO": po, "Match": n_m, "Mismatch": n_mm, "Result": result})
-sum_df = pd.DataFrame(sum_rows)
-
-# ── KPI ───────────────────────────────────────────────────────────────────────
-n_ok     = (sum_df["Result"]=="✅ ALL OK").sum()
-n_issues = (sum_df["Mismatch"]>0).sum()
-n_total_mm = int(sum_df["Mismatch"].sum())
-n_sap_only = len([p for p in pdf_pos if p not in xl_pos_set])
-n_xl_only  = len([p for p in xl_pos  if p not in set(pdf_pos)])
-match_rate = int(n_ok / len(all_pos) * 100) if all_pos else 0
-bar_color  = "#10B981" if match_rate==100 else "#EF4444" if match_rate<70 else "#F59E0B"
-
-st.markdown(f"""
-<div class="kpi-grid">
-    <div class="kpi-card blue">
-        <div class="kpi-number">{len(match_pos)}</div>
-        <div class="kpi-label">PO Matched</div>
-    </div>
-    <div class="kpi-card ok">
-        <div class="kpi-number">{n_ok}</div>
-        <div class="kpi-label">✅ All OK</div>
-    </div>
-    <div class="kpi-card bad">
-        <div class="kpi-number">{n_issues}</div>
-        <div class="kpi-label">❌ Ada Masalah</div>
-    </div>
-    <div class="kpi-card bad">
-        <div class="kpi-number">{n_total_mm}</div>
-        <div class="kpi-label">Total Mismatch</div>
-    </div>
-    <div class="kpi-card warn">
-        <div class="kpi-number">{n_sap_only}</div>
-        <div class="kpi-label">SAP Only</div>
-    </div>
-    <div class="kpi-card warn">
-        <div class="kpi-number">{n_xl_only}</div>
-        <div class="kpi-label">Infor Only</div>
-    </div>
-</div>
-
-<div style="background:white;border-radius:10px;padding:14px 20px;margin-bottom:20px;
-            border:1px solid #E2E8F0;display:flex;align-items:center;gap:16px;">
-    <div style="font-size:0.8rem;font-weight:700;color:#374151;white-space:nowrap;">Overall Match Rate</div>
-    <div style="flex:1;">
-        <div class="match-bar-wrap">
-            <div class="match-bar-fill" style="width:{match_rate}%;background:{bar_color}"></div>
-        </div>
-    </div>
-    <div style="font-size:1.4rem;font-weight:700;color:{bar_color};font-family:'IBM Plex Mono',monospace;
-                white-space:nowrap;">{match_rate}%</div>
-    <div style="font-size:0.75rem;color:#94A3B8;">{n_ok} dari {len(all_pos)} PO</div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs([
-    f"📦 Per-PO Detail  ({len(all_pos)} PO)",
-    f"❌ Discrepancies Only  ({n_total_mm})",
-    "⬇️ Download Report",
-])
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Per-PO Detail
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab1:
-    st.markdown(render_legend(), unsafe_allow_html=True)
-
-    # Filter bar
-    fcol1, fcol2 = st.columns([3,1])
-    with fcol1:
-        filter_po = st.text_input("🔍 Cari PO Number", placeholder="Ketik nomor PO...", label_visibility="collapsed")
-    with fcol2:
-        filter_status = st.selectbox("Filter", ["Semua","✅ OK Saja","❌ Ada Masalah","⚠️ Data Hilang"], label_visibility="collapsed")
-
-    filtered_pos = all_pos
-    if filter_po.strip():
-        filtered_pos = [p for p in all_pos if filter_po.strip() in p]
-    if filter_status == "✅ OK Saja":
-        filtered_pos = [p for p in filtered_pos if sum_df[sum_df["PO"]==p]["Result"].values[0]=="✅ ALL OK"]
-    elif filter_status == "❌ Ada Masalah":
-        filtered_pos = [p for p in filtered_pos if "ISSUE" in str(sum_df[sum_df["PO"]==p]["Result"].values[0] if len(sum_df[sum_df["PO"]==p])>0 else "")]
-    elif filter_status == "⚠️ Data Hilang":
-        filtered_pos = [p for p in filtered_pos if "NO" in str(sum_df[sum_df["PO"]==p]["Result"].values[0] if len(sum_df[sum_df["PO"]==p])>0 else "")]
-
-    st.markdown(f"<div class='section-label'>Menampilkan {len(filtered_pos)} dari {len(all_pos)} PO</div>", unsafe_allow_html=True)
-
-    for po in filtered_pos:
-        in_pdf = po in pdf_data
-        in_xl  = po in xl_pos_set
-        sd     = compare_po_size_detail(xl_df, pdf_data, po)
-        info   = po_info(xl_df, pdf_data, po)
-
-        n_match    = (sd["Status"]=="MATCH").sum()         if not sd.empty else 0
-        n_mismatch = (sd["Status"]=="MISMATCH").sum()      if not sd.empty else 0
-        n_only     = sd["Status"].str.contains("ONLY").sum() if not sd.empty else 0
-
-        header_cls, header_html = render_po_header(po, n_match, n_mismatch, n_only, in_pdf, in_xl)
-
-        expanded = (n_mismatch > 0 or n_only > 0) or (not in_pdf) or (not in_xl)
-
-        with st.expander(f"PO {po}", expanded=expanded):
-            st.markdown(f'<div class="po-card">{header_html}', unsafe_allow_html=True)
-
-            if not in_pdf:
-                st.warning("⚠️ PO ini tidak ditemukan di SAP PDF. Tidak ada data untuk dibandingkan.")
-            elif not in_xl:
-                st.warning("⚠️ PO ini tidak ditemukan di Infor Excel.")
-            else:
-                # Info strip
-                st.markdown(render_info_strip(info), unsafe_allow_html=True)
-                # Size table
-                if not sd.empty:
-                    st.markdown(render_size_table(sd, info), unsafe_allow_html=True)
-                    # Infor total vs SAP total
-                    xl_total  = int(xl_sizes_for_po(xl_df, po)["Infor Qty"].sum()) if not xl_sizes_for_po(xl_df, po).empty else 0
-                    sap_total = int(pdf_data.get(po,{}).get("header",{}).get("Total Pairs",0) or 0)
-                    diff_total = xl_total - sap_total
-                    diff_color = "#10B981" if diff_total==0 else "#EF4444"
-                    st.markdown(f"""
-                    <div style="background:#F8FAFC;border-top:2px solid #E2E8F0;
-                                padding:10px 16px;display:flex;gap:32px;
-                                border-radius:0 0 12px 12px;font-size:0.82rem;">
-                        <div>
-                            <span style="color:#64748B;font-size:0.72rem;font-weight:600;text-transform:uppercase;">Total Infor</span><br>
-                            <span style="font-size:1.1rem;font-weight:700;color:#1E293B;font-family:'IBM Plex Mono',monospace;">{xl_total:,} pairs</span>
-                        </div>
-                        <div>
-                            <span style="color:#64748B;font-size:0.72rem;font-weight:600;text-transform:uppercase;">Total SAP</span><br>
-                            <span style="font-size:1.1rem;font-weight:700;color:#1E293B;font-family:'IBM Plex Mono',monospace;">{sap_total:,} pairs</span>
-                        </div>
-                        <div>
-                            <span style="color:#64748B;font-size:0.72rem;font-weight:600;text-transform:uppercase;">Selisih</span><br>
-                            <span style="font-size:1.1rem;font-weight:700;color:{diff_color};font-family:'IBM Plex Mono',monospace;">{diff_total:+,} pairs</span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.info("Tidak ada data ukuran untuk PO ini.")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Discrepancies Only
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab2:
-    disc_found = False
+    sum_rows = []
     for po in all_pos:
-        sd = compare_po_size_detail(xl_df, pdf_data, po)
-        if sd.empty: continue
-        issues = sd[sd["Status"]!="MATCH"]
-        if issues.empty: continue
-        disc_found = True
-        info = po_info(xl_df, pdf_data, po)
-        n_mm = (issues["Status"]=="MISMATCH").sum()
-        n_only = issues["Status"].str.contains("ONLY").sum()
-        cls = "bad" if n_mm>0 else "warn"
-        st.markdown(f"""
-        <div class="po-card" style="margin-bottom:16px;">
-            <div class="po-card-header {cls}">
-                <div class="po-number">PO {po}</div>
-                <div>
-                    {'<span class="badge-mismatch">'+str(n_mm)+' MISMATCH</span>' if n_mm>0 else ''}
-                    {'<span class="badge-only-i" style="margin-left:6px;">'+str(n_only)+' ONLY-IN-ONE</span>' if n_only>0 else ''}
-                </div>
-            </div>
-            {render_size_table(issues, info)}
-        </div>
-        """, unsafe_allow_html=True)
+        df_f    = compare_po_fields(xl_df, pdf_data, po)
+        total_f = len(df_f)
+        n_m     = (df_f["Status"]=="\u2705 MATCH").sum()    if not df_f.empty else 0
+        n_mm    = (df_f["Status"]=="\u274c MISMATCH").sum() if not df_f.empty else 0
+        sap_src = pdf_data.get(po,{}).get("header",{}).get("Source File", pdf_file.name)
+        if po not in pdf_data:     result = "\u26a0\ufe0f NO SAP DATA"
+        elif po not in xl_pos_set: result = "\u26a0\ufe0f NO INFOR DATA"
+        elif n_mm==0:              result = "\u2705 ALL OK"
+        else:                      result = f"\u274c {n_mm} ISSUE(S)"
+        sum_rows.append({"PO Number": po, "Infor File": xl_file.name, "SAP File(s)": sap_src,
+                         "Total Fields": total_f, "\u2705 Match": n_m, "\u274c Mismatch": n_mm,
+                         "Result": result})
+    sum_df = pd.DataFrame(sum_rows)
 
-    if not disc_found:
-        st.success("✅ Tidak ada discrepancy ditemukan — semua PO yang matched 100% OK!")
+    k1,k2,k3,k4,k5,k6 = st.columns(6)
+    k1.metric("Matched POs",            len(match_pos))
+    k2.metric("\u2705 All OK",           (sum_df["Result"]=="\u2705 ALL OK").sum())
+    k3.metric("\u274c POs w/ Issues",    (sum_df["\u274c Mismatch"]>0).sum())
+    k4.metric("Total Field Mismatches",  int(sum_df["\u274c Mismatch"].sum()))
+    k5.metric("SAP only",               len([p for p in pdf_pos if p not in xl_pos_set]))
+    k6.metric("Infor only",             len([p for p in xl_pos  if p not in set(pdf_pos)]))
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Download
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab3:
-    st.markdown("### ⬇️ Download Excel Report")
-    st.markdown("""
-    Report Excel berisi 5 sheet:
-    - **PO Compare Summary** — ringkasan per PO
-    - **PO Compare Detail** — field-by-field per PO
-    - **Size Detail** — semua kolom per ukuran
-    - **Discrepancies Only** — hanya baris mismatch
-    - **Raw Infor Data** — data mentah dari file Excel
-    """)
-    with st.spinner("Membuat Excel report..."):
+    st.divider()
+    st.subheader("\U0001f4cb PO Compare Summary \u2014 adidas Infor vs SAP Carton")
+    st.info("\u2139\ufe0f **Fields compared:** Total Qty (Pairs) + Qty per Size.  Article & Model **not compared** \u2014 info only.", icon=None)
+
+    def _cr(val):
+        if "ALL OK" in str(val): return "background-color:#c8f7c5;color:#1B5E20;font-weight:bold"
+        if "ISSUE"  in str(val): return "background-color:#ffcdd2;color:#B71C1C;font-weight:bold"
+        if "NO"     in str(val): return "background-color:#ffe0b2;color:#E65100;font-weight:bold"
+        return ""
+    def _cmm(val):
+        if isinstance(val,(int,float)) and val>0: return "color:#B71C1C;font-weight:bold"
+        return "color:#1B5E20;font-weight:bold"
+
+    st.dataframe(
+        sum_df.style.map(_cr, subset=["Result"]).map(_cmm, subset=["\u274c Mismatch"]),
+        use_container_width=True, hide_index=True,
+        height=min(600, 80+len(sum_df)*36),
+    )
+
+    st.divider()
+    tab1, tab2, tab3 = st.tabs([
+        "\U0001f50d Field-by-Field Detail",
+        "\U0001f4d0 Size Detail (All Columns)",
+        "\u274c Discrepancies Only",
+    ])
+
+    with tab1:
+        st.caption("**Compared fields:** `Total Qty (Pairs)` + `Qty Size X` per UK Size. Article & Model **not shown here**.")
+        det_rows = []
+        for po in all_pos:
+            df_f = compare_po_fields(xl_df, pdf_data, po)
+            if df_f.empty: continue
+            df_f.insert(0, "PO Number", po)
+            det_rows.append(df_f)
+        if det_rows:
+            det_df = pd.concat(det_rows, ignore_index=True)
+            def _cs(val):
+                if val=="\u2705 MATCH":    return "background-color:#c8f7c5;color:#1B5E20;font-weight:bold"
+                if val=="\u274c MISMATCH": return "background-color:#ffcdd2;color:#B71C1C;font-weight:bold"
+                return ""
+            def _cv(row):
+                base = [""]*len(row); idx = list(row.index)
+                if row.get("Status")=="\u274c MISMATCH":
+                    for f in ["Infor Value","SAP Value"]:
+                        if f in idx: base[idx.index(f)] = "background-color:#ffebee;color:#B71C1C;font-weight:bold"
+                return base
+            st.dataframe(det_df.style.map(_cs, subset=["Status"]).apply(_cv, axis=1),
+                         use_container_width=True, hide_index=True, height=min(700,80+len(det_df)*34))
+
+    with tab2:
+        st.caption("**All columns per size row.** Article & Model = \U0001f535 info (not compared). XL Line=Infor · CTN Range/CTNs/Qty/CTN=SAP.")
+        sd_rows = []
+        for po in all_pos:
+            info = po_info(xl_df, pdf_data, po)
+            sd   = compare_po_size_detail(xl_df, pdf_data, po)
+            if sd.empty: continue
+            sd.insert(0, "PO Number",       po)
+            sd.insert(1, "Article (Infor)", info["Article (Infor)"])
+            sd.insert(2, "Article (SAP)",   info["Article (SAP)"])
+            sd.insert(3, "Model (Infor)",   info["Model (Infor)"])
+            sd.insert(4, "Model (SAP)",     info["Model (SAP)"])
+            sd_rows.append(sd)
+        if sd_rows:
+            sd_df = pd.concat(sd_rows, ignore_index=True)
+            INFO_COLS = ["Article (Infor)","Article (SAP)","Model (Infor)","Model (SAP)"]
+            def _sst(val):
+                if val=="\u2705 MATCH":    return "background-color:#c8f7c5;color:#1B5E20;font-weight:bold"
+                if val=="\u274c MISMATCH": return "background-color:#ffcdd2;color:#B71C1C;font-weight:bold"
+                if "ONLY" in str(val):     return "background-color:#ffe0b2;color:#E65100;font-weight:bold"
+                return ""
+            def _sdiff(val):
+                try:
+                    if int(val)!=0: return "color:#B71C1C;font-weight:bold"
+                except: pass
+                return ""
+            def _info_col(val): return "background-color:#E3F2FD;color:#0D47A1"
+            present_info = [c for c in INFO_COLS if c in sd_df.columns]
+            st.dataframe(
+                sd_df.style.map(_sst, subset=["Status"]).map(_sdiff, subset=["Diff"]).map(_info_col, subset=present_info),
+                use_container_width=True, hide_index=True, height=min(700,80+len(sd_df)*34))
+        else:
+            st.info("No size data available.")
+
+    with tab3:
+        disc_rows = []
+        for po in all_pos:
+            df_f = compare_po_fields(xl_df, pdf_data, po)
+            if df_f.empty: continue
+            iss = df_f[df_f["Status"]!="\u2705 MATCH"].copy()
+            if iss.empty: continue
+            iss.insert(0, "PO Number", po)
+            disc_rows.append(iss)
+        if disc_rows:
+            disc_df = pd.concat(disc_rows, ignore_index=True)
+            def _ds(row):
+                base=[""]*len(row); idx=list(row.index)
+                for f in ["Infor Value","SAP Value"]:
+                    if f in idx: base[idx.index(f)]="background-color:#ffebee;color:#B71C1C;font-weight:bold"
+                if "Status" in idx: base[idx.index("Status")]="background-color:#ffcdd2;color:#B71C1C;font-weight:bold"
+                return base
+            st.dataframe(disc_df.style.apply(_ds, axis=1), use_container_width=True, hide_index=True,
+                         height=min(500,80+len(disc_df)*34))
+        else:
+            st.success("\u2705 No discrepancies found \u2014 all matched POs are 100% OK!")
+
+    st.divider()
+    st.subheader("\u2b07\ufe0f Download Excel Report")
+    with st.spinner("Building Excel report..."):
         report_buf = build_report(xl_df, pdf_data, all_pos, xl_file.name, pdf_file.name)
     fname = f"InforVsSAP_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-    st.download_button(
-        "📥 Download Excel Report",
-        data=report_buf, file_name=fname,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True, type="primary",
-    )
+    st.download_button("\U0001f4e5 Download Excel Report", data=report_buf, file_name=fname,
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       use_container_width=True, type="primary")
 
     pdf_only = [p for p in pdf_pos if p not in xl_pos_set]
     xl_only  = [p for p in xl_pos  if p not in set(pdf_pos)]
     if pdf_only:
-        st.warning(f"⚠️ {len(pdf_only)} PO ada di SAP tapi tidak di Infor: {', '.join(pdf_only)}")
+        st.warning(f"\u26a0\ufe0f {len(pdf_only)} PO in SAP only: {', '.join(pdf_only)}")
     if xl_only:
-        with st.expander(f"ℹ️ {len(xl_only)} PO ada di Infor tapi tidak di SAP PDF"):
+        with st.expander(f"\u2139\ufe0f {len(xl_only)} PO in Infor only (not in SAP PDF)"):
             st.write(xl_only)
+
+elif xl_file and not pdf_file:
+    st.info("\U0001f4c4 Please upload the SAP Carton Form PDF.")
+elif pdf_file and not xl_file:
+    st.info("\U0001f4ca Please upload the Infor Order List Excel.")
+else:
+    st.info("\U0001f446 Upload both files above to start.")
+    with st.expander("\u2139\ufe0f How it works"):
+        st.markdown("""
+        **Match key**: `Order #` (Infor) = `Cust.PO` (SAP)
+        | Field | Compared? |
+        |---|---|
+        | Total Qty (Pairs) | ✅ Yes |
+        | Qty Size X (per UK Size) | ✅ Yes |
+        | Article | ❌ No — info only |
+        | Model | ❌ No — info only |
+
+        **Excel sheets:** `PO Compare Summary` · `PO Compare Detail` · `Size Detail` · `Discrepancies Only` · `Raw Infor Data`
+        """)
