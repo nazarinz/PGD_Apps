@@ -61,8 +61,8 @@ if uploaded_file is not None:
         st.stop()
 
     df.columns = df.columns.str.strip()
-    df = df.fillna("").astype(str)
-    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    df = df.fillna("")
+    df = df.map(lambda x: x.strip() if isinstance(x, str) else x)  # fix: applymap -> map (pandas >= 2.1)
 
     # STRICT CHECK
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
@@ -79,11 +79,10 @@ if uploaded_file is not None:
     # Auto-pad Item No. yang 12 digit menjadi 13 digit
     def pad_item_no(item):
         item = str(item).strip()
-        # Hanya proses jika Item No. adalah angka dan panjangnya 12 digit
         if item.isdigit() and len(item) == 12:
             return "0" + item
         return item
-    
+
     df["Item No."] = df["Item No."].apply(pad_item_no)
 
     st.subheader("Preview data (strict columns only)")
