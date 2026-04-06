@@ -364,7 +364,7 @@ def clean_and_compare(df_merged):
         has_num  = numeric.notna()
         int_keys = numeric.where(has_num).dropna().astype("int64").astype(str)
         mapped   = int_keys.map(code_mapping)
-        result   = cleaned.copy()
+        result   = cleaned.astype(object)
         update_idx = mapped.dropna().index
         result.loc[update_idx] = mapped.loc[update_idx]
         return result
