@@ -125,7 +125,7 @@ div[data-testid="stFileUploader"] { border: 1px dashed #1e2a3a; border-radius: 1
 # ============================================================
 
 class Config:
-    UNICODE_SPACES = r"[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]"
+    UNICODE_SPACES = "[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]"
     SIZE_PATTERN   = re.compile(r'^(?:UK[_\-\s]*)?(\d{1,2})(K|-K|-)?$', re.I)
     MAX_HEADER_SCAN_ROWS = 40
 
