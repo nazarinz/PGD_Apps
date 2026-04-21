@@ -313,10 +313,28 @@ def detect_fvb_so_column(df: pd.DataFrame) -> Tuple[Optional[str], str]:
 # =============================================================================
 
 def normalize_so_series(s: pd.Series) -> pd.Series:
-    """Normalisasi nilai SO: strip, hapus .0 trailing, ganti nan/none/'' dengan pd.NA."""
-    s2 = s.astype(str).str.strip()
-    s2 = s2.str.replace(r"\.0$", "", regex=True)
-    s2 = s2.replace({"nan": pd.NA, "none": pd.NA, "None": pd.NA, "": pd.NA})
+    """
+    Normalisasi nilai SO agar bisa dibandingkan lintas file/format:
+    - Handle float/int types sebelum konversi string
+    - Strip semua whitespace (termasuk non-breaking space)
+    - Hapus trailing .0 / .00 / .000 (float artifact dari Excel/ODS)
+    - Ganti nan/none/'' dengan pd.NA
+    """
+    def _safe_str(v) -> str:
+        if pd.isna(v):
+            return ""
+        if isinstance(v, float):
+            if v == int(v):
+                return str(int(v))
+            return str(v)
+        if isinstance(v, int):
+            return str(v)
+        return str(v)
+
+    s2 = s.map(_safe_str)
+    s2 = s2.str.strip().str.replace(r"\s+", "", regex=True)
+    s2 = s2.str.replace(r"\.0+$", "", regex=True)
+    s2 = s2.replace({"nan": pd.NA, "none": pd.NA, "None": pd.NA, "NaT": pd.NA, "": pd.NA})
     return s2
 
 
@@ -384,11 +402,14 @@ def process_files(base_file, ref_files) -> SOResult:
         base_reason = f"Forced exact: SAP_ODR_NO | header=baris {hdr_idx + 1}"
     else:
         base_col, base_reason = detect_so_column(base_df)
-        base_reason = f"{base_reason} | header=baris {hdr_idx + 1}"
+        if base_col:
+            base_reason = f"{base_reason} | header=baris {hdr_idx + 1}"
 
+    # PENTING: Jangan fallback ke kolom pertama — kolom pertama sering berisi
+    # nomor urut (NO), bukan SO number. Biarkan None jika tidak ditemukan.
+    # Matching akan tetap jalan via FVB SO column.
     if base_col is None:
-        base_col = str(base_df.columns[0])
-        base_reason = f"Fallback: pakai kolom pertama ({base_col}) | header=baris {hdr_idx + 1}"
+        base_reason = f"Tidak ditemukan kolom SAP SO | header=baris {hdr_idx + 1}"
 
     # ── 4. Detect SO column #2 (FVB SO) ──────────────────────────────────────
     base_col_fvb = pick_column(base_df, "FVB SO")
@@ -401,7 +422,11 @@ def process_files(base_file, ref_files) -> SOResult:
 
     # ── 5. Tambah kolom normalisasi ───────────────────────────────────────────
     base_df_out = base_df.copy()
-    base_df_out["__SO_norm_SAP__"] = normalize_so_series(base_df_out[base_col])
+    if base_col and base_col in base_df_out.columns:
+        base_df_out["__SO_norm_SAP__"] = normalize_so_series(base_df_out[base_col])
+    else:
+        base_df_out["__SO_norm_SAP__"] = pd.NA
+
     if base_col_fvb and base_col_fvb in base_df_out.columns:
         base_df_out["__SO_norm_FVB__"] = normalize_so_series(base_df_out[base_col_fvb])
     else:
@@ -591,7 +616,10 @@ if "so_detect_result" in st.session_state:
 
     col_info1, col_info2 = st.columns(2)
     with col_info1:
-        st.success(f"**Kolom SO #1 (SAP):** `{res.base_col}`\n\n_{res.base_reason}_")
+        if res.base_col:
+            st.success(f"**Kolom SO #1 (SAP):** `{res.base_col}`\n\n_{res.base_reason}_")
+        else:
+            st.warning(f"**Kolom SO #1 (SAP):** Tidak ditemukan\n\n_{res.base_reason}_")
     with col_info2:
         if res.base_col_fvb:
             st.success(f"**Kolom SO #2 (FVB):** `{res.base_col_fvb}`\n\n_{res.base_reason_fvb}_")
@@ -619,6 +647,36 @@ if "so_detect_result" in st.session_state:
     if not res.log_df.empty:
         with st.expander("🧾 Log Deteksi Kolom (Ref Files)", expanded=False):
             st.dataframe(res.log_df, use_container_width=True)
+
+    # ── DEBUG DIAGNOSTIC ──────────────────────────────────────────────────────
+    with st.expander("🛠️ Debug: Cek nilai SO aktual (buka jika 0 matches)", expanded=False):
+        st.markdown("**Nilai FVB SO di base file (sample 20):**")
+        fvb_vals = res.base_df_out["__SO_norm_FVB__"].dropna().unique()[:20]
+        st.write(list(fvb_vals))
+
+        st.markdown("**Nilai SAP SO di base file (sample 20):**")
+        sap_vals = res.base_df_out["__SO_norm_SAP__"].dropna().unique()[:20]
+        st.write(list(sap_vals))
+
+        st.markdown("**SO dari ref files (sample 30):**")
+        for item in res.ref_tables:
+            ref_vals = item["df"]["__SO_norm__"].dropna().unique()[:30]
+            st.write(f"**{item['file']} · {item['sheet']} (kolom: {item['so_col']})**")
+            st.write(list(ref_vals))
+
+        # Cek apakah ada yang mirip tapi tidak exact match
+        st.markdown("**Perbandingan karakter (FVB SO base vs ref — 3 sample pertama):**")
+        all_ref_flat = []
+        for item in res.ref_tables:
+            all_ref_flat += item["df"]["__SO_norm__"].dropna().unique().tolist()
+        all_ref_flat = list(set(all_ref_flat))
+
+        for bv in list(fvb_vals)[:3]:
+            st.write(f"Base FVB: `{repr(bv)}` (len={len(str(bv))})")
+            # Cari yang paling mirip di ref
+            candidates = [rv for rv in all_ref_flat if str(rv)[:6] == str(bv)[:6]]
+            for rv in candidates[:3]:
+                st.write(f"  Ref candidate: `{repr(rv)}` (len={len(str(rv))}) — equal={bv==rv}")
 
     # ── Drill-down ────────────────────────────────────────────────────────────
     st.markdown("---")
