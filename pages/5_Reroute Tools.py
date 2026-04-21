@@ -151,7 +151,7 @@ class Config:
         'Sales Order','Customer Contract ID','Sold-To PO No.','Ship-To Party PO No.',
         'CRD','PD','Prod. Team ATP','FPD','FPD-DRC','POSDD','POSDD-DRC',
         'LPD','LPD-DRC','PODD','PODD-DRC','FGR','Cust Article No.','Model Name',
-        'Gender','Article','Article Lead Time','Develop Type','Last Code','Season',
+        'Gender','Material','Article Lead Time','Develop Type','Last Code','Season',
         'Product Hierarchy 3','Outsole Mold','Pattern Code (Upper','Ship-To No.',
         'Ship-To Search Term','Ship-To Name','Ship-To Country','Shipping Type',
         'Shipping Type 2','Packing Type','VAS Cut-Off Date','Classification Code',
@@ -303,7 +303,7 @@ class DataProcessor:
         df = df.copy()
         if 'Cust Article No.' not in df.columns:
             ColumnManager.alias_column(df, 'Cust Article No.',
-                ['Cust Article No.', 'Article Number', 'Article No', 'Article'], ['article', 'number'])
+                ['Cust Article No.', 'Article Number', 'Article No', 'Material'], ['article', 'number'])
         if 'Cust Article No.' not in df.columns:
             raise ValueError("Column 'Cust Article No.' not found")
         df['Cust Article No.'] = df['Cust Article No.'].astype(str).str.strip().str.upper()
@@ -510,7 +510,7 @@ SHEET1_ORDER = [
     "Working Status","Select","Working Status Descr.","Requirement Segment",
     "SO","Sold-To PO No.","CRD","CRD-DRC","PD","POSDD-DRC","POSDD",
     "FPD","FPD-DRC","PODD","PODD-DRC","Est. Inspection Date",
-    "LPD","LPD-DRC","FGR","Cust Article No.","Model Name","Article",
+    "LPD","LPD-DRC","FGR","Cust Article No.","Model Name","Material",
     "Lead Time","Season","Product Hierarchy 3","Ship-To Search Term",
     "Ship-To Country","Document Date","Order Quantity","Order Type",
 ]
@@ -587,7 +587,7 @@ EMAIL_PREP_TARGET = [
     "Ship-To Party PO No.",
     "Model Name",
     "Cust Article No.",
-    "Article",
+    "Material",
     "Order Quantity",
     "CRD",
     "PD",
@@ -738,7 +738,7 @@ def page_reroute_merge():
             df_old = df_old_raw.copy()
             df_old.rename(columns={k: v for k, v in Config.OLD_PO_RENAMES.items() if k in df_old.columns}, inplace=True)
             ColumnManager.alias_column(df_new, 'Cust Article No.',
-                ['Cust Article No.','Article Number','Article No','Article'], ['article','number'])
+                ['Cust Article No.','Article Number','Article No','Material'], ['article','number'])
             ColumnManager.alias_column(df_new, 'Order Quantity',
                 ['Order Quantity','Grand Total','Total Qty','Order Qty','Quantity'], ['order','qty'])
             inc_sales = include_sales and ('Sales Order' in df_old.columns) and ('Sales Order' in df_new.columns)
@@ -866,7 +866,7 @@ def page_email_prep():
     <div style="background:#0f1117;border:1px solid #1e2a3a;border-radius:8px;padding:12px 16px;margin:8px 0;">
         <span style="font-family:'IBM Plex Mono',monospace;font-size:0.78rem;color:#60a5fa;">Kolom output (urutan baru):</span><br>
         <span style="font-size:0.78rem;color:#94a3b8;">
-        Sales Order · Remark · Sold-To PO No. · Ship-To Party PO No. · Model Name · Cust Article No. · Article · Order Quantity ·
+        Sales Order · Remark · Sold-To PO No. · Ship-To Party PO No. · Model Name · Cust Article No. · Material · Order Quantity ·
         CRD · PD · LPD · PODD · Ship-To Search Term ·
         <strong style="color:#60a5fa;">New Ship-To Search Term (kosong)</strong> · Ship-To Country ·
         <strong style="color:#60a5fa;">Email Subject (auto)</strong> ·
