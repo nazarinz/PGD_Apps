@@ -367,28 +367,29 @@ with st.sidebar:
 
     today = datetime.today().date()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        podd_start = st.date_input(
-            "Dari",
-            value=today,
-            help="Tanggal PODD paling awal yang ingin dicek",
-        )
-    with col2:
-        podd_end = st.date_input(
-            "Sampai",
-            value=today + timedelta(days=3),
-            help="Tanggal PODD paling akhir yang ingin dicek",
-        )
+    # Batas bawah: tidak dibatasi (semua PODD ≤ hari ini otomatis masuk)
+    # Batas atas: diatur user, default H+3
+    podd_start = pd.Timestamp.min  # tidak ada batas bawah
 
-    if podd_start > podd_end:
-        st.error("⚠️ Tanggal 'Dari' tidak boleh lebih besar dari 'Sampai'")
-        date_valid = False
-    else:
-        date_valid = True
+    podd_end = st.date_input(
+        "Tampilkan PODD sampai",
+        value=today + timedelta(days=3),
+        help="PODD ≤ hari ini selalu masuk. Atur seberapa jauh ke depan yang ingin dicek.",
+    )
+
+    date_valid = True
+    days_ahead = (podd_end - today).days
+    if days_ahead < 0:
         st.caption(
-            f"Filter aktif: **{podd_start.strftime('%d %b %Y')}** → **{podd_end.strftime('%d %b %Y')}** "
-            f"({(podd_end - podd_start).days + 1} hari)"
+            f"Filter aktif: semua PODD s/d **{podd_end.strftime('%d %b %Y')}** "
+            f"({abs(days_ahead)} hari sebelum hari ini)"
+        )
+    elif days_ahead == 0:
+        st.caption("Filter aktif: semua PODD s/d **hari ini**")
+    else:
+        st.caption(
+            f"Filter aktif: semua PODD s/d **{podd_end.strftime('%d %b %Y')}** "
+            f"(H+{days_ahead})"
         )
 
     st.markdown("---")
@@ -405,7 +406,7 @@ with st.sidebar:
                 st.session_state['results'] = process_files(
                     zrsd_file,
                     plan_files,
-                    pd.Timestamp(podd_start),
+                    podd_start,          # sudah pd.Timestamp.min
                     pd.Timestamp(podd_end),
                 )
                 st.session_state['filter_label'] = (
