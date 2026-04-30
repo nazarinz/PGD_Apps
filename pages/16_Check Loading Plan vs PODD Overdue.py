@@ -7,7 +7,7 @@ import pandas as pd
 import io
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import traceback
 
 st.set_page_config(page_title="Loading Plan Checker", page_icon="📋", layout="wide")
@@ -112,7 +112,6 @@ def detect_so_column(df: pd.DataFrame):
 
 
 def detect_fvb_so_column(df: pd.DataFrame):
-    """Deteksi kolom FVB SO. Return nama kolom asli atau None."""
     cols_norm = [norm_col_name(c) for c in df.columns]
 
     for cand in FVB_CANDIDATES:
@@ -128,7 +127,6 @@ def detect_fvb_so_column(df: pd.DataFrame):
 
 
 def clean_so_series(series: pd.Series) -> pd.Series:
-    """Normalisasi nilai SO: strip, hapus .0, filter angka saja."""
     return (
         series
         .astype(str)
@@ -155,7 +153,7 @@ def extract_date_from_filename_ddmm(filename):
 
 
 # =========================================================
-def process_files(zrsd_file, plan_files, date_format):
+def process_files(zrsd_file, plan_files, podd_start: pd.Timestamp, podd_end: pd.Timestamp):
     text_columns = {
         'PO No.(Full)': str,
         'PO No.(Short)': str,
@@ -171,12 +169,14 @@ def process_files(zrsd_file, plan_files, date_format):
     df_013 = pd.read_excel(io.BytesIO(zrsd_file.getvalue()), dtype=text_columns)
 
     fcr_date_check = pd.to_datetime(df_013['FCR Date'], errors='coerce').isna()
-    podd_check = pd.to_datetime(df_013['PODD'], errors='coerce')
+    podd_parsed    = pd.to_datetime(df_013['PODD'], errors='coerce')
 
-    today = pd.Timestamp.today().normalize()
-    end_date = today + pd.Timedelta(days=3)
-
-    df_filtered = df_013[fcr_date_check & (podd_check <= end_date)].copy()
+    # ── Filter PODD sesuai rentang yang dipilih user ──────────────────────
+    df_filtered = df_013[
+        fcr_date_check &
+        (podd_parsed >= podd_start) &
+        (podd_parsed <= podd_end)
+    ].copy()
 
     known_date_columns = [
         'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
@@ -204,11 +204,9 @@ def process_files(zrsd_file, plan_files, date_format):
                 st.error(f"❌ {file.name}: Format nama file salah (harus DD.MM seperti 22.01)")
                 continue
 
-            # ── Deteksi kolom SO ──────────────────────────────────────────
             so_col_sap = detect_so_column(df_plan)
             so_col_fvb = detect_fvb_so_column(df_plan)
 
-            # Batalkan hanya jika KEDUANYA tidak ditemukan
             if not so_col_sap and not so_col_fvb:
                 st.error(f"❌ {file.name}: Tidak ada kolom SAP SO maupun FVB SO")
                 st.write("Kolom yang tersedia:", list(df_plan.columns))
@@ -221,14 +219,12 @@ def process_files(zrsd_file, plan_files, date_format):
                 f"FVB SO: {fvb_label} | Tanggal: {plan_date.date()}"
             )
 
-            # ── SAP SO (opsional) ─────────────────────────────────────────
             if so_col_sap and so_col_sap in df_plan.columns:
                 df_plan["__SO_sap__"] = clean_so_series(df_plan[so_col_sap])
                 for so in df_plan["__SO_sap__"].dropna().unique():
                     if str(so).isdigit():
                         plan_so_map[int(so)].append(("SAP", plan_date.date()))
 
-            # ── FVB SO (opsional) ─────────────────────────────────────────
             if so_col_fvb and so_col_fvb in df_plan.columns:
                 df_plan["__SO_fvb__"] = clean_so_series(df_plan[so_col_fvb])
                 for so in df_plan["__SO_fvb__"].dropna().unique():
@@ -248,21 +244,17 @@ def process_files(zrsd_file, plan_files, date_format):
             so = int(so_raw.replace(".0", ""))
             podd_date = pd.to_datetime(row['PODD'], errors='coerce').date()
         except:
-            return "⚠️ Invalid Data", "mismatch", "", ""
+            return "⚠️ Invalid Data", "invalid", "", ""
 
         if so not in plan_so_map:
             return "❌ NOT IN LOADING PLAN", "not_found", "", ""
 
-        entries = plan_so_map[so]  # list of (source, date)
+        entries = plan_so_map[so]
 
-        # Tanggal unik gabungan, diformat M/D/YYYY
         all_dates = sorted({d for _, d in entries})
         all_dates_str = ", ".join(d.strftime("%-m/%-d/%Y") for d in all_dates)
-
-        # Tanggal untuk Remark (format YYYY-MM-DD)
         all_dates_remark = ", ".join(str(d) for d in all_dates)
 
-        # Sumber SO
         sources_found = []
         if any(src == "SAP" for src, _ in entries):
             sources_found.append("SAP")
@@ -271,12 +263,7 @@ def process_files(zrsd_file, plan_files, date_format):
         source_label = "+".join(sources_found)
 
         if podd_date in all_dates:
-            return (
-                "✅ MATCH – Date Match",
-                "match",
-                all_dates_str,
-                source_label,
-            )
+            return "✅ MATCH – Date Match", "match", all_dates_str, source_label
         else:
             return (
                 f"⚠️ IN PLAN – Date Mismatch (Plan: {all_dates_remark})",
@@ -289,7 +276,6 @@ def process_files(zrsd_file, plan_files, date_format):
         lambda row: pd.Series(check_remark(row)), axis=1
     )
 
-    # ── Guard: df_filtered kosong → result_df tidak punya kolom integer ──
     if result_df.empty or 0 not in result_df.columns:
         df_filtered['Remark Loading Plan'] = pd.Series(dtype=str)
         df_filtered['Status']              = pd.Series(dtype=str)
@@ -305,97 +291,204 @@ def process_files(zrsd_file, plan_files, date_format):
 
 
 # =========================================================
+def build_excel(df: pd.DataFrame) -> bytes:
+    """Buat file Excel dengan formatting."""
+    output = io.BytesIO()
+
+    podd_idx = df.columns.get_loc('PODD') if 'PODD' in df.columns else len(df.columns) - 1
+    df_export = df.copy()
+    df_export.insert(podd_idx + 1, 'DN',  "")
+    df_export.insert(podd_idx + 2, 'FGR', "")
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export.to_excel(writer, index=False)
+
+        from openpyxl.styles import Font, PatternFill, Alignment
+
+        worksheet = writer.sheets['Sheet1']
+
+        known_date_columns = [
+            'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
+            'PODD', 'PD', 'PO Date', 'Actual PGI', 'Delivery Date',
+            'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
+        ]
+
+        yellow_columns = {'DN', 'FGR', 'Remark Loading Plan', 'Status', 'Plan Dates', 'SO Source'}
+
+        YELLOW     = PatternFill(fill_type="solid", fgColor="FFFF00")
+        GREY       = PatternFill(fill_type="solid", fgColor="D9D9D9")
+        NO_FILL    = PatternFill(fill_type=None)
+        FONT       = Font(name="Calibri", size=9)
+        FONT_HDR   = Font(name="Calibri", size=9, bold=True)
+        ALIGN_HDR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ALIGN_DATA = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+        for cell in worksheet[1]:
+            col_name       = df_export.columns[cell.column - 1]
+            cell.font      = FONT_HDR
+            cell.alignment = ALIGN_HDR
+            cell.fill      = YELLOW if col_name in yellow_columns else GREY
+
+        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, max_col=worksheet.max_column):
+            for cell in row:
+                col_name       = df_export.columns[cell.column - 1]
+                cell.font      = FONT
+                cell.alignment = ALIGN_DATA
+                cell.fill      = NO_FILL
+
+                if (any(col_name.lower() == k.lower() for k in known_date_columns)
+                        and cell.value):
+                    cell.number_format = 'M/D/YYYY'
+
+        worksheet.freeze_panes = "H2"
+
+    return output.getvalue()
+
+
+# =========================================================
 # ======================= UI ================================
 # =========================================================
 st.title("📋 Loading Plan Checker")
 
-st.sidebar.header("⚙️ Pengaturan")
-st.sidebar.markdown("---")
-
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    zrsd_file = st.file_uploader("Upload ZRSD", type=["xlsx", "xls"])
+    st.header("⚙️ Pengaturan")
+    st.markdown("---")
+
+    zrsd_file = st.file_uploader("📁 Upload ZRSD", type=["xlsx", "xls"])
     plan_files = st.file_uploader(
-        "Upload Loading Plan (DD.MM format)",
+        "📁 Upload Loading Plan (nama: DD.MM)",
         type=["ods", "xlsx", "xls"],
-        accept_multiple_files=True
+        accept_multiple_files=True,
     )
 
-    if st.button("🚀 Proses Data", use_container_width=True):
+    st.markdown("---")
+    st.subheader("📅 Filter Tanggal PODD")
+
+    today = datetime.today().date()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        podd_start = st.date_input(
+            "Dari",
+            value=today,
+            help="Tanggal PODD paling awal yang ingin dicek",
+        )
+    with col2:
+        podd_end = st.date_input(
+            "Sampai",
+            value=today + timedelta(days=3),
+            help="Tanggal PODD paling akhir yang ingin dicek",
+        )
+
+    if podd_start > podd_end:
+        st.error("⚠️ Tanggal 'Dari' tidak boleh lebih besar dari 'Sampai'")
+        date_valid = False
+    else:
+        date_valid = True
+        st.caption(
+            f"Filter aktif: **{podd_start.strftime('%d %b %Y')}** → **{podd_end.strftime('%d %b %Y')}** "
+            f"({(podd_end - podd_start).days + 1} hari)"
+        )
+
+    st.markdown("---")
+
+    run_btn = st.button(
+        "🚀 Proses Data",
+        use_container_width=True,
+        disabled=not date_valid,
+    )
+
+    if run_btn:
         if zrsd_file and plan_files:
             with st.spinner("Memproses data..."):
-                st.session_state['results'] = process_files(zrsd_file, plan_files, "dummy")
+                st.session_state['results'] = process_files(
+                    zrsd_file,
+                    plan_files,
+                    pd.Timestamp(podd_start),
+                    pd.Timestamp(podd_end),
+                )
+                st.session_state['filter_label'] = (
+                    f"{podd_start.strftime('%d %b %Y')} – {podd_end.strftime('%d %b %Y')}"
+                )
         else:
             st.warning("⚠️ Upload semua file yang diperlukan")
 
-# =========================================================
+
+# ── Main area ─────────────────────────────────────────────────────────────────
 if 'results' in st.session_state:
     df = st.session_state['results']
+    filter_label = st.session_state.get('filter_label', '')
 
-    st.subheader("📊 Hasil Pengecekan")
+    st.subheader(f"📊 Hasil Pengecekan  —  PODD: {filter_label}")
 
     if df.empty:
-        st.info("ℹ️ Tidak ada data yang memenuhi filter (FCR Date kosong & PODD ≤ H+3).")
+        st.info(
+            "ℹ️ Tidak ada data yang memenuhi filter:\n"
+            "- FCR Date kosong, DAN\n"
+            f"- PODD dalam rentang {filter_label}"
+        )
     else:
-        st.dataframe(df, use_container_width=True)
+        # ── Ringkasan statistik ───────────────────────────────────────────
+        status_counts = df['Status'].value_counts() if 'Status' in df.columns else pd.Series(dtype=int)
 
-        output = io.BytesIO()
+        n_match     = int(status_counts.get('match',     0))
+        n_mismatch  = int(status_counts.get('mismatch',  0))
+        n_not_found = int(status_counts.get('not_found', 0))
+        n_invalid   = int(status_counts.get('invalid',   0))
+        n_total     = len(df)
 
-        # ── Sisipkan kolom DN dan FGR setelah kolom PODD ──────────────────────
-        podd_idx = df.columns.get_loc('PODD') if 'PODD' in df.columns else len(df.columns) - 1
-        df_export = df.copy()
-        df_export.insert(podd_idx + 1, 'DN',  "")
-        df_export.insert(podd_idx + 2, 'FGR', "")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Total Order",  n_total)
+        c2.metric("✅ Match",     n_match)
+        c3.metric("⚠️ Mismatch",  n_mismatch)
+        c4.metric("❌ Not Found", n_not_found)
+        c5.metric("⚠️ Invalid",   n_invalid)
 
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_export.to_excel(writer, index=False)
+        st.markdown("---")
 
-            from openpyxl.styles import Font, PatternFill, Alignment
+        # ── Tab view: All / Not Found / Mismatch ─────────────────────────
+        tab_all, tab_not_found, tab_mismatch, tab_match = st.tabs([
+            f"Semua ({n_total})",
+            f"❌ Not Found ({n_not_found})",
+            f"⚠️ Mismatch ({n_mismatch})",
+            f"✅ Match ({n_match})",
+        ])
 
-            worksheet = writer.sheets['Sheet1']
+        with tab_all:
+            st.dataframe(df, use_container_width=True)
 
-            known_date_columns = [
-                'Document Date', 'FPD', 'LPD', 'CRD', 'PSDD', 'FCR Date',
-                'PODD', 'PD', 'PO Date', 'Actual PGI', 'Delivery Date',
-                'Ship Date', 'Created Date', 'Modified Date', 'Invoice Date'
-            ]
+        with tab_not_found:
+            df_nf = df[df['Status'] == 'not_found'] if 'Status' in df.columns else df.iloc[0:0]
+            if df_nf.empty:
+                st.success("Tidak ada order yang Not Found 🎉")
+            else:
+                st.dataframe(df_nf, use_container_width=True)
 
-            # Kolom yang diberi warna kuning
-            yellow_columns = {'DN', 'FGR', 'Remark Loading Plan', 'Status', 'Plan Dates', 'SO Source'}
+        with tab_mismatch:
+            df_mm = df[df['Status'] == 'mismatch'] if 'Status' in df.columns else df.iloc[0:0]
+            if df_mm.empty:
+                st.success("Tidak ada Date Mismatch 🎉")
+            else:
+                st.dataframe(df_mm, use_container_width=True)
 
-            YELLOW     = PatternFill(fill_type="solid", fgColor="FFFF00")
-            GREY       = PatternFill(fill_type="solid", fgColor="D9D9D9")
-            NO_FILL    = PatternFill(fill_type=None)
-            FONT       = Font(name="Calibri", size=9)
-            FONT_HDR   = Font(name="Calibri", size=9, bold=True)
-            ALIGN_HDR  = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            ALIGN_DATA = Alignment(horizontal="center", vertical="center", wrap_text=False)
+        with tab_match:
+            df_ok = df[df['Status'] == 'match'] if 'Status' in df.columns else df.iloc[0:0]
+            if df_ok.empty:
+                st.info("Belum ada order yang Match.")
+            else:
+                st.dataframe(df_ok, use_container_width=True)
 
-            # ── Baris 1 (header): warna + wrap text ──────────────────────────
-            for cell in worksheet[1]:
-                col_name       = df_export.columns[cell.column - 1]
-                cell.font      = FONT_HDR
-                cell.alignment = ALIGN_HDR
-                cell.fill      = YELLOW if col_name in yellow_columns else GREY
+        st.markdown("---")
 
-            # ── Baris 2+ (data): font & alignment saja, tanpa warna/wrap ─────
-            for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row, max_col=worksheet.max_column):
-                for cell in row:
-                    col_name       = df_export.columns[cell.column - 1]
-                    cell.font      = FONT
-                    cell.alignment = ALIGN_DATA
-                    cell.fill      = NO_FILL
-
-                    # Format tanggal
-                    if (any(col_name.lower() == k.lower() for k in known_date_columns)
-                            and cell.value):
-                        cell.number_format = 'M/D/YYYY'
-
-            # ── Freeze panes: baris 1 dan kolom 7 (H2) ───────────────────────
-            worksheet.freeze_panes = "H2"
+        # ── Download ──────────────────────────────────────────────────────
+        excel_bytes = build_excel(df)
+        file_date   = datetime.now().strftime('%Y%m%d_%H%M')
 
         st.download_button(
-            "📥 Download Excel",
-            output.getvalue(),
-            file_name=f"Loading Plan Check - {datetime.now().strftime('%Y%m%d')}.xlsx",
-            use_container_width=True
+            label="📥 Download Excel",
+            data=excel_bytes,
+            file_name=f"Loading Plan Check - {file_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
