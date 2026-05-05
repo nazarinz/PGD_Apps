@@ -166,14 +166,13 @@ def parse_infor_block(text, filename):
     m = re.search(r'Total Item Quantity\s+([\d.]+)', text)
     data['total_qty'] = float(m.group(1)) if m else None
 
-    # ── FIX: Qty by Size — capture K suffix (e.g. "10K", "10K-") then strip K
-    # so size keys align with SAP ("10K-" → "10-")
+    # Qty by Size — keep K suffix in key ("10K", "10K-"); normalization done at compare time
     qty = {}
     for m in re.finditer(
         r'1\s+\d+\s+\S+\s+(?:\S+\s+)?([\d\-K]+)\s+([\d\-K]+)\s+\S+\s+T1\s+\d{10,13}\s+([\d.]+)',
         text
     ):
-        size_key = m.group(2).strip().replace('K', '')   # "10K-" → "10-", "2K" → "2"
+        size_key = m.group(2).strip()   # preserve: "10K", "10K-", "2", "1-"
         qty[size_key] = float(m.group(3))
 
     data['qty_by_size'] = qty
@@ -308,20 +307,37 @@ def compare_po(infor, sap_list):
     rows.append(qrow("Total Qty (Pairs)", infor.get('total_qty'), total_sap))
 
     # ── 8. Qty per Size ───────────────────────
+    # Infor sizes may carry a K suffix ("10K", "10K-"); SAP does not ("10", "10-").
+    # Normalize by stripping K for matching; display uses original Infor key (shows K).
+
+    def _norm(s):
+        return s.replace('K', '')           # "10K-" -> "10-"
+
     def _size_sort_key(x):
-        # Strip K and trailing dash for numeric sort; half-size (-) sorts after whole
-        num_str = re.sub(r'[K]', '', x.rstrip('-'))
+        num_str = _norm(x).rstrip('-')
         try:
             return (float(num_str), x.endswith('-'))
         except ValueError:
             return (999, x)
 
-    all_sizes = sorted(
-        set(list(infor['qty_by_size'].keys()) + list(merged_sap_qty.keys())),
+    # Normalized lookups
+    infor_norm = {_norm(k): v for k, v in infor['qty_by_size'].items()}
+    infor_disp = {_norm(k): k for k in infor['qty_by_size']}   # "10-" -> "10K-"
+    sap_norm   = {_norm(k): v for k, v in merged_sap_qty.items()}
+
+    all_norm_sizes = sorted(
+        set(list(infor_norm.keys()) + list(sap_norm.keys())),
         key=_size_sort_key
     )
-    for size in all_sizes:
-        rows.append(qrow(f'Qty Size {size}', infor['qty_by_size'].get(size, 0), float(merged_sap_qty.get(size, 0)), size))
+    for norm_size in all_norm_sizes:
+        # Prefer Infor's original key (with K) for display
+        disp_size = infor_disp.get(norm_size, norm_size)
+        rows.append(qrow(
+            f'Qty Size {disp_size}',
+            infor_norm.get(norm_size, 0),
+            float(sap_norm.get(norm_size, 0)),
+            disp_size
+        ))
 
     return rows
 
