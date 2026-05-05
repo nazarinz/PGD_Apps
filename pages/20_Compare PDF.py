@@ -228,7 +228,7 @@ def parse_sap_txt(txt_bytes, filename):
         # ── Qty by Size — preserve original key exactly as in file ────────
         qty = defaultdict(float)
         for m in re.finditer(
-            r'\|\s*(\d+-\d+)\s*\|\s*(\d+)\s*\|\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*\|\s*([\d.]+K?[-]?)\s*\|',
+            r'\|\s*(\d+-\d+)\s*\|\s*(\d+)\s*\|\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*\|\s*([\d.]+(?:-K|K-?|-)?)\s*\|',
             block
         ):
             size = m.group(4).strip()
