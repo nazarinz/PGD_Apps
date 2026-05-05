@@ -62,10 +62,8 @@ COUNTRY_NORM = {
     'hungary': 'Hungary', 'romania': 'Romania',
 }
 
-# Multi-word countries — checked first as substrings
 MULTI_WORD_COUNTRIES = ['united kingdom', 'united states', 'new zealand']
 
-# Single-word countries — length > 4 to avoid matching short tokens
 SINGLE_WORD_COUNTRIES = {
     k: v for k, v in COUNTRY_NORM.items()
     if ' ' not in k and len(k) > 4 and k not in ('united',)
@@ -82,40 +80,8 @@ def normalize_country(raw):
     return str(raw).strip().title()
 
 
-# ── COUNTRY DETECTION (Infor) ─────────────────
-#
-# Key insight from PDF structure (page 1):
-#
-#   [ship-to address]        ← e.g. "FORT WORTH, TX, 76177"
-#   [COUNTRY]                ← e.g. "United states"   ← THIS is what we want
-#   adidas                   ← customs consignee, always present
-#   International
-#   Trading AG
-#   Ocean or as...
-#
-# The ship-to country ALWAYS appears immediately before "adidas international
-# trading ag" in the extracted text. We just look for the last country name
-# in the text that comes before that anchor phrase.
-#
 def extract_shipto_country(text):
     t = text.lower()
-
-    # KEY INSIGHT from actual pdfplumber output:
-    # Multi-column PDF table causes character interleaving, e.g.:
-    #   "a d i d a s O cean or as" — spaces between letters from adjacent columns!
-    # So searching for "ocean or as" or "adidas international trading" is UNRELIABLE.
-    #
-    # What IS reliable: "PO Line Details" is a section header below the table,
-    # outside the multi-column area, so it always appears clean in extracted text.
-    #
-    # Actual extracted text structure (page 1):
-    #   ...FORT WORTH, TX, 76177
-    #   United states          ← ship-to country, last clean line before section header
-    #   PO Line Details        ← reliable anchor ✓
-    #
-    # Strategy: find "po line details", look 300 chars before it,
-    # pick the LAST (rightmost) country name = ship-to country.
-
     anchor_pos = t.find('po line details')
     if anchor_pos == -1:
         m = re.search(r'po line\s+details', t)
@@ -126,7 +92,6 @@ def extract_shipto_country(text):
     window_start = max(0, anchor_pos - 300)
     window = t[window_start:anchor_pos]
 
-    # Build country pattern: multi-word first (longest first to avoid partial match)
     all_candidates = sorted(
         list(MULTI_WORD_COUNTRIES) + list(SINGLE_WORD_COUNTRIES.keys()),
         key=len, reverse=True
@@ -194,17 +159,23 @@ def parse_infor_block(text, filename):
     if not m: m = re.search(r'(\d{4}-\d{2}-\d{2})\s+ID\w+\s+\d{3}', text)
     data['latest_date'] = m.group(1) if m else None
 
-    # Destination Country — zone-based rfind approach
+    # Destination Country
     data['dest_country'] = extract_shipto_country(text)
 
     # Total Qty
     m = re.search(r'Total Item Quantity\s+([\d.]+)', text)
     data['total_qty'] = float(m.group(1)) if m else None
 
-    # Qty by Sourcing/Mfg Size
+    # ── FIX: Qty by Size — capture K suffix (e.g. "10K", "10K-") then strip K
+    # so size keys align with SAP ("10K-" → "10-")
     qty = {}
-    for m in re.finditer(r'1\s+\d+\s+\S+\s+(?:\S+\s+)?([\d\-]+)\s+([\d\-]+)\s+\S+\s+T1\s+\d{10,13}\s+([\d.]+)', text):
-        qty[m.group(2).strip()] = float(m.group(3))
+    for m in re.finditer(
+        r'1\s+\d+\s+\S+\s+(?:\S+\s+)?([\d\-K]+)\s+([\d\-K]+)\s+\S+\s+T1\s+\d{10,13}\s+([\d.]+)',
+        text
+    ):
+        size_key = m.group(2).strip().replace('K', '')   # "10K-" → "10-", "2K" → "2"
+        qty[size_key] = float(m.group(3))
+
     data['qty_by_size'] = qty
     return data
 
@@ -218,35 +189,27 @@ def parse_infor_pdf(pdf_bytes, filename):
 def parse_sap_page(text, filename):
     data = {'filename': filename}
 
-    # PO Number
     m = re.search(r'Cust\.PO\s*:\s*(\d+)', text)
     data['po_number'] = m.group(1) if m else None
 
-    # Article / Cust.Mat
     m = re.search(r'Cust\.Mat:\s*(\S+)', text)
     data['cust_mat'] = m.group(1) if m else None
 
-    # Model name
     m = re.search(r'Model\s*:\s*(.+?)(?:\s{2,}|Arr\.Po)', text)
     data['model'] = m.group(1).strip() if m else None
 
-    # Ship-to code (number in parentheses)
     m = re.search(r'Ship-to:\s*.+?\((\d+)\)', text)
     data['ship_to_code'] = m.group(1) if m else None
 
-    # Destination country
     m = re.search(r'Coun:\s*(\S+)', text)
     data['country'] = m.group(1) if m else None
 
-    # Ship Type
     m = re.search(r'ShipType:\s*\d+\s+(\w+)', text)
     data['ship_type'] = m.group(1) if m else None
 
-    # PODD
     m = re.search(r'PODD\s*:\s*(\d{4}/\d{2}/\d{2})', text)
     data['podd'] = m.group(1).replace('/', '-') if m else None
 
-    # Qty by size (SSP + MSP with continuation lines)
     lines = text.split('\n')
     merged = []
     for line in lines:
@@ -338,16 +301,24 @@ def compare_po(infor, sap_list):
     ship_ok    = infor_ship in sap_ship or sap_ship in infor_ship
     rows.append(hrow("Ship Mode", infor.get('ship_mode'), sap0.get('ship_type'), custom_ok=ship_ok))
 
-    # ── 6. Latest Date / PODD ─────────────────
-    rows.append(hrow("Latest Date / PODD", infor.get('latest_date'), sap0.get('podd')))
+    # ── 6. Latest Date / PODD — SKIPPED (not compared) ────────────────────────
+    # rows.append(hrow("Latest Date / PODD", infor.get('latest_date'), sap0.get('podd')))
 
     # ── 7. Total Qty ───────────────────────────
     rows.append(qrow("Total Qty (Pairs)", infor.get('total_qty'), total_sap))
 
     # ── 8. Qty per Size ───────────────────────
+    def _size_sort_key(x):
+        # Strip K and trailing dash for numeric sort; half-size (-) sorts after whole
+        num_str = re.sub(r'[K]', '', x.rstrip('-'))
+        try:
+            return (float(num_str), x.endswith('-'))
+        except ValueError:
+            return (999, x)
+
     all_sizes = sorted(
         set(list(infor['qty_by_size'].keys()) + list(merged_sap_qty.keys())),
-        key=lambda x: float(x.replace('-', '.5')) if re.match(r'^\d+\-?$', x) else 99
+        key=_size_sort_key
     )
     for size in all_sizes:
         rows.append(qrow(f'Qty Size {size}', infor['qty_by_size'].get(size, 0), float(merged_sap_qty.get(size, 0)), size))
@@ -370,7 +341,6 @@ def la(): return Alignment(horizontal='left', vertical='center', wrap_text=True)
 def build_excel(all_rows, summary):
     wb = Workbook()
 
-    # ── Summary sheet ──
     ws = wb.active; ws.title = "Summary"
     ws.merge_cells("A1:G1")
     ws["A1"] = "PO COMPARE SUMMARY — adidas Infor vs SAP Carton"
@@ -389,7 +359,6 @@ def build_excel(all_rows, summary):
     for i,w in enumerate([18,38,45,13,10,13,20],1): ws.column_dimensions[get_column_letter(i)].width=w
     ws.freeze_panes="A3"
 
-    # ── Detail sheet ──
     wd=wb.create_sheet("Detail")
     wd.merge_cells("A1:H1")
     wd["A1"]="PO COMPARE DETAIL — Field by Field"
@@ -491,7 +460,6 @@ if run_btn and infor_files and sap_files:
             'total': len(rows), 'match': mc, 'mismatch': ec,
         }
 
-    # ── Stats ──
     total_po = len(summary)
     ok_po    = sum(1 for v in summary.values() if v['mismatch'] == 0)
     err_po   = total_po - ok_po
@@ -506,7 +474,6 @@ if run_btn and infor_files and sap_files:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Warnings ──
     if no_sap or no_infor:
         with st.expander(f"⚠️  {not_matched} PO tidak punya pasangan"):
             if no_sap:
@@ -514,7 +481,6 @@ if run_btn and infor_files and sap_files:
             if no_infor:
                 st.markdown(f'<div class="warn-box">Infor PO tidak ditemukan untuk {len(no_infor)} PO:<br>{"  |  ".join(no_infor)}</div>', unsafe_allow_html=True)
 
-    # ── Results ──
     st.markdown("### Results")
     for po, info in summary.items():
         ok = info['mismatch'] == 0
@@ -556,7 +522,6 @@ if run_btn and infor_files and sap_files:
                 st.markdown('<div class="section-label" style="margin-top:12px">📦 Quantity</div>', unsafe_allow_html=True)
                 st.markdown(render_table(qty_rows), unsafe_allow_html=True)
 
-    # ── Log ──
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📋 Processing Log"):
         log_html = "<br>".join(
@@ -565,7 +530,6 @@ if run_btn and infor_files and sap_files:
         )
         st.markdown(f'<div class="log-box">{log_html}</div>', unsafe_allow_html=True)
 
-    # ── Download ──
     st.markdown("<br>", unsafe_allow_html=True)
     if all_rows:
         excel_bytes = build_excel(all_rows, summary)
