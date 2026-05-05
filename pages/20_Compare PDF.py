@@ -166,13 +166,13 @@ def parse_infor_block(text, filename):
     m = re.search(r'Total Item Quantity\s+([\d.]+)', text)
     data['total_qty'] = float(m.group(1)) if m else None
 
-    # Qty by Size — keep K suffix in key ("10K", "10K-"); normalization done at compare time
+    # Qty by Size — preserve original key exactly as in file (e.g. "10K", "10K-", "2", "1-", "5.5K")
     qty = {}
     for m in re.finditer(
-        r'1\s+\d+\s+\S+\s+(?:\S+\s+)?([\d\-K]+)\s+([\d\-K]+)\s+\S+\s+T1\s+\d{10,13}\s+([\d.]+)',
+        r'1\s+\d+\s+\S+\s+(?:\S+\s+)?([\d\.\-K]+)\s+([\d\.\-K]+)\s+\S+\s+T1\s+\d{10,13}\s+([\d.]+)',
         text
     ):
-        size_key = m.group(2).strip()   # preserve: "10K", "10K-", "2", "1-"
+        size_key = m.group(2).strip()
         qty[size_key] = float(m.group(3))
 
     data['qty_by_size'] = qty
@@ -193,10 +193,10 @@ def parse_sap_txt(txt_bytes, filename):
     Size rows are pipe-delimited:
       |  1-4  |  4  |  10  |  40  |  |  3-  | ... |
        range   ctns  per   total      size
+    Size values preserved as-is from file: "10K", "5.5K", "3-", "4", etc.
     """
     raw = txt_bytes.decode('utf-8', errors='replace')
 
-    # Split into individual carton blocks on the "Carton Form(" header
     blocks = re.split(r'(?=.*Carton Form\()', raw)
     results = []
     for block in blocks:
@@ -204,7 +204,6 @@ def parse_sap_txt(txt_bytes, filename):
             continue
         data = {'filename': filename}
 
-        # ── Header fields (same regex as PDF) ────────────────────────────
         m = re.search(r'Cust\.PO\s*:\s*(\d+)', block)
         data['po_number'] = m.group(1) if m else None
 
@@ -226,14 +225,13 @@ def parse_sap_txt(txt_bytes, filename):
         m = re.search(r'PODD\s*:\s*(\d{4}/\d{2}/\d{2})', block)
         data['podd'] = m.group(1).replace('/', '-') if m else None
 
-        # ── Qty by Size (pipe-delimited rows) ────────────────────────────
-        # Row format: | CTN_RANGE | CTNS | PER | TOTAL | | SIZE | ... |
+        # ── Qty by Size — preserve original key exactly as in file ────────
         qty = defaultdict(float)
         for m in re.finditer(
-            r'\|\s*(\d+-\d+)\s*\|\s*(\d+)\s*\|\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*\|\s*([\d]+[-]?)\s*\|',
+            r'\|\s*(\d+-\d+)\s*\|\s*(\d+)\s*\|\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*\|\s*([\d.]+K?[-]?)\s*\|',
             block
         ):
-            size = m.group(4).strip()   # e.g. "3-", "4", "10-"
+            size = m.group(4).strip()
             total_prs = int(m.group(3))
             qty[size] += total_prs
 
@@ -303,43 +301,38 @@ def compare_po(infor, sap_list):
     ship_ok    = infor_ship in sap_ship or sap_ship in infor_ship
     rows.append(hrow("Ship Mode", infor.get('ship_mode'), sap0.get('ship_type'), custom_ok=ship_ok))
 
-    # ── 6. Latest Date / PODD — SKIPPED (not compared) ────────────────────────
+    # ── 6. Latest Date / PODD — SKIPPED ───────
     # rows.append(hrow("Latest Date / PODD", infor.get('latest_date'), sap0.get('podd')))
 
     # ── 7. Total Qty ───────────────────────────
     rows.append(qrow("Total Qty (Pairs)", infor.get('total_qty'), total_sap))
 
-    # ── 8. Qty per Size ───────────────────────
-    # Infor sizes may carry a K suffix ("10K", "10K-"); SAP does not ("10", "10-").
-    # Normalize by stripping K for matching; display uses original Infor key (shows K).
+    # ── 8. Qty per Size ────────────────────────
+    # Size keys matched directly as-is from each file.
+    # "10K" matches "10K", "10" matches "10" — no transformation.
+    # Sort: kids sizes (K) first, then adult, both ascending by numeric value.
 
-    def _norm(s):
-        return s.replace('K', '')           # "10K-" -> "10-"
-
-    def _size_sort_key(x):
-        num_str = _norm(x).rstrip('-')
+    def _size_sort_key(s):
+        num_str = s.replace('K', '').rstrip('-')
         try:
-            return (float(num_str), x.endswith('-'))
+            return ('K' not in s, float(num_str), s.endswith('-'))
         except ValueError:
-            return (999, x)
+            return (True, 999.0, False)
 
-    # Normalized lookups
-    infor_norm = {_norm(k): v for k, v in infor['qty_by_size'].items()}
-    infor_disp = {_norm(k): k for k in infor['qty_by_size']}   # "10-" -> "10K-"
-    sap_norm   = {_norm(k): v for k, v in merged_sap_qty.items()}
+    infor_qty = infor['qty_by_size']
+    sap_qty   = dict(merged_sap_qty)
 
-    all_norm_sizes = sorted(
-        set(list(infor_norm.keys()) + list(sap_norm.keys())),
+    all_sizes = sorted(
+        set(list(infor_qty.keys()) + list(sap_qty.keys())),
         key=_size_sort_key
     )
-    for norm_size in all_norm_sizes:
-        # Prefer Infor's original key (with K) for display
-        disp_size = infor_disp.get(norm_size, norm_size)
+
+    for size in all_sizes:
         rows.append(qrow(
-            f'Qty Size {disp_size}',
-            infor_norm.get(norm_size, 0),
-            float(sap_norm.get(norm_size, 0)),
-            disp_size
+            f'Qty Size {size}',
+            infor_qty.get(size, 0),
+            float(sap_qty.get(size, 0)),
+            size
         ))
 
     return rows
