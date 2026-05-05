@@ -185,59 +185,62 @@ def parse_infor_pdf(pdf_bytes, filename):
         if d['po_number']: results.append(d)
     return results
 
-def parse_sap_page(text, filename):
-    data = {'filename': filename}
 
-    m = re.search(r'Cust\.PO\s*:\s*(\d+)', text)
-    data['po_number'] = m.group(1) if m else None
+def parse_sap_txt(txt_bytes, filename):
+    """
+    Parse SAP Carton .txt export.
+    One .txt may contain multiple Carton Forms — split on the header line.
+    Size rows are pipe-delimited:
+      |  1-4  |  4  |  10  |  40  |  |  3-  | ... |
+       range   ctns  per   total      size
+    """
+    raw = txt_bytes.decode('utf-8', errors='replace')
 
-    m = re.search(r'Cust\.Mat:\s*(\S+)', text)
-    data['cust_mat'] = m.group(1) if m else None
-
-    m = re.search(r'Model\s*:\s*(.+?)(?:\s{2,}|Arr\.Po)', text)
-    data['model'] = m.group(1).strip() if m else None
-
-    m = re.search(r'Ship-to:\s*.+?\((\d+)\)', text)
-    data['ship_to_code'] = m.group(1) if m else None
-
-    m = re.search(r'Coun:\s*(\S+)', text)
-    data['country'] = m.group(1) if m else None
-
-    m = re.search(r'ShipType:\s*\d+\s+(\w+)', text)
-    data['ship_type'] = m.group(1) if m else None
-
-    m = re.search(r'PODD\s*:\s*(\d{4}/\d{2}/\d{2})', text)
-    data['podd'] = m.group(1).replace('/', '-') if m else None
-
-    lines = text.split('\n')
-    merged = []
-    for line in lines:
-        s = line.strip()
-        if merged and re.match(r'^[\d\-]+\(\d+\)', s) and not re.match(r'^\d+-\d+\s', s):
-            merged[-1] += ',' + s
-        else:
-            merged.append(s)
-    qty = defaultdict(float)
-    for line in merged:
-        m = re.match(r'(\d+-\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d\-\(\),]+)', line)
-        if not m: continue
-        ctns, total_prs, sizes_raw = int(m.group(2)), int(m.group(4)), line
-        if '(' in m.group(5):
-            for sm in re.finditer(r'([\d\-]+)\((\d+)\)', sizes_raw):
-                qty[sm.group(1)] += int(sm.group(2)) * ctns
-        else:
-            qty[m.group(5).strip()] += total_prs
-    data['qty_by_size'] = dict(qty)
-    return data
-
-def parse_sap_pdf(pdf_bytes, filename):
+    # Split into individual carton blocks on the "Carton Form(" header
+    blocks = re.split(r'(?=.*Carton Form\()', raw)
     results = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ''
-            if 'Carton Form(' in text and 'Cust.PO' in text:
-                d = parse_sap_page(text, filename)
-                if d['po_number']: results.append(d)
+    for block in blocks:
+        if 'Carton Form(' not in block or 'Cust.PO' not in block:
+            continue
+        data = {'filename': filename}
+
+        # ── Header fields (same regex as PDF) ────────────────────────────
+        m = re.search(r'Cust\.PO\s*:\s*(\d+)', block)
+        data['po_number'] = m.group(1) if m else None
+
+        m = re.search(r'Cust\.Mat:\s*(\S+)', block)
+        data['cust_mat'] = m.group(1) if m else None
+
+        m = re.search(r'Model\s*:\s*(.+?)(?:\s{2,}|Arr\.Po)', block)
+        data['model'] = m.group(1).strip() if m else None
+
+        m = re.search(r'Ship-to:\s*.+?\((\d+)\)', block)
+        data['ship_to_code'] = m.group(1) if m else None
+
+        m = re.search(r'Coun:\s*(\S+)', block)
+        data['country'] = m.group(1) if m else None
+
+        m = re.search(r'ShipType:\s*\d+\s+(\w+)', block)
+        data['ship_type'] = m.group(1) if m else None
+
+        m = re.search(r'PODD\s*:\s*(\d{4}/\d{2}/\d{2})', block)
+        data['podd'] = m.group(1).replace('/', '-') if m else None
+
+        # ── Qty by Size (pipe-delimited rows) ────────────────────────────
+        # Row format: | CTN_RANGE | CTNS | PER | TOTAL | | SIZE | ... |
+        qty = defaultdict(float)
+        for m in re.finditer(
+            r'\|\s*(\d+-\d+)\s*\|\s*(\d+)\s*\|\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*\|\s*([\d]+[-]?)\s*\|',
+            block
+        ):
+            size = m.group(4).strip()   # e.g. "3-", "4", "10-"
+            total_prs = int(m.group(3))
+            qty[size] += total_prs
+
+        data['qty_by_size'] = dict(qty)
+
+        if data['po_number']:
+            results.append(data)
     return results
 
 def compare_po(infor, sap_list):
@@ -413,7 +416,7 @@ def build_excel(all_rows, summary):
 st.markdown("""
 <div class="main-header">
     <h1>📦 PO Compare Tool</h1>
-    <p>adidas Infor PO vs SAP Carton Form — Upload PDF, compare otomatis by PO number</p>
+    <p>adidas Infor PO vs SAP Carton Form — Infor PDF + SAP TXT, compare otomatis by PO number</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -426,8 +429,8 @@ with col1:
             st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:0.75rem;color:#4a90d9;padding:2px 0">✓ {f.name}</div>', unsafe_allow_html=True)
 
 with col2:
-    st.markdown('<span class="upload-label">📋 SAP Carton Files</span>', unsafe_allow_html=True)
-    sap_files = st.file_uploader("Upload SAP PDF", type="pdf", accept_multiple_files=True, key="sap", label_visibility="collapsed")
+    st.markdown('<span class="upload-label">📋 SAP Carton Files (.txt)</span>', unsafe_allow_html=True)
+    sap_files = st.file_uploader("Upload SAP TXT", type="txt", accept_multiple_files=True, key="sap", label_visibility="collapsed")
     if sap_files:
         for f in sap_files:
             st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:0.75rem;color:#4caf7d;padding:2px 0">✓ {f.name}</div>', unsafe_allow_html=True)
@@ -440,7 +443,7 @@ if run_btn and infor_files and sap_files:
     infor_by_po = {}
     sap_by_po = defaultdict(list)
 
-    with st.spinner("Parsing PDFs..."):
+    with st.spinner("Parsing files..."):
         for f in infor_files:
             pdf_bytes = f.read()
             pos = parse_infor_pdf(pdf_bytes, f.name)
@@ -450,8 +453,8 @@ if run_btn and infor_files and sap_files:
                     infor_by_po[d['po_number']] = d
 
         for f in sap_files:
-            pdf_bytes = f.read()
-            cartons = parse_sap_pdf(pdf_bytes, f.name)
+            txt_bytes = f.read()
+            cartons = parse_sap_txt(txt_bytes, f.name)
             log_lines.append(f"[SAP] {f.name} → {len(cartons)} Carton(s): {[c['po_number'] for c in cartons]}")
             for d in cartons:
                 if d['po_number']: sap_by_po[d['po_number']].append(d)
