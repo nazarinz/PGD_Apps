@@ -3,7 +3,17 @@ from utils.auth import require_login
 require_login()
 
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v12)
+# 8_Tooling Sizelist.py — PGD Apps (v13)
+# CHANGELOG v13:
+#   - FIX: Sheet "Sizes" sekarang di-group berdasarkan
+#     ["Document Date", "Remark"], bukan "Document Date" saja.
+#     Sebelumnya baris "New" dan "cfm" dengan Document Date yang
+#     sama bisa tercampur dalam 1 subtotal, sehingga hasil New/cfm
+#     dan pewarnaan di sheet "Sizes" bisa berbeda dari
+#     "CRD_Mth_Sizes" / "CRDPD_Mth_Sizes" (yang key-nya sudah
+#     otomatis memisah Remark lewat suffix "_new"/"_cfm").
+#     Sekarang ketiga sheet subtotal memakai aturan yang sama:
+#     grup tidak pernah mencampur baris New dan cfm.
 # ==========================================
 import re
 import pandas as pd
@@ -20,7 +30,7 @@ DATE_COLS = ["Document Date", "LPD", "CRD", "PD"]
 
 # ==========================================
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v12)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v13)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -205,14 +215,30 @@ cancel_set = set(cancel_sos)  # user input sudah string bersih
 # Normalisasi kolom SO di dataframe agar cocok saat compare
 df["_SO_str"] = df["Sales Order"].apply(normalize_so)
 
-def make_subtotal(df: pd.DataFrame, group_col: str) -> tuple[pd.DataFrame, list[str]]:
+def make_subtotal(df: pd.DataFrame, group_cols) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Bangun subtotal per grup.
+
+    group_cols bisa berupa 1 kolom (str) atau beberapa kolom (list).
+    PENTING: agar aturan New/cfm & pewarnaan konsisten antar sheet,
+    "Remark" HARUS selalu ikut jadi bagian dari group key (baik secara
+    eksplisit lewat group_cols, maupun implisit lewat key gabungan
+    seperti CRD_Mth/CRDPD_Mth yang sudah menempelkan "_new"/"_cfm").
+    Dengan begitu satu grup tidak akan pernah mencampur baris New
+    dengan baris cfm.
+    """
+    if isinstance(group_cols, str):
+        group_cols = [group_cols]
+
     pieces, color_tags = [], []
-    for key, grp in df.groupby(group_col, dropna=False):
+    for key, grp in df.groupby(group_cols, dropna=False):
+        key_tuple = key if isinstance(key, tuple) else (key,)
+
         has_new    = (grp["Remark"].str.lower() == "new").any()
         has_cancel = grp["_SO_str"].isin(cancel_set).any()
         color      = "red" if has_new else ("purple" if has_cancel else "black")
 
-        row = {group_col: key}
+        row = dict(zip(group_cols, key_tuple))
         row["Remark"] = "New" if has_new else "cfm"
         for col in order_cols:
             row[col] = grp[col].sum(skipna=True)
@@ -220,12 +246,21 @@ def make_subtotal(df: pd.DataFrame, group_col: str) -> tuple[pd.DataFrame, list[
         pieces.append(row)
         color_tags.append(color)
 
-    out = pd.DataFrame(pieces).drop(columns=["Remark"], errors="ignore")
+    out = pd.DataFrame(pieces)
     return out, color_tags
 
-sizes_df,  color_sizes  = make_subtotal(df, "Document Date")
+# ✅ FIX v13: "Sizes" sekarang group by Document Date + Remark
+# (dulu hanya "Document Date", sehingga baris New & cfm di tanggal
+# yang sama bisa tercampur dan hasilnya beda dari CRD_Mth/CRDPD_Mth).
+sizes_df,  color_sizes  = make_subtotal(df, ["Document Date", "Remark"])
 crd_df,    color_crd    = make_subtotal(df, "CRD_Mth")
 crdpd_df,  color_crdpd  = make_subtotal(df, "CRDPD_Mth")
+
+# Sheet "Sizes" tidak perlu menampilkan kolom "Remark" terpisah kalau
+# tidak diinginkan di output — di sini kita biarkan tampil supaya
+# transparan bagaimana subtotal terbentuk. Hapus baris di bawah ini
+# kalau ingin kolom Remark disembunyikan dari sheet Sizes:
+# sizes_df = sizes_df.drop(columns=["Remark"])
 
 # ================= Warna Per Row Data Utama =================
 def row_colors(df: pd.DataFrame, cancel_set: set[str]) -> list[str]:
@@ -314,8 +349,8 @@ excel_bytes = build_excel()
 st.download_button(
     "⬇️ Download Excel",
     data=excel_bytes,
-    file_name="Tooling_Sizelist_v12.xlsx",
+    file_name="Tooling_Sizelist_v13.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-st.success("✅ Processing selesai! Cancel SO per baris / per koma keduanya sudah support.")
+st.success("✅ Processing selesai! Rules New/cfm & pewarnaan sudah konsisten di semua sheet subtotal.")
