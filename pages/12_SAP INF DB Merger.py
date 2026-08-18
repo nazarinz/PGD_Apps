@@ -551,10 +551,22 @@ if run_button:
                 col_idx = df_final.columns.get_loc(c)
                 ws.set_column(col_idx, col_idx, 14, date_fmt)
 
-            # autosize
+            # autosize (robust against NA / nullable-extension-dtype columns,
+            # e.g. Int64 columns like "GAP MDP (NZ)" / "GAP SDP (NZ)" that
+            # contain pd.NA — .astype(str) on those can leave pd.NA in place
+            # instead of turning it into a string, which crashes len(v))
+            def _safe_len(v):
+                if pd.isna(v):
+                    return 0
+                return len(str(v))
+
             for i, col in enumerate(df_final.columns):
-                sample_vals = df_final[col].astype(str).head(200).tolist()
-                maxlen = max([len(str(col))] + [len(v) for v in sample_vals]) + 2
+                try:
+                    col_data = df_final.iloc[:, i].head(200)
+                    maxlen = max([len(str(col))] + [_safe_len(v) for v in col_data])
+                    maxlen += 2
+                except Exception:
+                    maxlen = len(str(col)) + 2
                 ws.set_column(i, i, min(maxlen, 45))
 
         towrite.seek(0)
