@@ -174,6 +174,30 @@ def compare_date(df, left, right):
 def _norm_str_col(s):
     return s.astype("string").str.strip().str.upper()
 
+def _normalize_colname(name: str) -> str:
+    """Normalize a column name for loose matching: collapse whitespace,
+    strip, and uppercase. Used so 'Line Aggregator', 'line  aggregator',
+    'LINE AGGREGATOR' etc. are all treated as the same column."""
+    return re.sub(r"\s+", " ", str(name)).strip().upper()
+
+def _build_colname_lookup(df: pd.DataFrame) -> dict:
+    """Map normalized column name -> actual column name in df."""
+    lookup = {}
+    for c in df.columns:
+        key = _normalize_colname(c)
+        # first match wins; avoids silently overwriting if duplicates exist
+        if key not in lookup:
+            lookup[key] = c
+    return lookup
+
+def _get_loose(row: pd.Series, lookup: dict, wanted_name: str, default=pd.NA):
+    """Get a value from a row using a case/whitespace-insensitive column name match."""
+    actual = lookup.get(_normalize_colname(wanted_name))
+    if actual is None:
+        return default
+    val = row.get(actual, default)
+    return val if pd.notna(val) else default
+
 def build_pairs_for_po(df_sap_po: pd.DataFrame, df_dash_po: pd.DataFrame):
     sap_idx = list(df_sap_po.index)
     dash_idx = list(df_dash_po.index)
@@ -275,6 +299,20 @@ def process(pbi_file, sap_file):
     if join_left_key != PK:
         df_sapinf_join[PK] = df_sapinf_join[join_left_key]
 
+    # loose (case/whitespace-insensitive) lookup for SAP/Infor column names,
+    # so header quirks (e.g. "line aggregator" vs "Line Aggregator") don't
+    # silently produce empty columns
+    sap_colname_lookup = _build_colname_lookup(df_sapinf_join)
+
+    # extra SAP-sourced columns to carry straight through into the output,
+    # matched loosely by name
+    sap_extra_passthrough_cols = [
+        "Article Lead time",
+        "Ship-to-Sort1",
+        "Ship-to Country",
+        "Ship to Name",
+    ]
+
     # prepare dashboard columns (no aggregation)
     dash_map_src_to_new = {
         "Order ALL":              "Dashboard Quantity",
@@ -338,12 +376,16 @@ def process(pbi_file, sap_file):
             ]:
                 out[col] = row_dash.get(col, pd.NA)
 
-            # Ambil Customer PO item & Line Aggregator dari SAP (raw)
-            for sap_col in ["Customer PO item", "Line Aggregator"]:
+            # Ambil Customer PO item & Line Aggregator dari SAP (raw), pakai loose match
+            # supaya beda kapitalisasi/spasi di header SAP tidak bikin kolom kosong
+            for sap_col in ["Customer PO item", "Line Aggregator"] + sap_extra_passthrough_cols:
                 if i is not None:
-                    out[sap_col] = row_sap.get(sap_col, pd.NA)
+                    out[sap_col] = _get_loose(row_sap, sap_colname_lookup, sap_col)
                 else:
-                    out[sap_col] = (sap_ref_row.get(sap_col, pd.NA) if sap_ref_row is not None else pd.NA)
+                    out[sap_col] = (
+                        _get_loose(sap_ref_row, sap_colname_lookup, sap_col)
+                        if sap_ref_row is not None else pd.NA
+                    )
 
             if sap_single and (j is not None) and (j != best_dash_idx_for_single):
                 out["Quantity"] = np.nan
@@ -461,6 +503,7 @@ def process(pbi_file, sap_file):
         "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
         "PO No.(Full)","Customer PO item","Line Aggregator",
         "Elevated Check","Responsiveness","PO Status","Order Status Infor","PO No.(Short)","Merchandise Category 2",
+        "Ship to Name","Ship-to Country","Ship-to-Sort1","Article Lead time",
         "Quantity","Infor Quantity","Dashboard Quantity","Result_Quantity","Dashboard vs SAP Result_Quantity",
         "Model Name",
         "Article No","Infor Article No","Result_Article No",
@@ -516,6 +559,13 @@ if run_button:
                     st.write(f"- {c}: dtype={df_final[c].dtype}; sample:", df_final[c].dropna().astype(str).head(5).tolist())
                 else:
                     st.warning(f"Kolom '{c}' tidak ada di hasil!")
+
+            st.write("Cek matching kolom SAP (loose match):")
+            check_cols = ["Customer PO item", "Line Aggregator",
+                          "Article Lead time", "Ship-to-Sort1", "Ship-to Country", "Ship to Name"]
+            for c in check_cols:
+                filled = df_final[c].notna().sum() if c in df_final.columns else 0
+                st.write(f"- {c}: {filled} dari {df_final.shape[0]} baris terisi")
 
             dup_counts = None
             try:
