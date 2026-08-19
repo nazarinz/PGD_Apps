@@ -378,6 +378,14 @@ def process(pbi_file, sap_file):
                 out["Quantity"] = np.nan
                 out["Infor Quantity"] = np.nan
                 out[PK] = po  # preserve PO number even when there's no SAP row at all
+                if sap_ref_row is None:
+                    # this PO has NO SAP data whatsoever (dashboard-only PO) —
+                    # the display column "PO No.(Full)" is a SAP-native field,
+                    # so without this it would show up blank. Fill it with the
+                    # join-key value so the PO is still identifiable, and mark
+                    # it so it's clear this row has no SAP match.
+                    out["PO No.(Full)"] = po
+                    out["Order Status Infor"] = "NO SAP MATCH (dashboard only)"
 
             if j is not None:
                 row_dash = df_dash_po.loc[j]
