@@ -509,9 +509,19 @@ def process(pbi_file, sap_file):
 
     if "CRD" in df_out.columns:
         crd_dt = pd.to_datetime(df_out["CRD"], errors="coerce")
+        # fallback to Dashboard CRD when SAP-sourced CRD is missing — this
+        # happens for PO rows that only exist in the dashboard (no SAP match),
+        # which otherwise fell into a blank CRD Monthly bucket
+        n_crd_fallback = 0
+        if "Dashboard CRD" in df_out.columns:
+            dash_crd_dt = pd.to_datetime(df_out["Dashboard CRD"], errors="coerce")
+            used_fallback = crd_dt.isna() & dash_crd_dt.notna()
+            n_crd_fallback = int(used_fallback.sum())
+            crd_dt = crd_dt.where(crd_dt.notna(), dash_crd_dt)
         crd_mon = crd_dt.dt.strftime("%Y%m").where(crd_dt.notna(), pd.NA)
         df_out["CRD Monthly"] = crd_mon
     else:
+        n_crd_fallback = 0
         df_out["CRD Monthly"] = pd.NA
 
     # final order (trimmed to required columns; omitted ones you asked to remove)
@@ -552,6 +562,7 @@ def process(pbi_file, sap_file):
     # attach metadata for diagnostics (not part of final_order / not exported to excel)
     df_final.attrs["dash_only_po_count"] = len(dash_only_pos)
     df_final.attrs["dash_only_pos_sample"] = dash_only_pos[:20]
+    df_final.attrs["crd_fallback_count"] = n_crd_fallback
     return df_final
 
 # -------------------------
@@ -591,6 +602,9 @@ if run_button:
             sample_pos = df_final.attrs.get("dash_only_pos_sample", [])
             if sample_pos:
                 st.write("Contoh PO tersebut:", sample_pos)
+
+            n_crd_fallback = df_final.attrs.get("crd_fallback_count", 0)
+            st.write(f"Baris yang 'CRD Monthly'-nya dihitung dari Dashboard CRD (fallback, karena SAP CRD kosong): **{n_crd_fallback}** baris.")
 
             dup_counts = None
             try:
