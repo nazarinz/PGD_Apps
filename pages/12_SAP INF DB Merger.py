@@ -339,8 +339,23 @@ def process(pbi_file, sap_file):
             df_dash_keep[c] = pd.NA
 
     # pairing per PO
+    # IMPORTANT: iterate over the UNION of PO numbers from SAP and Dashboard,
+    # not just the POs present in the SAP/Infor file. Previously this looped
+    # only over df_sapinf_join.groupby(PK), which silently dropped any PO that
+    # exists in the dashboard but not in the SAP/Infor export (e.g. POs
+    # outside the SAP export's date/status filter) — causing merged totals
+    # to come out lower than the raw dashboard totals for those POs.
+    sap_groups = {po: g for po, g in df_sapinf_join.groupby(PK, dropna=False)}
+    empty_sap_template = df_sapinf_join.iloc[0:0]
+    dash_only_pos = [
+        po for po in df_dash_keep[PK].dropna().unique().tolist()
+        if po not in sap_groups
+    ]
+    all_po_keys = list(sap_groups.keys()) + dash_only_pos
+
     out_rows = []
-    for po, df_sap_po in df_sapinf_join.groupby(PK, dropna=False):
+    for po in all_po_keys:
+        df_sap_po = sap_groups.get(po, empty_sap_template)
         df_dash_po = df_dash_keep[df_dash_keep[PK] == po]
         pairs = build_pairs_for_po(df_sap_po, df_dash_po)
         sap_ref_row = df_sap_po.iloc[0] if len(df_sap_po) > 0 else None
@@ -362,6 +377,7 @@ def process(pbi_file, sap_file):
                 out = (sap_ref_row.copy().to_dict() if sap_ref_row is not None else {})
                 out["Quantity"] = np.nan
                 out["Infor Quantity"] = np.nan
+                out[PK] = po  # preserve PO number even when there's no SAP row at all
 
             if j is not None:
                 row_dash = df_dash_po.loc[j]
@@ -533,6 +549,9 @@ def process(pbi_file, sap_file):
             df_out[col] = pd.NA
 
     df_final = df_out.reindex(columns=final_order)
+    # attach metadata for diagnostics (not part of final_order / not exported to excel)
+    df_final.attrs["dash_only_po_count"] = len(dash_only_pos)
+    df_final.attrs["dash_only_pos_sample"] = dash_only_pos[:20]
     return df_final
 
 # -------------------------
@@ -566,6 +585,12 @@ if run_button:
             for c in check_cols:
                 filled = df_final[c].notna().sum() if c in df_final.columns else 0
                 st.write(f"- {c}: {filled} dari {df_final.shape[0]} baris terisi")
+
+            n_dash_only = df_final.attrs.get("dash_only_po_count", 0)
+            st.write(f"PO yang hanya ada di Dashboard (tidak ada di file SAP/Infor): **{n_dash_only}** PO — sekarang tetap disertakan di output.")
+            sample_pos = df_final.attrs.get("dash_only_pos_sample", [])
+            if sample_pos:
+                st.write("Contoh PO tersebut:", sample_pos)
 
             dup_counts = None
             try:
