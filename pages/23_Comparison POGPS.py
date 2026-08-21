@@ -131,7 +131,7 @@ def _status_update(ctx, label=None, state=None):
 
 @st.cache_data(show_spinner=False)
 def read_excel_file(file):
-    return pd.read_excel(file, engine="openpyxl")
+    return pd.read_excel(file, engine="pyxl")
 
 @st.cache_data(show_spinner=False)
 def read_csv_file(file):
@@ -322,25 +322,6 @@ def process_infor_po_level(df_all):
     }, inplace=True)
 
     return convert_date_columns(df_po)
-
-# ================== Fill Missing Dates ==================
-def fill_missing_dates(df):
-    df['Order Status Infor'] = (
-        df.get('Order Status Infor', pd.Series(dtype=str))
-        .astype(str).str.strip().str.upper()
-    )
-    for col in ['LPD', 'FPD', 'CRD', 'PD', 'PSDD', 'PODD']:
-        if col not in df.columns:
-            df[col] = pd.NaT
-        elif not pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = pd.to_datetime(df[col], errors='coerce')
-    mask_open = df['Order Status Infor'].eq('OPEN')
-    min_dates = df[['CRD', 'PD']].min(axis=1)
-    df.loc[mask_open & df['LPD'].isna(),  'LPD']  = min_dates
-    df.loc[mask_open & df['FPD'].isna(),  'FPD']  = min_dates
-    df.loc[mask_open & df['PSDD'].isna(), 'PSDD'] = df['CRD']
-    df.loc[mask_open & df['PODD'].isna(), 'PODD'] = df['CRD']
-    return df
 
 # ================== Clean & Compare ==================
 _NAN_STRINGS_UPPER: frozenset = frozenset(s.upper() for s in _NAN_STRINGS)
