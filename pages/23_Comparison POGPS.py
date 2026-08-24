@@ -131,7 +131,7 @@ def _status_update(ctx, label=None, state=None):
 
 @st.cache_data(show_spinner=False)
 def read_excel_file(file):
-    return pd.read_excel(file, engine="pyxl")
+    return pd.read_excel(file, engine="openpyxl")
 
 @st.cache_data(show_spinner=False)
 def read_csv_file(file):
