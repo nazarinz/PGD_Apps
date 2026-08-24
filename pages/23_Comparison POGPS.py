@@ -494,7 +494,7 @@ def build_report(df_sap, df_infor_raw):
     if df_infor.empty:
         return pd.DataFrame()
     df = df_sap2.merge(df_infor, how="left", left_on="PO No.(Full)", right_on="Order #")
-    fill_missing_dates(df)
+    #fill_missing_dates(df)
     clean_and_compare(df)
     return reorder_columns(df, DESIRED_ORDER)
 
