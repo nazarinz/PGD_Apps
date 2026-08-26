@@ -438,6 +438,25 @@ def clean_and_compare(df_merged):
                 ~df_merged[col].isin(_NAN_STRINGS_UPPER), ""
             )
 
+    # [PATCH] "0" placeholder pada kolom delay/shipment method perlu dianggap
+    # KOSONG *sebelum* Result_* dihitung — bukan cuma nanti pas export.
+    # Sebelumnya, "_blank_export_columns" mem-blank-in nilai 0/"0" hanya pas
+    # download, PADAHAL Result_Delay_* sudah kadung dihitung duluan dengan
+    # membandingkan "0" (dianggap beda) vs "" — jadinya FALSE walau di file
+    # hasil akhir dua-duanya sama-sama kelihatan kosong (membingungkan).
+    ZERO_AS_BLANK_COLUMNS = [
+        "Delay/Early - Confirmation CRD", "Infor Delay/Early - Confirmation CRD",
+        "Delay - PO PSDD Update", "Infor Delay - PO PSDD Update",
+        "Delay - PO PD Update", "Infor Delay - PO PD Update",
+        "Shipment Method", "Infor Shipment Method",
+    ]
+    _ZERO_STRINGS = {"0", "0.0", "00"}
+    for col in ZERO_AS_BLANK_COLUMNS:
+        if col in df_merged.columns:
+            df_merged[col] = df_merged[col].where(
+                ~df_merged[col].astype(str).str.strip().isin(_ZERO_STRINGS), ""
+            )
+
     cols_set = frozenset(df_merged.columns)
     n        = len(df_merged)
 
@@ -543,6 +562,15 @@ def _blank_export_columns(df):
     for col in BLANK_ON_EXPORT_COLUMNS:
         if col in out.columns:
             out[col] = out[col].replace(blank_vals)
+            # [PATCH] kolom-kolom ini sudah melewati .astype(str) di
+            # clean_and_compare, jadi nilainya berupa TEKS ("0.0", "00"),
+            # bukan angka float 0.0 — dict.replace() di atas nggak pernah
+            # match untuk kasus ini. Tambahan str-based cleanup di sini
+            # supaya tampilan export tetap konsisten (meski Result_* sendiri
+            # sekarang sudah benar dihitung lebih dulu di clean_and_compare).
+            out[col] = out[col].where(
+                ~out[col].astype(str).str.strip().isin({"0", "0.0", "00"}), ""
+            )
     return out
 
 def _export_excel_styled(df, sheet_name="Report"):
