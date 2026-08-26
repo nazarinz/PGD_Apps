@@ -56,6 +56,7 @@ BLANK_ON_EXPORT_COLUMNS = [
     "Shipment Method",
 ]
 
+# [PATCH] tambahan variasi placeholder null yang belum ter-cover sebelumnya
 _NAN_STRINGS = {"NAN", "NaN", "nan", "NULL", "null", "None", "NONE", "--", "N/A", "NAT", "NAT"}
 
 DATE_COLUMNS_PREF = [
@@ -141,8 +142,14 @@ def read_csv_file(file):
             return pd.read_csv(file, encoding=enc)
         except Exception:
             continue
-    file.seek(0)
-    return pd.read_csv(file)
+    # [PATCH] fallback terakhir juga dibungkus try/except supaya tidak
+    # melempar UnicodeDecodeError mentah dan meng-crash seluruh app.
+    try:
+        file.seek(0)
+        return pd.read_csv(file)
+    except Exception as e:
+        st.error(f"Gagal membaca CSV (semua encoding dicoba): {e}")
+        return pd.DataFrame()
 
 def convert_date_columns(df):
     date_cols = [
@@ -167,6 +174,9 @@ def load_infor_from_many_csv(csv_dfs):
     data_list = []
     required_cols = ['PO Statistical Delivery Date (PSDD)', 'Customer Request Date (CRD)', 'Line Aggregator']
     for i, df in enumerate(csv_dfs, start=1):
+        if df is None or df.empty:
+            st.warning(f"CSV ke-{i} dilewati ⚠️ (gagal dibaca atau kosong)")
+            continue
         df.columns = df.columns.str.strip()
         if all(col in df.columns for col in required_cols):
             data_list.append(df)
@@ -326,6 +336,16 @@ def process_infor_po_level(df_all):
 # ================== Clean & Compare ==================
 _NAN_STRINGS_UPPER: frozenset = frozenset(s.upper() for s in _NAN_STRINGS)
 
+# [PATCH] daftar pasangan kolom kode delay (SAP, Infor) yang perlu di-mapping
+# secara SIMETRIS. Sebelumnya code_mapping cuma diterapkan ke sisi Infor,
+# sehingga kalau sisi SAP masih berupa kode mentah, Result_Delay_* jadi
+# FALSE terus meskipun datanya sebenarnya sama.
+_DELAY_CODE_COLUMN_PAIRS = [
+    ("Delay/Early - Confirmation CRD", "Infor Delay/Early - Confirmation CRD"),
+    ("Delay - PO PSDD Update",          "Infor Delay - PO PSDD Update"),
+    ("Delay - PO PD Update",            "Infor Delay - PO PD Update"),
+]
+
 def clean_and_compare(df_merged):
     for col in ["Quantity", "Infor Quantity", "Production Lead Time", "Infor Lead time", "Article Lead time"]:
         if col in df_merged.columns:
@@ -340,19 +360,33 @@ def clean_and_compare(df_merged):
     }
 
     def _vec_map_code(series: pd.Series) -> pd.Series:
-        cleaned  = series.replace(["--", "N/A", "NULL"], pd.NA)
+        # [PATCH] cover semua variasi placeholder null yang dikenal, bukan
+        # cuma "--", "N/A", "NULL" — supaya nggak lolos jadi angka campuran.
+        cleaned  = series.replace(list(_NAN_STRINGS) + ["--", "N/A", "NULL"], pd.NA)
         numeric  = pd.to_numeric(cleaned, errors="coerce")
         has_num  = numeric.notna()
         int_keys = numeric.where(has_num).dropna().astype("int64").astype(str)
         mapped   = int_keys.map(code_mapping)
-        result   = cleaned.astype(object)
+
+        # [PATCH] Kode yang dikenal (ada di code_mapping) -> pakai hasil mapping.
+        # Kode numerik yang TIDAK dikenal -> tetap dibuat rapi sebagai string
+        # bilangan bulat (mis. "99"), bukan dibiarkan mentah (mis. 99.0) yang
+        # nanti berubah jadi "99.0" setelah di-uppercase dan bikin mismatch palsu.
+        result = cleaned.astype(object)
+        unmapped_known_numeric_idx = int_keys.index.difference(mapped.dropna().index)
+        if len(unmapped_known_numeric_idx) > 0:
+            result.loc[unmapped_known_numeric_idx] = int_keys.loc[unmapped_known_numeric_idx]
         update_idx = mapped.dropna().index
         result.loc[update_idx] = mapped.loc[update_idx]
         return result
 
-    for col in ["Infor Delay/Early - Confirmation CRD", "Infor Delay - PO PSDD Update", "Infor Delay - PO PD Update"]:
-        if col in df_merged.columns:
-            df_merged[col] = _vec_map_code(df_merged[col])
+    # [PATCH] terapkan mapping kode delay ke KEDUA sisi (SAP & Infor), bukan
+    # cuma sisi Infor, supaya perbandingan Result_Delay_* apple-to-apple.
+    for sap_col, infor_col in _DELAY_CODE_COLUMN_PAIRS:
+        if sap_col in df_merged.columns:
+            df_merged[sap_col] = _vec_map_code(df_merged[sap_col])
+        if infor_col in df_merged.columns:
+            df_merged[infor_col] = _vec_map_code(df_merged[infor_col])
 
     string_cols = [
         "Model Name", "Infor Model Name",
@@ -747,6 +781,11 @@ def render_false_insight_open(df_view: pd.DataFrame):
             show_cols.append(infor_col)
         show_cols.append(col)
 
+        # [PATCH] dedupe sambil jaga urutan — mencegah ValueError: Duplicate
+        # column names found. Ini terjadi mis. untuk "Result_Market PO", di
+        # mana "Cust Ord No" sudah ada di id_cols DAN jadi sap_col lagi.
+        show_cols = list(dict.fromkeys(show_cols))
+
         with st.expander(f"❌ {label} — {cnt} FALSE", expanded=False):
             st.dataframe(
                 false_rows[show_cols].reset_index(drop=True),
@@ -849,6 +888,19 @@ with tab1:
 - Infor CSV minimal punya `PSDD`, `CRD`, dan `Line Aggregator`.
 """)
 
+    # [PATCH] Deteksi kalau file yang diupload berubah (nama beda dari upload
+    # terakhir yang diproses) → reset hasil lama supaya filter/session_state
+    # sisa run sebelumnya tidak dipakai ulang untuk dataframe baru (sumber
+    # dari bug KeyError saat kolom Result_* lama sudah tidak ada lagi).
+    current_upload_signature = (
+        sap_file.name if sap_file else None,
+        tuple(sorted(f.name for f in infor_files)) if infor_files else None,
+    )
+    if st.session_state.get("_last_upload_signature") != current_upload_signature:
+        for k in ("df_view", "final_df", "selected_status", "selected_pos", "result_selections", "mode"):
+            st.session_state.pop(k, None)
+        st.session_state["_last_upload_signature"] = current_upload_signature
+
     if sap_file and infor_files:
         with status_ctx("Membaca & menggabungkan file...", expanded=True) as status:
             try:
@@ -920,11 +972,16 @@ with tab1:
                             mode              = st.session_state.get("mode", "Semua Kolom")
 
                             df_view = final_df.copy()
-                            if selected_status:
+                            if "Order Status Infor" in df_view.columns and selected_status:
                                 df_view = df_view[df_view["Order Status Infor"].astype(str).isin(selected_status)]
-                            if selected_pos:
+                            if "PO No.(Full)" in df_view.columns and selected_pos:
                                 df_view = df_view[df_view["PO No.(Full)"].astype(str).isin(selected_pos)]
                             for col, sel in result_selections.items():
+                                # [PATCH] guard: skip kalau kolom hasil filter lama
+                                # ternyata sudah tidak ada di final_df yang baru
+                                # (mis. karena struktur data upload berubah).
+                                if col not in df_view.columns:
+                                    continue
                                 base_opts = uniq_vals(final_df, col)
                                 if sel and set(sel) != set(base_opts):
                                     df_view = df_view[df_view[col].astype(str).isin(sel)]
