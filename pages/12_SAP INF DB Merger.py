@@ -265,6 +265,16 @@ def process(pbi_file, sap_file):
     df_sapinf = pd.read_excel(sap_file, engine="openpyxl")
     df_sapinf = _clean_cols(df_sapinf)
 
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #1 — raw column names right after load,
+    # before any renaming/mapping logic runs. This lets us compare
+    # what's actually in the uploaded files against what final_order /
+    # dash_map_src_to_new / sap_extra_passthrough_cols expect.
+    # ============================================================
+    diag = {}
+    diag["dash_raw_columns"] = df_db.columns.tolist()
+    diag["sap_raw_columns"] = df_sapinf.columns.tolist()
+
     # normalize PBI columns (drop exact duplicates & alias .n)
     df = df_db.copy()
     df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -337,6 +347,79 @@ def process(pbi_file, sap_file):
     for c in passthrough_cols:
         if c not in df_dash_keep.columns:
             df_dash_keep[c] = pd.NA
+
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #2 — mapping coverage. For every source
+    # column dash_map_src_to_new expects, record whether it was
+    # actually found in the uploaded PBI file (present_src vs missing).
+    # ============================================================
+    diag["dash_map_missing_src_cols"] = [
+        src for src in dash_map_src_to_new if src not in df.columns
+    ]
+    diag["dash_map_present_src_cols"] = present_src
+
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #3 — unique values of the two status columns
+    # that drive the MDP/SDP delay-gap logic further down. If the
+    # dashboard's "DELAY" label isn't exactly "DELAY" (case/spelling),
+    # mask_dash_mdp_delay / mask_dash_sdp_delay will silently match
+    # nothing and PGD Delay Qty will always compute to 0.
+    # ============================================================
+    def _uniques_safe(series, limit=25):
+        try:
+            vals = series.dropna().astype(str).str.strip().unique().tolist()
+            return sorted(vals)[:limit]
+        except Exception as e:
+            return [f"<error reading uniques: {e}>"]
+
+    diag["dash_mdp_status_adjusted_uniques"] = (
+        _uniques_safe(df["MDP Status Adjusted"]) if "MDP Status Adjusted" in df.columns
+        else "<column not found in dashboard file>"
+    )
+    diag["dash_sdp_status_adjusted_uniques"] = (
+        _uniques_safe(df["SDP Status Adjusted"]) if "SDP Status Adjusted" in df.columns
+        else "<column not found in dashboard file>"
+    )
+    # also check the SAP-side MDP/SDP status columns used for "Adidas" qty,
+    # to confirm "FAIL" is really the label used there
+    diag["sap_mdp_uniques"] = (
+        _uniques_safe(df_sapinf_join["MDP"]) if "MDP" in df_sapinf_join.columns
+        else "<column not found in SAP file>"
+    )
+    diag["sap_sdp_uniques"] = (
+        _uniques_safe(df_sapinf_join["SDP"]) if "SDP" in df_sapinf_join.columns
+        else "<column not found in SAP file>"
+    )
+
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #4 — expected-vs-actual column check for
+    # every column final_order will need, run against df_sapinf_join
+    # (loose-matched) and df_dash_keep. Flags exactly which output
+    # columns will come out blank because of a naming mismatch.
+    # This runs against the SAME final_order list used later in the
+    # function, so it stays in sync automatically if final_order changes.
+    # ============================================================
+    _final_order_preview = [
+        "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
+        "PO No.(Full)","Customer PO item","Line Aggregator",
+        "Elevated Check","Responsiveness","PO Status","Order Status Infor","PO No.(Short)","Merchandise Category 2",
+        "Ship to Name","Ship-to Country","Ship-to-Sort1","Article Lead time",
+        "Quantity","Infor Quantity","Dashboard Quantity","Result_Quantity","Dashboard vs SAP Result_Quantity",
+        "Model Name","Article No","Infor Article No","SAP Material","Pattern Code(Up.No.)","Model No",
+        "Outsole Mold","Gender","Category 1","Category 2","Category 3","Unit Price",
+        "DRC","MDP","PDP","SDP","Document Date","FPD","LPD","CRD","PSDD","FCR Date","PODD","PD",
+        "PO Date","Actual PGI","Segment","S&P LPD",
+    ]
+    sap_cols_normset = set(sap_colname_lookup.keys())
+    dash_cols_set = set(df_dash_keep.columns.tolist() + [PK])
+    unmatched_in_sap = []
+    for col in _final_order_preview:
+        found_direct = col in df_sapinf_join.columns
+        found_loose = _normalize_colname(col) in sap_cols_normset
+        found_dash = col in dash_cols_set
+        if not (found_direct or found_loose or found_dash):
+            unmatched_in_sap.append(col)
+    diag["final_order_cols_with_no_source_match"] = unmatched_in_sap
 
     # pairing per PO
     # IMPORTANT: iterate over the UNION of PO numbers from SAP and Dashboard,
@@ -482,6 +565,22 @@ def process(pbi_file, sap_file):
     mask_sdp_fail         = sdp_status.eq("FAIL").fillna(False).to_numpy()
     mask_dash_sdp_delay   = dash_sdp_stat.eq("DELAY").fillna(False).to_numpy()
 
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #5 — actual hit counts for the four masks
+    # that drive MDP/SDP gap qty. If mask_dash_mdp_delay / _sdp_delay
+    # come back 0 while mask_mdp_fail / _sdp_fail are > 0, the
+    # dashboard-side "DELAY" label doesn't match what's really in the
+    # data (see diag["dash_mdp_status_adjusted_uniques"] above to find
+    # the real label).
+    # ============================================================
+    diag["mask_hit_counts"] = {
+        "sap_mdp_fail_rows": int(mask_mdp_fail.sum()),
+        "dash_mdp_delay_rows": int(mask_dash_mdp_delay.sum()),
+        "sap_sdp_fail_rows": int(mask_sdp_fail.sum()),
+        "dash_sdp_delay_rows": int(mask_dash_sdp_delay.sum()),
+        "total_rows": int(len(df_out)),
+    }
+
     df_out["MDP Delay Qty"]           = np.where(mask_mdp_fail,       qty_sap_num,  0)
     df_out["Dashboard MDP Delay Qty"] = np.where(mask_dash_mdp_delay, qty_dash_num, 0)
     df_out["GAP MDP"]                 = df_out["Dashboard MDP Delay Qty"] - df_out["MDP Delay Qty"]
@@ -562,6 +661,23 @@ def process(pbi_file, sap_file):
         "PO Date","Actual PGI","Segment","S&P LPD","Currency"
     ]
 
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #6 — the definitive list: every column in
+    # final_order that ended up 100% empty (all-NA) in df_out BEFORE
+    # reindexing. This is the direct answer to "which output columns
+    # are blank and why" — cross-reference against snapshot #1's raw
+    # column names to spot the exact naming mismatch.
+    # ============================================================
+    cols_all_na = []
+    cols_not_created_yet = []
+    for col in final_order:
+        if col not in df_out.columns:
+            cols_not_created_yet.append(col)
+        elif df_out[col].isna().all():
+            cols_all_na.append(col)
+    diag["final_order_cols_not_found_in_df_out"] = cols_not_created_yet
+    diag["final_order_cols_present_but_all_blank"] = cols_all_na
+
     for col in final_order:
         if col not in df_out.columns:
             df_out[col] = pd.NA
@@ -571,6 +687,7 @@ def process(pbi_file, sap_file):
     df_final.attrs["dash_only_po_count"] = len(dash_only_pos)
     df_final.attrs["dash_only_pos_sample"] = dash_only_pos[:20]
     df_final.attrs["crd_fallback_count"] = n_crd_fallback
+    df_final.attrs["diag"] = diag  # full diagnostic bundle, surfaced in the UI expander
     return df_final
 
 # -------------------------
@@ -587,6 +704,71 @@ if run_button:
             except Exception as e:
                 st.exception(e)
                 st.stop()
+
+        # ============================================================
+        # DIAGNOSTIC PANEL — column-mapping & mask health check.
+        # Answers: "kenapa kolom X kosong / kenapa Delay Qty 0 semua?"
+        # ============================================================
+        with st.expander("🔍 Diagnostik Kolom & Mapping (kenapa ada yang blank/nol)", expanded=True):
+            diag = df_final.attrs.get("diag", {})
+
+            st.markdown("**1. Kolom output yang 100% kosong (blank) — dan penyebabnya**")
+            blank_cols = diag.get("final_order_cols_present_but_all_blank", [])
+            missing_cols = diag.get("final_order_cols_not_found_in_df_out", [])
+            if not blank_cols and not missing_cols:
+                st.success("Tidak ada kolom final_order yang kosong total. Aman.")
+            else:
+                if missing_cols:
+                    st.error(f"Kolom yang TIDAK PERNAH terbentuk di df_out (nama tidak match sama sekali): {missing_cols}")
+                if blank_cols:
+                    st.warning(f"Kolom yang ADA tapi isinya NA semua (100% blank): {blank_cols}")
+                st.caption(
+                    "Cek nama kolom mentah di bagian 'Nama kolom mentah' di bawah untuk cari kandidat "
+                    "yang mirip tapi beda ejaan/spasi (mis. 'Quanity' vs 'Quantity', 'Site' vs 'Order Plant')."
+                )
+
+            st.markdown("---")
+            st.markdown("**2. Nama kolom mentah setelah upload (untuk dicocokkan manual)**")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.write("Dashboard (PBI) — raw columns:")
+                st.code("\n".join(diag.get("dash_raw_columns", [])), language=None)
+            with col_b:
+                st.write("SAP/Infor — raw columns:")
+                st.code("\n".join(diag.get("sap_raw_columns", [])), language=None)
+
+            st.markdown("---")
+            st.markdown("**3. Mapping dashboard → kolom internal (dash_map_src_to_new)**")
+            missing_src = diag.get("dash_map_missing_src_cols", [])
+            if missing_src:
+                st.error(f"Kolom sumber dashboard yang TIDAK DITEMUKAN di file upload: {missing_src}")
+            else:
+                st.success("Semua kolom sumber dashboard yang diharapkan ditemukan.")
+
+            st.markdown("---")
+            st.markdown("**4. Cek label status MDP/SDP (akar masalah 'Delay Qty selalu 0')**")
+            st.write("Unique values — Dashboard `MDP Status Adjusted`:", diag.get("dash_mdp_status_adjusted_uniques"))
+            st.write("Unique values — Dashboard `SDP Status Adjusted`:", diag.get("dash_sdp_status_adjusted_uniques"))
+            st.write("Unique values — SAP `MDP`:", diag.get("sap_mdp_uniques"))
+            st.write("Unique values — SAP `SDP`:", diag.get("sap_sdp_uniques"))
+            st.caption(
+                "Logika saat ini mencocokkan SAP status ke 'FAIL' dan Dashboard status ke 'DELAY' persis (case-insensitive). "
+                "Kalau label asli Dashboard bukan 'Delay' (mis. 'Late', 'Behind'), baris di atas akan menunjukkannya — "
+                "dan itu sebabnya semua 'PGD Delay Qty' keluar 0."
+            )
+
+            mask_counts = diag.get("mask_hit_counts", {})
+            if mask_counts:
+                st.markdown("**Jumlah baris yang match tiap mask:**")
+                st.json(mask_counts)
+                if mask_counts.get("sap_mdp_fail_rows", 0) > 0 and mask_counts.get("dash_mdp_delay_rows", 0) == 0:
+                    st.error("⚠️ SAP MDP FAIL > 0 tapi Dashboard MDP DELAY = 0 → label 'DELAY' di dashboard tidak match. Ini penyebab langsung PGD MDP Delay Qty = 0 di pivot.")
+                if mask_counts.get("sap_sdp_fail_rows", 0) > 0 and mask_counts.get("dash_sdp_delay_rows", 0) == 0:
+                    st.error("⚠️ SAP SDP FAIL > 0 tapi Dashboard SDP DELAY = 0 → label 'DELAY' di dashboard tidak match. Ini penyebab langsung PGD SDP Delay Qty = 0 di pivot.")
+
+            st.markdown("---")
+            st.markdown("**5. Kolom final_order yang tidak ketemu sumbernya sama sekali (preview cepat)**")
+            st.write(diag.get("final_order_cols_with_no_source_match", []))
 
         # diagnostics & preview
         with st.expander("Diagnostik & ringkasan"):
