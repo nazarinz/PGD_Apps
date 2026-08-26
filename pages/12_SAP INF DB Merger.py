@@ -265,6 +265,22 @@ def process(pbi_file, sap_file):
     df_sapinf = pd.read_excel(sap_file, engine="openpyxl")
     df_sapinf = _clean_cols(df_sapinf)
 
+    # FIX (confirmed via diagnostic run on real files): the SAP/Infor export
+    # uses different header names than final_order expects. Rename at load
+    # time so every downstream lookup (direct, loose-match, final_order)
+    # just works without special-casing.
+    #   - "Order Plant"      -> "Site"            (final_order expects "Site")
+    #   - "Brand Plant Name" -> "Brand FTY Name"   (final_order expects "Brand FTY Name")
+    #   - "Quanity"          -> "Quantity"         (typo in the source file — this one
+    #     silently broke SAP<->Dashboard row pairing entirely, since
+    #     _ref_qty_sap_row() looks for "Quantity"/"Infor Quantity" and found neither)
+    sap_rename = {
+        "Order Plant": "Site",
+        "Brand Plant Name": "Brand FTY Name",
+        "Quanity": "Quantity",
+    }
+    df_sapinf.rename(columns={k: v for k, v in sap_rename.items() if k in df_sapinf.columns}, inplace=True)
+
     # ============================================================
     # DIAGNOSTIC SNAPSHOT #1 — raw column names right after load,
     # before any renaming/mapping logic runs. This lets us compare
@@ -337,7 +353,13 @@ def process(pbi_file, sap_file):
         "FGR Document Date_":     "Dashboard FGR",
     }
     present_src = [src for src in dash_map_src_to_new if src in df.columns]
-    passthrough_cols = ["Elevated Check", "Responsiveness", "PO Status"]
+    # FIX (confirmed via diagnostic run): "Line Aggregator" lives in the
+    # Dashboard/PBI file, NOT in the SAP export — the SAP raw column list
+    # never had it. The old code only ever tried to read it from SAP
+    # (via _get_loose(row_sap, ...)), so it came out 0/34804 filled even
+    # though the real data was sitting in the file the user uploaded.
+    # Carry it through as a plain dashboard passthrough column instead.
+    passthrough_cols = ["Elevated Check", "Responsiveness", "PO Status", "Line Aggregator"]
     keep_cols = [PK] + present_src + passthrough_cols
     df_dash_keep = df[keep_cols].copy(deep=True)
     df_dash_keep = df_dash_keep.rename(columns={src: dash_map_src_to_new[src] for src in present_src})
@@ -479,13 +501,16 @@ def process(pbi_file, sap_file):
                 "Dashboard Quantity","Dashboard MDP Status Adjusted","Dashboard SDP Status Adjusted",
                 "Dashboard FPD","Dashboard LPD","Dashboard CRD","Dashboard PSDD",
                 "Dashboard PD","Dashboard PODD","Dashboard FGR",
-                "Elevated Check","Responsiveness","PO Status"
+                "Elevated Check","Responsiveness","PO Status","Line Aggregator"
             ]:
                 out[col] = row_dash.get(col, pd.NA)
 
-            # Ambil Customer PO item & Line Aggregator dari SAP (raw), pakai loose match
-            # supaya beda kapitalisasi/spasi di header SAP tidak bikin kolom kosong
-            for sap_col in ["Customer PO item", "Line Aggregator"] + sap_extra_passthrough_cols:
+            # Ambil Customer PO item dari SAP (raw), pakai loose match supaya beda
+            # kapitalisasi/spasi di header SAP tidak bikin kolom kosong.
+            # NOTE: "Line Aggregator" dulu ditarik dari sini juga, tapi kolom itu
+            # sebenarnya tidak pernah ada di file SAP — sudah dipindah ke atas,
+            # ditarik dari Dashboard (lihat loop di atas).
+            for sap_col in ["Customer PO item"] + sap_extra_passthrough_cols:
                 if i is not None:
                     out[sap_col] = _get_loose(row_sap, sap_colname_lookup, sap_col)
                 else:
@@ -632,33 +657,49 @@ def process(pbi_file, sap_file):
         df_out["CRD Monthly"] = pd.NA
 
     # final order (trimmed to required columns; omitted ones you asked to remove)
+    #
+    # FIX (per user decision, confirmed via diagnostic run on real files):
+    # removed 18 orphaned "Infor X" family columns whose source data doesn't
+    # exist anywhere in the two files this pipeline actually ingests (PBI
+    # Dashboard + SAP export). They read as a leftover assumption of a THIRD,
+    # Infor-Nexus-native export that was never wired into this app — hence
+    # they were always either "column never created" or "created but 100%
+    # NA". Removed: Infor Article No, Result_Article No, Infor Quantity,
+    # Result_Quantity, Delay/Early - Confirmation PD, Delay/Early -
+    # Confirmation CRD, Infor Delay/Early - Confirmation CRD,
+    # Result_Delay_CRD, Delay - PO PSDD Update, Infor Delay - PO PSDD
+    # Update, Result_Delay_PSDD, Infor Delay - PO PD Update,
+    # Result_Delay_PD, Infor FPD, Infor LPD, Infor CRD, Infor PSDD,
+    # Infor PODD, Infor PD, Result_FPD, Result_LPD, Result_CRD,
+    # Result_PSDD, Result_PODD, Result_PD, Currency.
+    # (The "Dashboard vs SAP Result_*" columns are KEPT — those compare
+    # SAP directly against Dashboard and don't depend on any Infor source.)
+    # Also fixed: "Site"/"Brand FTY Name" now resolve via the sap_rename
+    # above (SAP file uses "Order Plant"/"Brand Plant Name").
     final_order = [
         "Client No","Site","Brand FTY Name","SO","Order Type","Order Type Description",
         "PO No.(Full)","Customer PO item","Line Aggregator",
         "Elevated Check","Responsiveness","PO Status","Order Status Infor","PO No.(Short)","Merchandise Category 2",
         "Ship to Name","Ship-to Country","Ship-to-Sort1","Article Lead time",
-        "Quantity","Infor Quantity","Dashboard Quantity","Result_Quantity","Dashboard vs SAP Result_Quantity",
+        "Quantity","Dashboard Quantity","Dashboard vs SAP Result_Quantity",
         "Model Name",
-        "Article No","Infor Article No","Result_Article No",
+        "Article No",
         "SAP Material","Pattern Code(Up.No.)","Model No","Outsole Mold","Gender",
         "Category 1","Category 2","Category 3","Unit Price",
-        "DRC","Delay/Early - Confirmation PD","Delay/Early - Confirmation CRD",
-        "Infor Delay/Early - Confirmation CRD","Result_Delay_CRD",
-        "Delay - PO PSDD Update","Infor Delay - PO PSDD Update","Result_Delay_PSDD",
-        "Delay - PO PD Update","Infor Delay - PO PD Update","Result_Delay_PD",
+        "DRC","Delay - PO PD Update",
         "MDP","Dashboard MDP Status Adjusted",
         "MDP Delay Qty","Dashboard MDP Delay Qty","GAP MDP","GAP MDP (NZ)","Has MDP Gap",
         "PDP",
         "SDP","Dashboard SDP Status Adjusted",
         "SDP Delay Qty","Dashboard SDP Delay Qty","GAP SDP","GAP SDP (NZ)","Has SDP Gap",
-        "Document Date","FPD","Infor FPD","Dashboard FPD","Result_FPD","Dashboard vs SAP Result_FPD",
-        "LPD","Infor LPD","Dashboard LPD","Result_LPD","Dashboard vs SAP Result_LPD",
-        "CRD Monthly","CRD","Infor CRD","Dashboard CRD","Result_CRD","Dashboard vs SAP Result_CRD",
-        "PSDD","Infor PSDD","Dashboard PSDD","Result_PSDD","Dashboard vs SAP Result_PSDD",
+        "Document Date","FPD","Dashboard FPD","Dashboard vs SAP Result_FPD",
+        "LPD","Dashboard LPD","Dashboard vs SAP Result_LPD",
+        "CRD Monthly","CRD","Dashboard CRD","Dashboard vs SAP Result_CRD",
+        "PSDD","Dashboard PSDD","Dashboard vs SAP Result_PSDD",
         "FCR Date","Dashboard FGR","Dashboard vs SAP Result FCR",
-        "PODD","Infor PODD","Dashboard PODD","Result_PODD","Dashboard vs SAP Result_PODD",
-        "PD","Infor PD","Dashboard PD","Result_PD","Dashboard vs SAP Result_PD",
-        "PO Date","Actual PGI","Segment","S&P LPD","Currency"
+        "PODD","Dashboard PODD","Dashboard vs SAP Result_PODD",
+        "PD","Dashboard PD","Dashboard vs SAP Result_PD",
+        "PO Date","Actual PGI","Segment","S&P LPD"
     ]
 
     # ============================================================
