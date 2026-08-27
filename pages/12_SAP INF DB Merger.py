@@ -325,6 +325,52 @@ def process(pbi_file, sap_file):
     if join_left_key != PK:
         df_sapinf_join[PK] = df_sapinf_join[join_left_key]
 
+    # FIX: PO Number is a 10-digit code with meaningful leading zeros
+    # ("0901016014"), but Excel/pandas frequently reads that column as a
+    # NUMBER (int64/float64) instead of text — which silently strips the
+    # leading zeros ("0901016014" -> 901016014, or even "901016014.0" if
+    # it went through a float column). Left as-is, this makes the SAME PO
+    # look different between the two files, so the merge fails to pair
+    # them at all (confirmed: ~99.7% of POs came out as "sap_only" /
+    # "dash_only" with almost no real overlap — a red flag, not real
+    # business data).
+    #
+    # Fix: whatever shape the value comes in (int, float with trailing
+    # .0, string with or without leading zeros, stray whitespace), strip
+    # it down to digits only and zero-pad back to 10 digits. This
+    # reconstructs the true original PO regardless of how pandas parsed
+    # the source cell — it does NOT invent or guess digits, it only
+    # restores zero-padding that Excel's numeric type conversion removed.
+    def _normalize_po(series: pd.Series) -> pd.Series:
+        def _fmt(v):
+            if pd.isna(v):
+                return pd.NA
+            if isinstance(v, float):
+                v = int(v)  # drop a trailing .0 from float-typed cells
+            s = re.sub(r"\.0$", "", str(v).strip())
+            s = re.sub(r"[^0-9]", "", s)  # keep digits only
+            return s.zfill(10) if s else pd.NA
+        return series.map(_fmt)
+
+    df[PK] = _normalize_po(df[PK])
+    df_sapinf_join[PK] = _normalize_po(df_sapinf_join[PK])
+
+    # ============================================================
+    # DIAGNOSTIC SNAPSHOT #0b — PO overlap before vs after the
+    # zero-padding fix. This is the direct evidence for whether the
+    # "PO Number format" theory was right: if overlap jumps a lot after
+    # normalization, the fix is doing real work.
+    # ============================================================
+    _raw_dash_po = df_db[PK].astype(str).str.strip() if PK in df_db.columns else pd.Series(dtype="object")
+    _raw_sap_po = (
+        df_sapinf[join_left_key].astype(str).str.strip()
+        if join_left_key in df_sapinf.columns else pd.Series(dtype="object")
+    )
+    diag["po_overlap_before_fix"] = len(set(_raw_dash_po.dropna()) & set(_raw_sap_po.dropna()))
+    diag["po_overlap_after_fix"] = len(set(df[PK].dropna()) & set(df_sapinf_join[PK].dropna()))
+    diag["po_unique_dash"] = df[PK].nunique()
+    diag["po_unique_sap"] = df_sapinf_join[PK].nunique()
+
     # loose (case/whitespace-insensitive) lookup for SAP/Infor column names,
     # so header quirks (e.g. "line aggregator" vs "Line Aggregator") don't
     # silently produce empty columns
@@ -753,6 +799,21 @@ if run_button:
         with st.expander("🔍 Diagnostik Kolom & Mapping (kenapa ada yang blank/nol)", expanded=True):
             diag = df_final.attrs.get("diag", {})
 
+            st.markdown("**0. Efek fix normalisasi PO Number (zero-padding 10 digit)**")
+            before = diag.get("po_overlap_before_fix")
+            after = diag.get("po_overlap_after_fix")
+            if before is not None and after is not None:
+                st.metric("PO yang match antar file", value=after, delta=after - before,
+                          help="Sebelum fix (raw astype(str)) vs sesudah fix (zero-padded 10 digit)")
+                st.write(f"PO unik di Dashboard: {diag.get('po_unique_dash')} · PO unik di SAP: {diag.get('po_unique_sap')}")
+                if after > before * 1.5:
+                    st.success(f"Fix zero-padding berhasil: overlap PO naik dari {before} jadi {after}. Ini konfirmasi akar masalahnya memang format PO (leading zero hilang).")
+                elif after == before:
+                    st.warning("Overlap PO TIDAK berubah setelah fix — berarti PO 'sap_only'/'dash_only' kemungkinan besar memang PO yang beda (bukan sekadar salah format), perlu dicek ke sumber datanya.")
+                else:
+                    st.info(f"Overlap PO berubah dari {before} ke {after} — ada sebagian yang terbantu, tapi kemungkinan masih ada penyebab lain juga.")
+
+            st.markdown("---")
             st.markdown("**1. Kolom output yang 100% kosong (blank) — dan penyebabnya**")
             blank_cols = diag.get("final_order_cols_present_but_all_blank", [])
             missing_cols = diag.get("final_order_cols_not_found_in_df_out", [])
