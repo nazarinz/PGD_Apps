@@ -489,91 +489,89 @@ def process(pbi_file, sap_file):
             unmatched_in_sap.append(col)
     diag["final_order_cols_with_no_source_match"] = unmatched_in_sap
 
-    # pairing per PO
-    # IMPORTANT: iterate over the UNION of PO numbers from SAP and Dashboard,
-    # not just the POs present in the SAP/Infor file. Previously this looped
-    # only over df_sapinf_join.groupby(PK), which silently dropped any PO that
-    # exists in the dashboard but not in the SAP/Infor export (e.g. POs
-    # outside the SAP export's date/status filter) — causing merged totals
-    # to come out lower than the raw dashboard totals for those POs.
-    sap_groups = {po: g for po, g in df_sapinf_join.groupby(PK, dropna=False)}
-    empty_sap_template = df_sapinf_join.iloc[0:0]
-    dash_only_pos = [
-        po for po in df_dash_keep[PK].dropna().unique().tolist()
-        if po not in sap_groups
-    ]
-    all_po_keys = list(sap_groups.keys()) + dash_only_pos
+    # ============================================================
+    # MERGE ALGORITHM (redesigned) — plain outer join + PO-level reconciliation
+    # ============================================================
+    # EVIDENCE (confirmed on sample files): when 1 SAP row explodes into N
+    # Dashboard rows for the same PO, SAP's Quantity equals the SUM of the
+    # N Dashboard rows — e.g. PO 901200033: Dashboard 534 + 726 = 1260,
+    # SAP Quantity = 1260 exactly. NOT the value closest to any single
+    # Dashboard row. SAP sits at PO-header level (one aggregate row);
+    # Dashboard sits at child/component level (N rows summing to that
+    # total). The old "nearest quantity" pairing logic solved the wrong
+    # problem — it guessed a 1:1 partner instead of recognizing a
+    # 1-header-to-many-children relationship, which silently corrupted
+    # every PO with more than one Dashboard row.
+    #
+    # New approach: a plain outer join on PO. When a PO has N Dashboard
+    # rows and 1 SAP row, the SAP row is broadcast (duplicated) across all
+    # N — every Dashboard row correctly sees the true SAP attributes
+    # (Site, Brand, MDP/SDP status, etc), instead of only one "winning"
+    # row getting real data and the rest getting nulled out. To avoid
+    # double-counting the SAP-side Quantity / Delay Qty when an exploded
+    # PO's rows get summed in a pivot, only the FIRST row per PO
+    # ("Is Primary SAP Row") carries the real SAP Quantity contribution —
+    # the other rows still show the SAP attributes for context, but
+    # contribute 0 to quantity/delay-qty sums, so a PO's SAP number is
+    # counted exactly once no matter how many Dashboard rows it exploded
+    # into.
+    #
+    # Known limitation: if a PO genuinely has multiple DIFFERENT SAP lines
+    # (e.g. different "Customer PO item" values, not just a formatting
+    # artifact), a plain PK-only join produces a cartesian expansion
+    # (n_sap_rows x n_dash_rows). This is rare (per earlier diagnostics,
+    # a small single-digit percent of POs) and is flagged explicitly via
+    # "SAP Line Count" below so those specific POs can be reviewed
+    # manually rather than silently trusted.
 
-    out_rows = []
-    for po in all_po_keys:
-        df_sap_po = sap_groups.get(po, empty_sap_template)
-        df_dash_po = df_dash_keep[df_dash_keep[PK] == po]
-        pairs = build_pairs_for_po(df_sap_po, df_dash_po)
-        sap_ref_row = df_sap_po.iloc[0] if len(df_sap_po) > 0 else None
+    # resolve loosely-matched SAP column names to their canonical form so
+    # the merge carries them through directly, without per-row lookups
+    sap_extra_lookup_cols = ["Customer PO item"] + sap_extra_passthrough_cols
+    sap_col_rename_for_merge = {}
+    for wanted in sap_extra_lookup_cols:
+        actual = sap_colname_lookup.get(_normalize_colname(wanted))
+        if actual is not None and actual != wanted:
+            sap_col_rename_for_merge[actual] = wanted
+    df_sapinf_merge_ready = df_sapinf_join.rename(columns=sap_col_rename_for_merge)
 
-        sap_single = (len(df_sap_po) == 1) and (len(df_dash_po) > 1)
-        best_dash_idx_for_single = None
-        if sap_single and sap_ref_row is not None:
-            rq = _ref_qty_sap_row(sap_ref_row)
-            if pd.notna(rq) and "Dashboard Quantity" in df_dash_po.columns:
-                d_diffs = (pd.to_numeric(df_dash_po["Dashboard Quantity"], errors="coerce") - rq).abs()
-                if not d_diffs.dropna().empty:
-                    best_dash_idx_for_single = d_diffs.idxmin()
+    sap_po_set = set(df_sapinf_merge_ready[PK].dropna().unique().tolist())
+    dash_po_set = set(df_dash_keep[PK].dropna().unique().tolist())
+    dash_only_pos = sorted(dash_po_set - sap_po_set)
 
-        for i, j in pairs:
-            if i is not None:
-                row_sap = df_sap_po.loc[i]
-                out = row_sap.to_dict()
-            else:
-                out = (sap_ref_row.copy().to_dict() if sap_ref_row is not None else {})
-                out["Quantity"] = np.nan
-                out["Infor Quantity"] = np.nan
-                out[PK] = po  # preserve PO number even when there's no SAP row at all
-                if sap_ref_row is None:
-                    # this PO has NO SAP data whatsoever (dashboard-only PO) —
-                    # the display column "PO No.(Full)" is a SAP-native field,
-                    # so without this it would show up blank. Fill it with the
-                    # join-key value so the PO is still identifiable, and mark
-                    # it so it's clear this row has no SAP match.
-                    out["PO No.(Full)"] = po
-                    out["Order Status Infor"] = "NO SAP MATCH (dashboard only)"
+    df_out = df_dash_keep.merge(
+        df_sapinf_merge_ready, on=PK, how="outer", indicator="_merge_src"
+    )
 
-            if j is not None:
-                row_dash = df_dash_po.loc[j]
-            else:
-                row_dash = pd.Series(dtype="object")
+    df_out["Order Status Infor"] = np.where(
+        df_out["_merge_src"] == "left_only", "NO SAP MATCH (dashboard only)", pd.NA
+    )
+    if "PO No.(Full)" in df_out.columns:
+        df_out["PO No.(Full)"] = df_out["PO No.(Full)"].where(
+            df_out["_merge_src"] != "left_only", df_out[PK]
+        )
 
-            for col in [
-                "Dashboard Quantity","Dashboard MDP Status Adjusted","Dashboard SDP Status Adjusted",
-                "Dashboard FPD","Dashboard LPD","Dashboard CRD","Dashboard PSDD",
-                "Dashboard PD","Dashboard PODD","Dashboard FGR",
-                "Elevated Check","Responsiveness","PO Status","Line Aggregator"
-            ]:
-                out[col] = row_dash.get(col, pd.NA)
+    # "Is Primary SAP Row": first row per PO among rows that actually have
+    # a real SAP match — used so SAP-side Quantity/Delay Qty is counted
+    # exactly once per PO regardless of how many Dashboard rows it was
+    # broadcast across.
+    has_sap = df_out["_merge_src"].isin(["both", "right_only"])
+    df_out["Is Primary SAP Row"] = False
+    sap_rows_idx = df_out.index[has_sap]
+    if len(sap_rows_idx) > 0:
+        rank_within_po = df_out.loc[sap_rows_idx].groupby(PK).cumcount()
+        primary_idx = rank_within_po.index[rank_within_po == 0]
+        df_out.loc[primary_idx, "Is Primary SAP Row"] = True
 
-            # Ambil Customer PO item dari SAP (raw), pakai loose match supaya beda
-            # kapitalisasi/spasi di header SAP tidak bikin kolom kosong.
-            # NOTE: "Line Aggregator" dulu ditarik dari sini juga, tapi kolom itu
-            # sebenarnya tidak pernah ada di file SAP — sudah dipindah ke atas,
-            # ditarik dari Dashboard (lihat loop di atas).
-            for sap_col in ["Customer PO item"] + sap_extra_passthrough_cols:
-                if i is not None:
-                    out[sap_col] = _get_loose(row_sap, sap_colname_lookup, sap_col)
-                else:
-                    out[sap_col] = (
-                        _get_loose(sap_ref_row, sap_colname_lookup, sap_col)
-                        if sap_ref_row is not None else pd.NA
-                    )
+    # flag POs where SAP itself has more than one row — a plain PK join
+    # cartesian-expands these, so they need manual review rather than
+    # being trusted at face value
+    sap_line_counts = df_sapinf_merge_ready.groupby(PK).size()
+    df_out["SAP Line Count"] = df_out[PK].map(sap_line_counts).fillna(0).astype(int)
 
-            if sap_single and (j is not None) and (j != best_dash_idx_for_single):
-                out["Quantity"] = np.nan
-                out["Infor Quantity"] = np.nan
+    dash_line_counts = df_dash_keep.groupby(PK).size()
+    df_out["Dashboard Line Count"] = df_out[PK].map(dash_line_counts).fillna(0).astype(int)
 
-            out_rows.append(out)
-
-    df_out = pd.DataFrame(out_rows)
-
-    # keep raw types for Customer PO item & Line Aggregator (do not cast)
+    df_out.drop(columns=["_merge_src"], inplace=True)
     for c in ["Elevated Check", "Responsiveness", "PO Status"]:
         if c in df_out.columns:
             df_out[c] = df_out[c].astype("string").str.strip()
@@ -583,13 +581,19 @@ def process(pbi_file, sap_file):
             df_out[c] = pd.to_numeric(df_out[c], errors="coerce")
 
     # compare columns
-    if ("Quantity" in df_out.columns) and ("Infor Quantity" in df_out.columns):
-        df_out["Result_Quantity"] = compare_numeric(df_out, "Quantity", "Infor Quantity")
-    else:
-        df_out["Result_Quantity"] = pd.NA
+    # FIX: the old "Dashboard vs SAP Result_Quantity" compared SAP Quantity
+    # against a SINGLE Dashboard row's quantity — meaningless once we know
+    # SAP Quantity = SUM of all Dashboard rows for that PO (see evidence
+    # above), since it would falsely flag a mismatch for every PO with more
+    # than one Dashboard line. Compare against the PO-level Dashboard total
+    # instead.
+    dash_qty_po_total = df_dash_keep.groupby(PK)["Dashboard Quantity"].sum(min_count=1)
+    df_out["Dashboard Quantity (PO Total)"] = df_out[PK].map(dash_qty_po_total)
 
-    if ("Quantity" in df_out.columns) and ("Dashboard Quantity" in df_out.columns):
-        df_out["Dashboard vs SAP Result_Quantity"] = compare_numeric(df_out, "Quantity", "Dashboard Quantity")
+    if ("Quantity" in df_out.columns) and ("Dashboard Quantity (PO Total)" in df_out.columns):
+        df_out["Dashboard vs SAP Result_Quantity"] = compare_numeric(
+            df_out, "Quantity", "Dashboard Quantity (PO Total)"
+        )
     else:
         df_out["Dashboard vs SAP Result_Quantity"] = pd.NA
 
@@ -623,7 +627,12 @@ def process(pbi_file, sap_file):
         if need not in df_out.columns:
             df_out[need] = pd.NA
 
-    qty_sap_num   = pd.to_numeric(df_out["Quantity"], errors="coerce").fillna(0)
+    # FIX: only count SAP Quantity ONCE per PO (on the "Is Primary SAP Row"),
+    # even though the same SAP row may be broadcast across several
+    # Dashboard rows for that PO. Without this, MDP/SDP Delay Qty on the
+    # SAP side would be multiplied by however many Dashboard rows the PO
+    # exploded into.
+    qty_sap_num   = pd.to_numeric(df_out["Quantity"], errors="coerce").where(df_out["Is Primary SAP Row"], 0).fillna(0)
     qty_dash_num  = pd.to_numeric(df_out["Dashboard Quantity"], errors="coerce").fillna(0)
 
     mdp_status    = _norm_str_col(df_out["MDP"])
@@ -727,7 +736,8 @@ def process(pbi_file, sap_file):
         "PO No.(Full)","Customer PO item","Line Aggregator",
         "Elevated Check","Responsiveness","PO Status","Order Status Infor","PO No.(Short)","Merchandise Category 2",
         "Ship to Name","Ship-to Country","Ship-to-Sort1","Article Lead time",
-        "Quantity","Dashboard Quantity","Dashboard vs SAP Result_Quantity",
+        "Is Primary SAP Row","SAP Line Count","Dashboard Line Count",
+        "Quantity","Dashboard Quantity","Dashboard Quantity (PO Total)","Dashboard vs SAP Result_Quantity",
         "Model Name",
         "Article No",
         "SAP Material","Pattern Code(Up.No.)","Model No","Outsole Mold","Gender",
