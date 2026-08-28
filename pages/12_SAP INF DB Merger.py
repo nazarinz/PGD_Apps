@@ -416,82 +416,10 @@ def process(pbi_file, sap_file):
         if c not in df_dash_keep.columns:
             df_dash_keep[c] = pd.NA
 
-    # ============================================================
-    # DASHBOARD PRE-AGGREGATION — padatkan Dashboard ke 1 baris per PO
-    # SEBELUM merge ke SAP (per keputusan user).
-    # ============================================================
-    # Ini pelengkap dari fix sebelumnya: dulu 1 SAP row di-broadcast ke N
-    # baris Dashboard, lalu dijaga pakai "Is Primary SAP Row" supaya SAP
-    # side tidak double-counted. Kalau Dashboard dipadatkan dulu jadi 1
-    # baris/PO, sumber duplikasi itu hilang dari akarnya — merge ke SAP
-    # jadi rapi 1:1 di mayoritas kasus (kecuali SAP sendiri punya >1 baris
-    # per PO, kasus langka yang tetap dijaga terpisah di bawah lewat
-    # "Is Primary Dashboard Row").
-    #
-    # Aturan agregasi per tipe kolom:
-    #   - "Dashboard Quantity"            -> SUM (Order ALL dijumlah per PO,
-    #                                         konsisten dengan temuan bahwa
-    #                                         SAP Quantity = SUM anak-anaknya)
-    #   - Status MDP/SDP Adjusted         -> "Delay" kalau ADA SALAH SATU baris
-    #                                         Delay, else "Ontime" (worst-case
-    #                                         wins). PENTING: bukan text-concat
-    #                                         seperti kolom kategori lain,
-    #                                         karena mask FAIL/DELAY di bawah
-    #                                         butuh nilai persis "DELAY", bukan
-    #                                         string gabungan macam
-    #                                         "Delay, Ontime" yang tidak akan
-    #                                         pernah match apa pun.
-    #   - Tanggal (FPD/LPD/CRD/PSDD/PD/PODD/FGR) -> MIN (tanggal paling awal)
-    #   - Kategori/teks (Elevated Check, Responsiveness, PO Status,
-    #     Line Aggregator) -> gabung nilai unik (text concat), sama seperti
-    #     script referensi user
-    dash_raw_line_counts = df_dash_keep.groupby(PK, dropna=False).size()
-
-    _dash_date_cols = [c for c in [
-        "Dashboard FPD", "Dashboard LPD", "Dashboard CRD", "Dashboard PSDD",
-        "Dashboard PD", "Dashboard PODD", "Dashboard FGR",
-    ] if c in df_dash_keep.columns]
-    for c in _dash_date_cols:
-        df_dash_keep[c] = pd.to_datetime(df_dash_keep[c], errors="coerce")
-
-    def _agg_text_unique(s: pd.Series):
-        vals = [str(v).strip() for v in s.dropna().astype(str) if str(v).strip() and str(v).strip().lower() != "nan"]
-        if not vals:
-            return pd.NA
-        seen, ordered = set(), []
-        for v in vals:
-            key = v.lower()
-            if key not in seen:
-                seen.add(key)
-                ordered.append(v)
-        return ", ".join(ordered)
-
-    def _agg_status_worst_wins(s: pd.Series):
-        norm = _norm_str_col(s.astype("string"))
-        if norm.eq("DELAY").any():
-            return "Delay"
-        if norm.eq("ONTIME").any():
-            return "Ontime"
-        return pd.NA
-
-    dash_agg_rules = {}
-    if "Dashboard Quantity" in df_dash_keep.columns:
-        dash_agg_rules["Dashboard Quantity"] = "sum"
-    for status_col in ["Dashboard MDP Status Adjusted", "Dashboard SDP Status Adjusted"]:
-        if status_col in df_dash_keep.columns:
-            dash_agg_rules[status_col] = _agg_status_worst_wins
-    for c in _dash_date_cols:
-        dash_agg_rules[c] = "min"
-    for c in passthrough_cols:
-        if c in df_dash_keep.columns:
-            dash_agg_rules[c] = _agg_text_unique
-
-    df_dash_keep = (
-        df_dash_keep.groupby(PK, dropna=False)
-        .agg(dash_agg_rules)
-        .reset_index()
-    )
-    df_dash_keep["Dashboard Line Count (raw, pre-agg)"] = df_dash_keep[PK].map(dash_raw_line_counts).fillna(0).astype(int)
+    # NOTE: Dashboard pre-aggregation (padatkan ke 1 baris/PO) dari
+    # perubahan sebelumnya SUDAH DILEPAS di sini — algoritma pairing
+    # nearest-quantity di bawah butuh baris Dashboard mentah (per-line)
+    # untuk dipilih pasangannya satu per satu, bukan hasil SUM per PO.
 
     # ============================================================
     # DIAGNOSTIC SNAPSHOT #2 — mapping coverage. For every source
@@ -567,79 +495,147 @@ def process(pbi_file, sap_file):
     diag["final_order_cols_with_no_source_match"] = unmatched_in_sap
 
     # ============================================================
-    # MERGE ALGORITHM (redesigned) — Dashboard pre-agregasi + outer join
+    # MERGE ALGORITHM — nearest-quantity 1:1 pairing per PO (SAP = base row)
     # ============================================================
-    # EVIDENCE (confirmed on sample files): when 1 SAP row explodes into N
-    # Dashboard rows for the same PO, SAP's Quantity equals the SUM of the
-    # N Dashboard rows — e.g. PO 901200033: Dashboard 534 + 726 = 1260,
-    # SAP Quantity = 1260 exactly. SAP sits at PO-header level (one
-    # aggregate row); Dashboard sits at child/component level (N rows
-    # summing to that total).
+    # Per spesifikasi eksplisit user:
+    #   - PO menentukan baris mana yang ELIGIBLE dipasangkan (grouping by
+    #     PO dulu), lalu SELISIH KUANTITAS menentukan pasangan spesifik di
+    #     dalam grup PO yang sama.
+    #   - TIDAK pakai pd.merge polos di PO saja — itu bikin cartesian
+    #     product kalau 1 PO punya banyak baris di kedua sisi.
+    #   - Kuantitas referensi SAP: "Infor Quantity" kalau ada, else
+    #     "Quantity".
+    #   - Setiap baris SAP dipasangkan ke baris Dashboard dengan selisih
+    #     kuantitas TERKECIL, greedy, masing-masing baris (SAP maupun
+    #     Dashboard) cuma boleh dipakai SEKALI. Urutkan kandidat pasangan
+    #     berdasarkan selisih kuantitas menaik, lalu index baris sebagai
+    #     tie-breaker.
+    #   - SAP row tetap jadi baris dasar (base row); field Dashboard yang
+    #     match ditambahkan sebagai kolom terpisah, tidak menimpa kolom
+    #     SAP asli.
+    #   - Baris SAP tanpa pasangan Dashboard tetap dipertahankan (field
+    #     Dashboard-nya NA). Baris Dashboard yang tidak terpakai TIDAK
+    #     memaksa duplikasi baris SAP.
     #
-    # Per keputusan user: Dashboard sekarang dipadatkan ke 1 baris/PO
-    # SEBELUM merge (lihat blok "DASHBOARD PRE-AGGREGATION" di atas), jadi
-    # sumber duplikasi dari sisi Dashboard sudah hilang dari akarnya.
-    # Sisa kemungkinan duplikasi HANYA datang dari SAP kalau SAP sendiri
-    # punya >1 baris untuk PO yang sama (beda Customer PO item / order
-    # type) — kasus yang jauh lebih jarang. Untuk kasus itu, satu baris
-    # Dashboard yang sudah dipadatkan akan di-broadcast ke tiap baris SAP.
-    # Supaya Dashboard Quantity tidak ikut kegandakan saat dijumlah di
-    # pivot, hanya baris PERTAMA per PO ("Is Primary Dashboard Row") yang
-    # membawa kontribusi Dashboard Quantity — baris SAP lainnya tetap
-    # tampil apa adanya (Quantity/status SAP-nya sendiri real, tidak
-    # di-nol-kan, karena itu memang baris SAP yang berbeda).
-    #
-    # Known limitation: PO dengan SAP multi-baris asli tetap menghasilkan
-    # cartesian expansion (1 dashboard-row x n_sap_rows) — jarang terjadi,
-    # dan sekarang ditandai eksplisit lewat "SAP Line Count" untuk direview
-    # manual, bukan diam-diam disamaratakan.
+    # PERUBAHAN PERILAKU YANG PERLU DIKETAHUI: karena SAP sekarang jadi
+    # baris dasar, PO yang HANYA ada di Dashboard (tidak py ada baris SAP
+    # sama sekali) TIDAK menghasilkan baris output di sini — tidak ada
+    # baris SAP untuk ditempeli. Jumlah PO yang ter-exclude karena ini
+    # tetap dicatat di diagnostik di bawah untuk transparansi.
 
-    # resolve loosely-matched SAP column names to their canonical form so
-    # the merge carries them through directly, without per-row lookups
-    sap_extra_lookup_cols = ["Customer PO item"] + sap_extra_passthrough_cols
-    sap_col_rename_for_merge = {}
-    for wanted in sap_extra_lookup_cols:
-        actual = sap_colname_lookup.get(_normalize_colname(wanted))
-        if actual is not None and actual != wanted:
-            sap_col_rename_for_merge[actual] = wanted
-    df_sapinf_merge_ready = df_sapinf_join.rename(columns=sap_col_rename_for_merge)
+    def _safe_num(v):
+        """Konversi ke float dengan aman — tidak pernah raise, tidak pernah
+        mengembalikan pd.NA/NaT (selalu float biasa atau np.nan). Ini
+        krusial karena pd.NA yang dibandingkan pakai < / > atau dipakai
+        langsung di `if` akan raise 'boolean value of NA is ambiguous'."""
+        if v is None:
+            return np.nan
+        try:
+            if pd.isna(v):
+                return np.nan
+        except (TypeError, ValueError):
+            pass
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return np.nan
 
-    sap_po_set = set(df_sapinf_merge_ready[PK].dropna().unique().tolist())
+    def _sap_ref_qty(row):
+        iq = _safe_num(row.get("Infor Quantity"))
+        if not np.isnan(iq):
+            return iq
+        return _safe_num(row.get("Quantity"))
+
+    def _match_dashboard_for_po(df_sap_po: pd.DataFrame, df_dash_po: pd.DataFrame) -> dict:
+        """Greedy nearest-quantity 1:1 matching di dalam SATU grup PO.
+        Return {sap_index: dash_index_or_None}. Setiap sap_index dan
+        dash_index dipakai maksimal sekali."""
+        sap_idx = list(df_sap_po.index)
+        dash_idx = list(df_dash_po.index)
+        match = {i: None for i in sap_idx}
+        if not sap_idx or not dash_idx:
+            return match
+
+        sap_ref  = {i: _sap_ref_qty(df_sap_po.loc[i]) for i in sap_idx}
+        dash_qty = {j: _safe_num(df_dash_po.loc[j].get("Dashboard Quantity")) for j in dash_idx}
+        sap_pos  = {i: p for p, i in enumerate(sap_idx)}
+        dash_pos = {j: p for p, j in enumerate(dash_idx)}
+
+        candidates = []
+        for i in sap_idx:
+            ref = sap_ref[i]
+            for j in dash_idx:
+                dq = dash_qty[j]
+                dist = np.inf if (np.isnan(ref) or np.isnan(dq)) else abs(ref - dq)
+                # urutkan: selisih kuantitas menaik, lalu index baris (posisi asal) sebagai tie-breaker
+                candidates.append((dist, sap_pos[i], dash_pos[j], i, j))
+        candidates.sort(key=lambda x: (x[0], x[1], x[2]))
+
+        used_sap, used_dash = set(), set()
+        for dist, _sp, _dp, i, j in candidates:
+            if i in used_sap or j in used_dash:
+                continue
+            match[i] = j
+            used_sap.add(i)
+            used_dash.add(j)
+        return match
+
+    # Field Dashboard yang ditempelkan ke baris SAP tanpa menimpa nama
+    # kolom SAP asli. "Dashboard MDP"/"Dashboard SDP" yang diminta di
+    # spesifikasi sama isinya dengan "Dashboard MDP/SDP Status Adjusted"
+    # yang sudah dipakai di seluruh diagnostik/mask di bawah — nama kolom
+    # internal ini DIPERTAHANKAN (bukan di-rename) supaya perubahan
+    # tetap minimal terhadap logika GAP MDP/SDP yang sudah ada.
+    dash_side_cols = [
+        "Dashboard Quantity", "Dashboard MDP Status Adjusted", "Dashboard SDP Status Adjusted",
+        "Dashboard FPD", "Dashboard LPD", "Dashboard CRD", "Dashboard PSDD",
+        "Dashboard PD", "Dashboard PODD", "Dashboard FGR",
+        "Elevated Check", "Responsiveness", "PO Status", "Line Aggregator",
+    ]
+    dash_side_cols = [c for c in dash_side_cols if c in df_dash_keep.columns]
+
+    sap_po_set = set(df_sapinf_join[PK].dropna().unique().tolist())
     dash_po_set = set(df_dash_keep[PK].dropna().unique().tolist())
     dash_only_pos = sorted(dash_po_set - sap_po_set)
 
-    df_out = df_dash_keep.merge(
-        df_sapinf_merge_ready, on=PK, how="outer", indicator="_merge_src"
-    )
+    sap_groups = {po: g for po, g in df_sapinf_join.groupby(PK, dropna=False)}
+    dash_groups = {po: g for po, g in df_dash_keep.groupby(PK, dropna=False)}
+    empty_dash_template = df_dash_keep.iloc[0:0]
 
-    df_out["Order Status Infor"] = np.where(
-        df_out["_merge_src"] == "left_only", "NO SAP MATCH (dashboard only)", pd.NA
-    )
-    if "PO No.(Full)" in df_out.columns:
-        df_out["PO No.(Full)"] = df_out["PO No.(Full)"].where(
-            df_out["_merge_src"] != "left_only", df_out[PK]
-        )
+    out_rows = []
+    n_sap_rows_unmatched = 0
+    n_dash_rows_unused = 0
+    for po, df_sap_po in sap_groups.items():
+        df_dash_po = dash_groups.get(po, empty_dash_template)
+        match = _match_dashboard_for_po(df_sap_po, df_dash_po)
 
-    # "Is Primary Dashboard Row": first row per PO among rows that actually
-    # have real Dashboard data — used so Dashboard-side Quantity/Delay Qty
-    # is counted exactly once per PO, even in the rare case a single
-    # (already-aggregated) Dashboard row gets broadcast across multiple
-    # SAP lines for that PO.
-    has_dash = df_out["_merge_src"].isin(["both", "left_only"])
-    df_out["Is Primary Dashboard Row"] = False
-    dash_rows_idx = df_out.index[has_dash]
-    if len(dash_rows_idx) > 0:
-        rank_within_po = df_out.loc[dash_rows_idx].groupby(PK).cumcount()
-        primary_idx = rank_within_po.index[rank_within_po == 0]
-        df_out.loc[primary_idx, "Is Primary Dashboard Row"] = True
+        for i, j in match.items():
+            row_sap = df_sap_po.loc[i]
+            out = row_sap.to_dict()
+            out[PK] = po
+            if j is None:
+                n_sap_rows_unmatched += 1
+                for c in dash_side_cols:
+                    out[c] = pd.NA
+                out["Order Status Infor"] = "NO DASHBOARD MATCH (SAP only)"
+            else:
+                row_dash = df_dash_po.loc[j]
+                for c in dash_side_cols:
+                    out[c] = row_dash.get(c, pd.NA)
+                out["Order Status Infor"] = pd.NA
+            out_rows.append(out)
 
-    # flag POs where SAP itself has more than one row — a plain PK join
-    # cartesian-expands these, so they need manual review rather than
-    # being trusted at face value
-    sap_line_counts = df_sapinf_merge_ready.groupby(PK).size()
-    df_out["SAP Line Count"] = df_out[PK].map(sap_line_counts).fillna(0).astype(int)
+        n_matched_this_po = sum(1 for v in match.values() if v is not None)
+        n_dash_rows_unused += max(0, len(df_dash_po) - n_matched_this_po)
 
-    df_out.drop(columns=["_merge_src"], inplace=True)
+    df_out = pd.DataFrame(out_rows)
+
+    diag["merge_sap_rows_total"] = int(df_sapinf_join.shape[0])
+    diag["merge_sap_rows_unmatched_to_dashboard"] = int(n_sap_rows_unmatched)
+    diag["merge_dashboard_rows_unused"] = int(n_dash_rows_unused)
+    diag["merge_dashboard_only_po_excluded_count"] = len(dash_only_pos)
+    diag["merge_dashboard_only_po_sample"] = dash_only_pos[:20]
+
     for c in ["Elevated Check", "Responsiveness", "PO Status"]:
         if c in df_out.columns:
             df_out[c] = df_out[c].astype("string").str.strip()
@@ -648,19 +644,12 @@ def process(pbi_file, sap_file):
         if c in df_out.columns:
             df_out[c] = pd.to_numeric(df_out[c], errors="coerce")
 
-    # compare columns
-    # FIX: the old "Dashboard vs SAP Result_Quantity" compared SAP Quantity
-    # against a SINGLE Dashboard row's quantity — meaningless once we know
-    # SAP Quantity = SUM of all Dashboard rows for that PO (see evidence
-    # above), since it would falsely flag a mismatch for every PO with more
-    # than one Dashboard line. Compare against the PO-level Dashboard total
-    # instead.
-    dash_qty_po_total = df_dash_keep.groupby(PK)["Dashboard Quantity"].sum(min_count=1)
-    df_out["Dashboard Quantity (PO Total)"] = df_out[PK].map(dash_qty_po_total)
-
-    if ("Quantity" in df_out.columns) and ("Dashboard Quantity (PO Total)" in df_out.columns):
+    # compare columns — kembali ke perbandingan per-baris (SAP Quantity vs
+    # Dashboard Quantity dari baris yang benar-benar terpasang), sesuai
+    # desain "1 SAP row : 1 Dashboard row terbaik" di algoritma baru ini.
+    if ("Quantity" in df_out.columns) and ("Dashboard Quantity" in df_out.columns):
         df_out["Dashboard vs SAP Result_Quantity"] = compare_numeric(
-            df_out, "Quantity", "Dashboard Quantity (PO Total)"
+            df_out, "Quantity", "Dashboard Quantity"
         )
     else:
         df_out["Dashboard vs SAP Result_Quantity"] = pd.NA
@@ -695,15 +684,12 @@ def process(pbi_file, sap_file):
         if need not in df_out.columns:
             df_out[need] = pd.NA
 
-    # FIX: only count Dashboard Quantity ONCE per PO (on the "Is Primary
-    # Dashboard Row"), for the rare case a single (already pre-aggregated)
-    # Dashboard row gets broadcast across multiple SAP lines for the same
-    # PO. SAP-side Quantity needs NO such protection anymore — after
-    # Dashboard pre-aggregation, each SAP row in df_out is already a
-    # genuinely distinct real SAP line (not a duplicate created by the
-    # merge), so its own Quantity should count in full.
+    # Setiap baris output sekarang hasil pairing 1:1 EKSKLUSIF (setiap SAP
+    # row dan Dashboard row cuma dipakai sekali) — tidak ada lagi broadcast/
+    # duplikasi yang perlu dijaga dengan flag "primary row" seperti desain
+    # sebelumnya. Kuantitas dari kedua sisi aman langsung dipakai apa adanya.
     qty_sap_num   = pd.to_numeric(df_out["Quantity"], errors="coerce").fillna(0)
-    qty_dash_num  = pd.to_numeric(df_out["Dashboard Quantity"], errors="coerce").where(df_out["Is Primary Dashboard Row"], 0).fillna(0)
+    qty_dash_num  = pd.to_numeric(df_out["Dashboard Quantity"], errors="coerce").fillna(0)
 
     mdp_status    = _norm_str_col(df_out["MDP"])
     dash_mdp_stat = _norm_str_col(df_out["Dashboard MDP Status Adjusted"])
@@ -806,8 +792,7 @@ def process(pbi_file, sap_file):
         "PO No.(Full)","Customer PO item","Line Aggregator",
         "Elevated Check","Responsiveness","PO Status","Order Status Infor","PO No.(Short)","Merchandise Category 2",
         "Ship to Name","Ship-to Country","Ship-to-Sort1","Article Lead time",
-        "Is Primary Dashboard Row","SAP Line Count","Dashboard Line Count (raw, pre-agg)",
-        "Quantity","Dashboard Quantity","Dashboard Quantity (PO Total)","Dashboard vs SAP Result_Quantity",
+        "Quantity","Dashboard Quantity","Dashboard vs SAP Result_Quantity",
         "Model Name",
         "Article No",
         "SAP Material","Pattern Code(Up.No.)","Model No","Outsole Mold","Gender",
@@ -970,10 +955,16 @@ if run_button:
                 st.write(f"- {c}: {filled} dari {df_final.shape[0]} baris terisi")
 
             n_dash_only = df_final.attrs.get("dash_only_po_count", 0)
-            st.write(f"PO yang hanya ada di Dashboard (tidak ada di file SAP/Infor): **{n_dash_only}** PO — sekarang tetap disertakan di output.")
+            st.write(f"PO yang hanya ada di Dashboard (tidak ada di file SAP/Infor): **{n_dash_only}** PO — **TIDAK disertakan** di output ini, karena SAP sekarang jadi baris dasar (base row) untuk pairing nearest-quantity.")
             sample_pos = df_final.attrs.get("dash_only_pos_sample", [])
             if sample_pos:
                 st.write("Contoh PO tersebut:", sample_pos)
+
+            diag_merge = df_final.attrs.get("diag", {})
+            st.markdown("**Statistik pairing nearest-quantity:**")
+            st.write(f"- Total baris SAP: {diag_merge.get('merge_sap_rows_total', 'n/a')}")
+            st.write(f"- Baris SAP tanpa pasangan Dashboard: {diag_merge.get('merge_sap_rows_unmatched_to_dashboard', 'n/a')}")
+            st.write(f"- Baris Dashboard yang tidak terpakai (PO ada SAP-nya, tapi baris Dashboard-nya lebih banyak dari baris SAP): {diag_merge.get('merge_dashboard_rows_unused', 'n/a')}")
 
             n_crd_fallback = df_final.attrs.get("crd_fallback_count", 0)
             st.write(f"Baris yang 'CRD Monthly'-nya dihitung dari Dashboard CRD (fallback, karena SAP CRD kosong): **{n_crd_fallback}** baris.")
