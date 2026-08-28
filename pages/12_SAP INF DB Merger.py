@@ -417,6 +417,83 @@ def process(pbi_file, sap_file):
             df_dash_keep[c] = pd.NA
 
     # ============================================================
+    # DASHBOARD PRE-AGGREGATION — padatkan Dashboard ke 1 baris per PO
+    # SEBELUM merge ke SAP (per keputusan user).
+    # ============================================================
+    # Ini pelengkap dari fix sebelumnya: dulu 1 SAP row di-broadcast ke N
+    # baris Dashboard, lalu dijaga pakai "Is Primary SAP Row" supaya SAP
+    # side tidak double-counted. Kalau Dashboard dipadatkan dulu jadi 1
+    # baris/PO, sumber duplikasi itu hilang dari akarnya — merge ke SAP
+    # jadi rapi 1:1 di mayoritas kasus (kecuali SAP sendiri punya >1 baris
+    # per PO, kasus langka yang tetap dijaga terpisah di bawah lewat
+    # "Is Primary Dashboard Row").
+    #
+    # Aturan agregasi per tipe kolom:
+    #   - "Dashboard Quantity"            -> SUM (Order ALL dijumlah per PO,
+    #                                         konsisten dengan temuan bahwa
+    #                                         SAP Quantity = SUM anak-anaknya)
+    #   - Status MDP/SDP Adjusted         -> "Delay" kalau ADA SALAH SATU baris
+    #                                         Delay, else "Ontime" (worst-case
+    #                                         wins). PENTING: bukan text-concat
+    #                                         seperti kolom kategori lain,
+    #                                         karena mask FAIL/DELAY di bawah
+    #                                         butuh nilai persis "DELAY", bukan
+    #                                         string gabungan macam
+    #                                         "Delay, Ontime" yang tidak akan
+    #                                         pernah match apa pun.
+    #   - Tanggal (FPD/LPD/CRD/PSDD/PD/PODD/FGR) -> MIN (tanggal paling awal)
+    #   - Kategori/teks (Elevated Check, Responsiveness, PO Status,
+    #     Line Aggregator) -> gabung nilai unik (text concat), sama seperti
+    #     script referensi user
+    dash_raw_line_counts = df_dash_keep.groupby(PK, dropna=False).size()
+
+    _dash_date_cols = [c for c in [
+        "Dashboard FPD", "Dashboard LPD", "Dashboard CRD", "Dashboard PSDD",
+        "Dashboard PD", "Dashboard PODD", "Dashboard FGR",
+    ] if c in df_dash_keep.columns]
+    for c in _dash_date_cols:
+        df_dash_keep[c] = pd.to_datetime(df_dash_keep[c], errors="coerce")
+
+    def _agg_text_unique(s: pd.Series):
+        vals = [str(v).strip() for v in s.dropna().astype(str) if str(v).strip() and str(v).strip().lower() != "nan"]
+        if not vals:
+            return pd.NA
+        seen, ordered = set(), []
+        for v in vals:
+            key = v.lower()
+            if key not in seen:
+                seen.add(key)
+                ordered.append(v)
+        return ", ".join(ordered)
+
+    def _agg_status_worst_wins(s: pd.Series):
+        norm = _norm_str_col(s.astype("string"))
+        if norm.eq("DELAY").any():
+            return "Delay"
+        if norm.eq("ONTIME").any():
+            return "Ontime"
+        return pd.NA
+
+    dash_agg_rules = {}
+    if "Dashboard Quantity" in df_dash_keep.columns:
+        dash_agg_rules["Dashboard Quantity"] = "sum"
+    for status_col in ["Dashboard MDP Status Adjusted", "Dashboard SDP Status Adjusted"]:
+        if status_col in df_dash_keep.columns:
+            dash_agg_rules[status_col] = _agg_status_worst_wins
+    for c in _dash_date_cols:
+        dash_agg_rules[c] = "min"
+    for c in passthrough_cols:
+        if c in df_dash_keep.columns:
+            dash_agg_rules[c] = _agg_text_unique
+
+    df_dash_keep = (
+        df_dash_keep.groupby(PK, dropna=False)
+        .agg(dash_agg_rules)
+        .reset_index()
+    )
+    df_dash_keep["Dashboard Line Count (raw, pre-agg)"] = df_dash_keep[PK].map(dash_raw_line_counts).fillna(0).astype(int)
+
+    # ============================================================
     # DIAGNOSTIC SNAPSHOT #2 — mapping coverage. For every source
     # column dash_map_src_to_new expects, record whether it was
     # actually found in the uploaded PBI file (present_src vs missing).
@@ -490,39 +567,32 @@ def process(pbi_file, sap_file):
     diag["final_order_cols_with_no_source_match"] = unmatched_in_sap
 
     # ============================================================
-    # MERGE ALGORITHM (redesigned) — plain outer join + PO-level reconciliation
+    # MERGE ALGORITHM (redesigned) — Dashboard pre-agregasi + outer join
     # ============================================================
     # EVIDENCE (confirmed on sample files): when 1 SAP row explodes into N
     # Dashboard rows for the same PO, SAP's Quantity equals the SUM of the
     # N Dashboard rows — e.g. PO 901200033: Dashboard 534 + 726 = 1260,
-    # SAP Quantity = 1260 exactly. NOT the value closest to any single
-    # Dashboard row. SAP sits at PO-header level (one aggregate row);
-    # Dashboard sits at child/component level (N rows summing to that
-    # total). The old "nearest quantity" pairing logic solved the wrong
-    # problem — it guessed a 1:1 partner instead of recognizing a
-    # 1-header-to-many-children relationship, which silently corrupted
-    # every PO with more than one Dashboard row.
+    # SAP Quantity = 1260 exactly. SAP sits at PO-header level (one
+    # aggregate row); Dashboard sits at child/component level (N rows
+    # summing to that total).
     #
-    # New approach: a plain outer join on PO. When a PO has N Dashboard
-    # rows and 1 SAP row, the SAP row is broadcast (duplicated) across all
-    # N — every Dashboard row correctly sees the true SAP attributes
-    # (Site, Brand, MDP/SDP status, etc), instead of only one "winning"
-    # row getting real data and the rest getting nulled out. To avoid
-    # double-counting the SAP-side Quantity / Delay Qty when an exploded
-    # PO's rows get summed in a pivot, only the FIRST row per PO
-    # ("Is Primary SAP Row") carries the real SAP Quantity contribution —
-    # the other rows still show the SAP attributes for context, but
-    # contribute 0 to quantity/delay-qty sums, so a PO's SAP number is
-    # counted exactly once no matter how many Dashboard rows it exploded
-    # into.
+    # Per keputusan user: Dashboard sekarang dipadatkan ke 1 baris/PO
+    # SEBELUM merge (lihat blok "DASHBOARD PRE-AGGREGATION" di atas), jadi
+    # sumber duplikasi dari sisi Dashboard sudah hilang dari akarnya.
+    # Sisa kemungkinan duplikasi HANYA datang dari SAP kalau SAP sendiri
+    # punya >1 baris untuk PO yang sama (beda Customer PO item / order
+    # type) — kasus yang jauh lebih jarang. Untuk kasus itu, satu baris
+    # Dashboard yang sudah dipadatkan akan di-broadcast ke tiap baris SAP.
+    # Supaya Dashboard Quantity tidak ikut kegandakan saat dijumlah di
+    # pivot, hanya baris PERTAMA per PO ("Is Primary Dashboard Row") yang
+    # membawa kontribusi Dashboard Quantity — baris SAP lainnya tetap
+    # tampil apa adanya (Quantity/status SAP-nya sendiri real, tidak
+    # di-nol-kan, karena itu memang baris SAP yang berbeda).
     #
-    # Known limitation: if a PO genuinely has multiple DIFFERENT SAP lines
-    # (e.g. different "Customer PO item" values, not just a formatting
-    # artifact), a plain PK-only join produces a cartesian expansion
-    # (n_sap_rows x n_dash_rows). This is rare (per earlier diagnostics,
-    # a small single-digit percent of POs) and is flagged explicitly via
-    # "SAP Line Count" below so those specific POs can be reviewed
-    # manually rather than silently trusted.
+    # Known limitation: PO dengan SAP multi-baris asli tetap menghasilkan
+    # cartesian expansion (1 dashboard-row x n_sap_rows) — jarang terjadi,
+    # dan sekarang ditandai eksplisit lewat "SAP Line Count" untuk direview
+    # manual, bukan diam-diam disamaratakan.
 
     # resolve loosely-matched SAP column names to their canonical form so
     # the merge carries them through directly, without per-row lookups
@@ -550,26 +620,24 @@ def process(pbi_file, sap_file):
             df_out["_merge_src"] != "left_only", df_out[PK]
         )
 
-    # "Is Primary SAP Row": first row per PO among rows that actually have
-    # a real SAP match — used so SAP-side Quantity/Delay Qty is counted
-    # exactly once per PO regardless of how many Dashboard rows it was
-    # broadcast across.
-    has_sap = df_out["_merge_src"].isin(["both", "right_only"])
-    df_out["Is Primary SAP Row"] = False
-    sap_rows_idx = df_out.index[has_sap]
-    if len(sap_rows_idx) > 0:
-        rank_within_po = df_out.loc[sap_rows_idx].groupby(PK).cumcount()
+    # "Is Primary Dashboard Row": first row per PO among rows that actually
+    # have real Dashboard data — used so Dashboard-side Quantity/Delay Qty
+    # is counted exactly once per PO, even in the rare case a single
+    # (already-aggregated) Dashboard row gets broadcast across multiple
+    # SAP lines for that PO.
+    has_dash = df_out["_merge_src"].isin(["both", "left_only"])
+    df_out["Is Primary Dashboard Row"] = False
+    dash_rows_idx = df_out.index[has_dash]
+    if len(dash_rows_idx) > 0:
+        rank_within_po = df_out.loc[dash_rows_idx].groupby(PK).cumcount()
         primary_idx = rank_within_po.index[rank_within_po == 0]
-        df_out.loc[primary_idx, "Is Primary SAP Row"] = True
+        df_out.loc[primary_idx, "Is Primary Dashboard Row"] = True
 
     # flag POs where SAP itself has more than one row — a plain PK join
     # cartesian-expands these, so they need manual review rather than
     # being trusted at face value
     sap_line_counts = df_sapinf_merge_ready.groupby(PK).size()
     df_out["SAP Line Count"] = df_out[PK].map(sap_line_counts).fillna(0).astype(int)
-
-    dash_line_counts = df_dash_keep.groupby(PK).size()
-    df_out["Dashboard Line Count"] = df_out[PK].map(dash_line_counts).fillna(0).astype(int)
 
     df_out.drop(columns=["_merge_src"], inplace=True)
     for c in ["Elevated Check", "Responsiveness", "PO Status"]:
@@ -627,13 +695,15 @@ def process(pbi_file, sap_file):
         if need not in df_out.columns:
             df_out[need] = pd.NA
 
-    # FIX: only count SAP Quantity ONCE per PO (on the "Is Primary SAP Row"),
-    # even though the same SAP row may be broadcast across several
-    # Dashboard rows for that PO. Without this, MDP/SDP Delay Qty on the
-    # SAP side would be multiplied by however many Dashboard rows the PO
-    # exploded into.
-    qty_sap_num   = pd.to_numeric(df_out["Quantity"], errors="coerce").where(df_out["Is Primary SAP Row"], 0).fillna(0)
-    qty_dash_num  = pd.to_numeric(df_out["Dashboard Quantity"], errors="coerce").fillna(0)
+    # FIX: only count Dashboard Quantity ONCE per PO (on the "Is Primary
+    # Dashboard Row"), for the rare case a single (already pre-aggregated)
+    # Dashboard row gets broadcast across multiple SAP lines for the same
+    # PO. SAP-side Quantity needs NO such protection anymore — after
+    # Dashboard pre-aggregation, each SAP row in df_out is already a
+    # genuinely distinct real SAP line (not a duplicate created by the
+    # merge), so its own Quantity should count in full.
+    qty_sap_num   = pd.to_numeric(df_out["Quantity"], errors="coerce").fillna(0)
+    qty_dash_num  = pd.to_numeric(df_out["Dashboard Quantity"], errors="coerce").where(df_out["Is Primary Dashboard Row"], 0).fillna(0)
 
     mdp_status    = _norm_str_col(df_out["MDP"])
     dash_mdp_stat = _norm_str_col(df_out["Dashboard MDP Status Adjusted"])
@@ -736,7 +806,7 @@ def process(pbi_file, sap_file):
         "PO No.(Full)","Customer PO item","Line Aggregator",
         "Elevated Check","Responsiveness","PO Status","Order Status Infor","PO No.(Short)","Merchandise Category 2",
         "Ship to Name","Ship-to Country","Ship-to-Sort1","Article Lead time",
-        "Is Primary SAP Row","SAP Line Count","Dashboard Line Count",
+        "Is Primary Dashboard Row","SAP Line Count","Dashboard Line Count (raw, pre-agg)",
         "Quantity","Dashboard Quantity","Dashboard Quantity (PO Total)","Dashboard vs SAP Result_Quantity",
         "Model Name",
         "Article No",
