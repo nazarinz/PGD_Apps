@@ -3,7 +3,18 @@ from utils.auth import require_login
 require_login()
 
 # ==========================================
-# 8_Tooling Sizelist.py — PGD Apps (v13)
+# 8_Tooling Sizelist.py — PGD Apps (v14)
+# CHANGELOG v14:
+#   - FIX: write_sheet sekarang cek np.isfinite() sebelum write_number.
+#     Sebelumnya hanya cek pd.isna(val), yang TIDAK menangkap nilai
+#     inf / -inf. Kalau ada inf di kolom numerik (Order Quantity /
+#     UK_*), xlsxwriter melempar TypeError saat export ("Number is
+#     NaN or Inf which is not supported in Excel"). Sekarang nilai
+#     inf/-inf ditulis sebagai cell kosong, bukan bikin crash.
+#   - NEW: Blok DEBUG 4 (find_bad_values) — mendeteksi & menampilkan
+#     semua cell inf/-inf sebelum proses export, lengkap dengan
+#     sheet, baris, kolom, dan nilai aslinya, supaya sumber masalah
+#     bisa dilacak dari datanya, bukan cuma ditutupi saat export.
 # CHANGELOG v13:
 #   - FIX: Sheet "Sizes" sekarang di-group berdasarkan
 #     ["Document Date", "Remark"], bukan "Document Date" saja.
@@ -30,7 +41,7 @@ DATE_COLS = ["Document Date", "LPD", "CRD", "PD"]
 
 # ==========================================
 st.set_page_config(page_title="PGD Apps — Tooling Sizelist", page_icon="📊", layout="wide")
-st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v13)")
+st.title("📊 PGD Tooling Sizelist — Subtotal Generator (v14)")
 
 # ================= Upload & Input =================
 uploaded = st.file_uploader("📤 Upload file Excel (SAP/In-house Sizelist)", type=["xlsx", "xls"])
@@ -117,6 +128,23 @@ else:
 for col in DATE_COLS:
     if col in df.columns:
         df[col] = pd.to_datetime(df[col], errors="coerce")
+
+# ================= Normalisasi Kolom Numerik (Order Quantity & UK_*) =================
+# ✅ NEW v14: paksa Order Quantity & semua kolom UK_* jadi numerik bersih.
+# String/simbol aneh (mis. "#DIV/0!", teks, dsb.) akan berubah jadi NaN
+# lewat errors="coerce", lalu di-isi 0. Ini mencegah nilai non-numerik
+# ikut ke perhitungan sum() di make_subtotal() dan berujung jadi inf.
+size_cols_raw = [c for c in df.columns if re.match(r'(?i)^UK_', str(c))]
+numeric_candidates = ["Order Quantity"] + size_cols_raw
+for col in numeric_candidates:
+    before_nonnull = df[col].notna().sum()
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+    # tandai apakah ada nilai non-finite (inf/-inf) sebelum di-fillna
+    non_finite_mask = ~np.isfinite(df[col].fillna(0))
+    if non_finite_mask.any():
+        st.warning(f"⚠️ Kolom '{col}': {non_finite_mask.sum()} nilai tidak wajar (inf/-inf) ditemukan & dinolkan.")
+        df.loc[non_finite_mask, col] = 0
+    df[col] = df[col].fillna(0)
 
 # ================= DEBUG 2 =================
 with st.expander("🔍 DEBUG 2: Kondisi Sebelum Remark Dibuat", expanded=True):
@@ -256,11 +284,39 @@ sizes_df,  color_sizes  = make_subtotal(df, ["Document Date", "Remark"])
 crd_df,    color_crd    = make_subtotal(df, "CRD_Mth")
 crdpd_df,  color_crdpd  = make_subtotal(df, "CRDPD_Mth")
 
-# Sheet "Sizes" tidak perlu menampilkan kolom "Remark" terpisah kalau
-# tidak diinginkan di output — di sini kita biarkan tampil supaya
-# transparan bagaimana subtotal terbentuk. Hapus baris di bawah ini
-# kalau ingin kolom Remark disembunyikan dari sheet Sizes:
-# sizes_df = sizes_df.drop(columns=["Remark"])
+# ================= DEBUG 4: Cari nilai inf/-inf sebelum export =================
+# ✅ NEW v14: jalan sebelum build_excel(), supaya kalau ada nilai
+# non-finite yang lolos dari normalisasi di atas, kelihatan persis
+# di sheet/baris/kolom mana sebelum bikin app crash.
+def find_bad_values(data: pd.DataFrame, label: str):
+    bad_rows = []
+    for col in data.columns:
+        for i, val in enumerate(data[col]):
+            if pd.isna(val):
+                continue
+            if isinstance(val, (pd.Timestamp, np.datetime64)):
+                continue
+            if isinstance(val, (int, float, np.number)) and not isinstance(val, bool):
+                fval = float(val)
+                if not np.isfinite(fval):
+                    bad_rows.append({"Sheet": label, "Row": i, "Kolom": col, "Nilai": val})
+    return bad_rows
+
+all_bad = []
+for _name, _data in [
+    ("Data", df.drop(columns=["_SO_str"], errors="ignore")),
+    ("Sizes", sizes_df),
+    ("CRD_Mth_Sizes", crd_df),
+    ("CRDPD_Mth_Sizes", crdpd_df),
+]:
+    all_bad += find_bad_values(_data, _name)
+
+with st.expander(f"🔍 DEBUG 4: Cell inf/-inf terdeteksi ({len(all_bad)})", expanded=bool(all_bad)):
+    if all_bad:
+        st.error(f"❌ Ditemukan {len(all_bad)} cell dengan nilai inf/-inf — ini yang bikin export Excel gagal.")
+        st.dataframe(pd.DataFrame(all_bad), use_container_width=True)
+    else:
+        st.success("✅ Tidak ada nilai inf/-inf terdeteksi. Data aman untuk export.")
 
 # ================= Warna Per Row Data Utama =================
 def row_colors(df: pd.DataFrame, cancel_set: set[str]) -> list[str]:
@@ -313,7 +369,14 @@ def build_excel() -> bytes:
                     elif isinstance(val, (pd.Timestamp, np.datetime64)):
                         ws.write_datetime(i + 1, j, pd.to_datetime(val), fmt_date(c))
                     elif isinstance(val, (int, float, np.number)) and not isinstance(val, bool):
-                        ws.write_number(i + 1, j, float(val), fmt_num(c))
+                        fval = float(val)
+                        # ✅ FIX v14: xlsxwriter menolak inf/-inf ("Number is
+                        # NaN or Inf which is not supported"). pd.isna() di
+                        # atas TIDAK menangkap inf, jadi harus dicek terpisah.
+                        if np.isfinite(fval):
+                            ws.write_number(i + 1, j, fval, fmt_num(c))
+                        else:
+                            ws.write(i + 1, j, "", fmt_text(c))
                     else:
                         ws.write(i + 1, j, str(val), fmt_text(c))
             ws.freeze_panes(1, 0)
@@ -349,7 +412,7 @@ excel_bytes = build_excel()
 st.download_button(
     "⬇️ Download Excel",
     data=excel_bytes,
-    file_name="Tooling_Sizelist_v13.xlsx",
+    file_name="Tooling_Sizelist_v14.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
