@@ -15,6 +15,11 @@ from typing import Dict, List, Optional, Tuple, Set
 import pandas as pd
 import streamlit as st
 
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from openpyxl.chart import BarChart, Reference
+from openpyxl.worksheet.table import Table, TableStyleInfo
+
 # =============================================================================
 # Logger
 # =============================================================================
@@ -554,6 +559,193 @@ def process_files(base_file, ref_files) -> SOResult:
 
 
 # =============================================================================
+# Smart Excel report builder
+# =============================================================================
+
+_HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
+_HEADER_FONT = Font(color="FFFFFF", bold=True)
+
+_SHEET_STYLE = {
+    "Matches": "TableStyleMedium9",       # green-ish
+    "Not_Found": "TableStyleMedium11",    # red-ish
+    "Empty_SO": "TableStyleMedium7",      # yellow-ish
+    "Detection_Log": "TableStyleMedium2", # neutral
+}
+
+
+def _autofit_columns(ws, df: pd.DataFrame, min_width: int = 8, max_width: int = 60) -> None:
+    """Set lebar kolom berdasarkan konten (sample 200 baris pertama)."""
+    for i, col in enumerate(df.columns, start=1):
+        col_letter = get_column_letter(i)
+        try:
+            sample = df[col].astype(str).head(200)
+            max_len = max([len(str(col))] + [len(v) for v in sample])
+        except Exception:
+            max_len = len(str(col))
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, min_width), max_width)
+
+
+def _style_header_row(ws, n_cols: int) -> None:
+    for ci in range(1, n_cols + 1):
+        cell = ws.cell(row=1, column=ci)
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.alignment = Alignment(vertical="center")
+
+
+def _add_table(ws, df: pd.DataFrame, table_name: str, style_name: str) -> None:
+    """Ubah range data jadi Excel Table (filter dropdown + banded rows otomatis)."""
+    if df.empty:
+        _style_header_row(ws, max(len(df.columns), 1))
+        return
+    n_rows = len(df) + 1
+    n_cols = len(df.columns)
+    last_col_letter = get_column_letter(n_cols)
+    ref = f"A1:{last_col_letter}{n_rows}"
+    safe_name = re.sub(r"[^A-Za-z0-9_]", "_", table_name)[:30] or "Tbl"
+    tbl = Table(displayName=safe_name, ref=ref)
+    tbl.tableStyleInfo = TableStyleInfo(
+        name=style_name,
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    ws.add_table(tbl)
+
+
+def build_smart_excel_report(res: "SOResult", ts: str) -> bytes:
+    """
+    Bangun Excel report 'pintar':
+    - Sheet Summary di posisi pertama: judul, info file, KPI card berwarna, chart batang
+    - Setiap sheet data: Excel Table (filter otomatis, banded rows), header berwarna,
+      auto column width, dan freeze header row
+    """
+    output_buffer = io.BytesIO()
+
+    total_base_rows = len(res.base_df_out)
+    match_rate = (len(res.matches) / total_base_rows * 100) if total_base_rows else 0.0
+
+    sheet_dfs = {
+        "Matches": res.matches,
+        "Not_Found": res.not_found,
+        "Empty_SO": res.empty_so,
+    }
+    if not res.log_df.empty:
+        sheet_dfs["Detection_Log"] = res.log_df
+
+    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
+        for sheet_name, df in sheet_dfs.items():
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
+
+        wb = writer.book
+
+        # ── Style setiap sheet data ──────────────────────────────────────────
+        for sheet_name, df in sheet_dfs.items():
+            ws = writer.sheets[sheet_name]
+            _autofit_columns(ws, df)
+            _add_table(ws, df, sheet_name, _SHEET_STYLE.get(sheet_name, "TableStyleMedium9"))
+            ws.freeze_panes = "A2"
+
+        # ── Sheet Summary ─────────────────────────────────────────────────────
+        ws_sum = wb.create_sheet("Summary", 0)
+
+        ws_sum.merge_cells("A1:D1")
+        ws_sum["A1"] = "📊 SO Auto-Detect — Smart Report"
+        ws_sum["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+        ws_sum["A1"].fill = PatternFill("solid", fgColor="1F4E78")
+        ws_sum["A1"].alignment = Alignment(horizontal="left", vertical="center")
+        ws_sum.row_dimensions[1].height = 26
+
+        ws_sum.merge_cells("A2:D2")
+        ws_sum["A2"] = f"Generated: {ts}"
+        ws_sum["A2"].font = Font(italic=True, color="595959")
+
+        # -- File info --
+        r = 4
+        ws_sum.cell(row=r, column=1, value="File Info").font = Font(bold=True, size=12)
+        r += 1
+        info_rows = [
+            ("Base file", res.base_file_name),
+            ("Base sheet", res.base_sheet_name),
+            ("Header row", f"Baris ke-{res.base_header_row + 1} (skor={res.base_header_score})"),
+            ("SO column #1 (SAP)", res.base_col or "(tidak ditemukan)"),
+            ("SO column #2 (FVB)", res.base_col_fvb or "(tidak ditemukan)"),
+            ("Reference files", res.ref_count),
+        ]
+        for label, val in info_rows:
+            ws_sum.cell(row=r, column=1, value=label).font = Font(bold=True)
+            ws_sum.cell(row=r, column=2, value=val)
+            r += 1
+
+        # -- KPI block --
+        r += 1
+        ws_sum.cell(row=r, column=1, value="Key Metrics").font = Font(bold=True, size=12)
+        r += 1
+        for ci, h in enumerate(["Metric", "Count"], start=1):
+            c = ws_sum.cell(row=r, column=ci, value=h)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="1F4E78")
+        r += 1
+        kpi_data_start = r
+        kpi_colors = {
+            "✅ Matches": "C6EFCE",
+            "❌ Not Found": "FFC7CE",
+            "⚠️ Empty SO": "FFEB9C",
+        }
+        kpis = [
+            ("Total Base Rows", total_base_rows),
+            ("✅ Matches", len(res.matches)),
+            ("❌ Not Found", len(res.not_found)),
+            ("⚠️ Empty SO", len(res.empty_so)),
+            ("🔗 Unique SO Match", len(res.matched_so_list)),
+        ]
+        for label, val in kpis:
+            label_cell = ws_sum.cell(row=r, column=1, value=label)
+            val_cell = ws_sum.cell(row=r, column=2, value=val)
+            if label in kpi_colors:
+                fill = PatternFill("solid", fgColor=kpi_colors[label])
+                label_cell.fill = fill
+                val_cell.fill = fill
+            r += 1
+
+        r += 1
+        ws_sum.cell(row=r, column=1, value="Match Rate").font = Font(bold=True)
+        rate_cell = ws_sum.cell(row=r, column=2, value=round(match_rate, 1))
+        rate_cell.number_format = '0.0"%"'
+        if match_rate >= 80:
+            rate_cell.fill = PatternFill("solid", fgColor="C6EFCE")
+        elif match_rate >= 50:
+            rate_cell.fill = PatternFill("solid", fgColor="FFEB9C")
+        else:
+            rate_cell.fill = PatternFill("solid", fgColor="FFC7CE")
+
+        ws_sum.column_dimensions["A"].width = 26
+        ws_sum.column_dimensions["B"].width = 20
+        ws_sum.column_dimensions["C"].width = 4
+        ws_sum.column_dimensions["D"].width = 32
+
+        # -- Chart batang: Matches / Not Found / Empty SO --
+        chart = BarChart()
+        chart.type = "col"
+        chart.title = "Result Breakdown"
+        chart.y_axis.title = "Rows"
+        chart.x_axis.title = "Category"
+        chart.style = 10
+        data_ref = Reference(ws_sum, min_col=2, min_row=kpi_data_start + 1, max_row=kpi_data_start + 3)
+        cats_ref = Reference(ws_sum, min_col=1, min_row=kpi_data_start + 1, max_row=kpi_data_start + 3)
+        chart.add_data(data_ref, titles_from_data=False)
+        chart.set_categories(cats_ref)
+        chart.legend = None
+        chart.height = 8
+        chart.width = 14
+        ws_sum.add_chart(chart, "D4")
+
+    output_buffer.seek(0)
+    return output_buffer.getvalue()
+
+
+# =============================================================================
 # UI — Upload section
 # =============================================================================
 
@@ -746,45 +938,29 @@ if "so_detect_result" in st.session_state:
     else:
         st.info("Belum ada SO yang match — detail tidak tersedia.")
 
-    # ── Download Excel ────────────────────────────────────────────────────────
+    # ── Download Excel (Smart Report) ────────────────────────────────────────
     st.markdown("---")
-    st.subheader("📥 Download Report (Excel)")
+    st.subheader("📥 Download Report (Excel) — Smart Report")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = f"SO_AutoDetect_Report_{ts}.xlsx"
-    output_buffer = io.BytesIO()
+    file_name = f"SO_AutoDetect_SmartReport_{ts}.xlsx"
 
-    with pd.ExcelWriter(output_buffer, engine="openpyxl") as writer:
-        res.matches.to_excel(writer, index=False, sheet_name="Matches")
-        res.not_found.to_excel(writer, index=False, sheet_name="Not_Found")
-        res.empty_so.to_excel(writer, index=False, sheet_name="Empty_SO")
-        if not res.log_df.empty:
-            res.log_df.to_excel(writer, index=False, sheet_name="Detection_Log")
-        meta = pd.DataFrame({
-            "Key": [
-                "Base file", "Base sheet",
-                "Header row (0-based)", "Header detection score",
-                "SO column #1 (SAP)", "Reason #1",
-                "SO column #2 (FVB)", "Reason #2",
-                "Ref files count", "Generated at",
-            ],
-            "Value": [
-                res.base_file_name, res.base_sheet_name,
-                res.base_header_row, res.base_header_score,
-                res.base_col or "(manual)", res.base_reason,
-                res.base_col_fvb or "(tidak ditemukan)", res.base_reason_fvb,
-                res.ref_count, ts,
-            ],
-        })
-        meta.to_excel(writer, index=False, sheet_name="Meta")
-
-    output_buffer.seek(0)
-    st.download_button(
-        label="📥 Download Excel Report",
-        data=output_buffer.getvalue(),
-        file_name=file_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    try:
+        excel_bytes = build_smart_excel_report(res, ts)
+        st.download_button(
+            label="📥 Download Smart Excel Report",
+            data=excel_bytes,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.caption(
+            "Report ini sudah termasuk sheet **Summary** (info file, KPI berwarna, "
+            "dan chart), Excel Table dengan filter otomatis di tiap sheet, "
+            "auto column width, dan freeze header row."
+        )
+    except Exception as e:
+        st.error(f"❌ Gagal membuat Smart Report: {e}")
+        logger.exception("build_smart_excel_report failed")
 
 else:
     st.info(
