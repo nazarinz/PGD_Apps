@@ -439,7 +439,7 @@ def process_files(base_file, ref_files) -> SOResult:
 
     # ── 6. Kumpulkan SO dari ref files ────────────────────────────────────────
     all_ref_sos: Set[str] = set()
-    so_to_files: Dict[str, Set[str]] = {}
+    so_to_locations: Dict[str, Set[Tuple[str, str]]] = {}  # SO -> {(file_name, sheet_name), ...}
     log_rows: List[Tuple[str, str, str]] = []
     ref_tables: List[Dict] = []
 
@@ -481,7 +481,7 @@ def process_files(base_file, ref_files) -> SOResult:
 
             for so in sos_valid.unique().tolist():
                 all_ref_sos.add(so)
-                so_to_files.setdefault(so, set()).add(f.name)
+                so_to_locations.setdefault(so, set()).add((f.name, sh))
 
             ref_tables.append({
                 "file": f.name,
@@ -500,18 +500,21 @@ def process_files(base_file, ref_files) -> SOResult:
         return (pd.notna(sap) and sap in all_ref_sos) or \
                (pd.notna(fvb) and fvb in all_ref_sos)
 
-    def _source_files(row) -> str:
-        files: Set[str] = set()
+    def _source_info(row) -> Tuple[str, str]:
+        """Kembalikan (File, Sheet) — daftar file & sheet referensi tempat SO ini ditemukan."""
         sap = row["__SO_norm_SAP__"]
         fvb = row["__SO_norm_FVB__"]
-        if pd.notna(sap) and sap in so_to_files:
-            files |= so_to_files[sap]
-        if pd.notna(fvb) and fvb in so_to_files:
-            files |= so_to_files[fvb]
-        return ", ".join(sorted(files)) if files else ""
+        locs: Set[Tuple[str, str]] = set()
+        if pd.notna(sap) and sap in so_to_locations:
+            locs |= so_to_locations[sap]
+        if pd.notna(fvb) and fvb in so_to_locations:
+            locs |= so_to_locations[fvb]
+        files = ", ".join(sorted({f for f, _ in locs}))
+        sheets = ", ".join(sorted({s for _, s in locs}))
+        return files, sheets
 
     out["Found_in_reference"] = out.apply(_found, axis=1)
-    out["Source_Files"] = out.apply(_source_files, axis=1)
+    out[["File", "Sheet"]] = out.apply(lambda r: pd.Series(_source_info(r)), axis=1)
 
     matches = out[out["Found_in_reference"]].copy()
     not_found = out[
