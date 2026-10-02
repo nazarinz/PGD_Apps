@@ -221,6 +221,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         .str.replace(r"\s+", " ", regex=True)
     )
     df.columns = [c.replace("Quanity", "Quantity") for c in df.columns]
+    orig_cols = list(df.columns)  # kolom asli dari ZRSD1013 (untuk pewarnaan header)
 
     # ---------- 3. Bersihkan spasi pada data teks ----------
     text_cols = df.select_dtypes(include=["object", "string"]).columns
@@ -293,16 +294,16 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         warn("Kolom 'SO' tidak ditemukan, 'Remark' ditambahkan di akhir.")
 
     # ---------- 6a2. Kolom tambahan dari file (berdasarkan SO) ----------
-    #     RFID, Dev. Type, Season, Shipment Method
-    SO_ATTR_COLS = ["RFID", "Dev. Type", "Season", "Shipment Method"]
+    #     RFID, Dev. Type, Season, Shipment Method, Packing Type
+    SO_ATTR_COLS = ["RFID", "Dev. Type", "Season", "Shipment Method", "Packing Type"]
     if so_attr_df is not None:
         ad = so_attr_df.copy()
         ad.columns = ad.columns.astype(str).str.strip()
         col_map = {c.lower(): c for c in ad.columns}
         if "so" not in col_map:
-            warn("File atribut SO harus punya kolom 'SO'. Dilewati.")
+            warn("File Master data SAP harus punya kolom 'SO'. Dilewati.")
         elif "SO" not in df.columns:
-            warn("Kolom 'SO' tidak ditemukan di ZRSD1013, atribut SO dilewati.")
+            warn("Kolom 'SO' tidak ditemukan di ZRSD1013, Master data SAP dilewati.")
         else:
             ad = ad.rename(columns={col_map["so"]: "SO_key"})
             ad["SO_key"] = norm_key(ad["SO_key"])
@@ -313,7 +314,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             for attr in SO_ATTR_COLS:
                 src_col = col_map.get(attr.lower())
                 if src_col is None:
-                    warn(f"Kolom '{attr}' tidak ditemukan di file atribut SO, dilewati.")
+                    warn(f"Kolom '{attr}' tidak ditemukan di file Master data SAP, dilewati.")
                     continue
                 lk = ad[["SO_key", src_col]].copy()
                 lk[src_col] = lk[src_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
@@ -328,7 +329,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             n_file_so = ad["SO_key"].nunique()
             n_unused = len(set(ad["SO_key"]) - set(so_key.dropna()))
             warn(
-                f"Atribut SO: {n_file_so} SO di file, {int(filled_rows.sum())} baris di data terisi, "
+                f"Master data SAP: {n_file_so} SO di file, {int(filled_rows.sum())} baris di data terisi, "
                 f"{n_unused} SO di file tidak ada di data."
             )
 
@@ -843,15 +844,63 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "dash_only": df_dash_only,
         "missing_summary": missing_summary,
         "dup_count": dup_count,
+        "orig_cols": orig_cols,
     }
 
 
-def to_excel_bytes(df, df_qty_report, df_dash_only):
+GRAY_HEADER = "#D9D9D9"   # kolom asli dari ZRSD1013
+BLUE_HEADER = "#9DC3E6"   # kolom baru
+
+
+def _write_styled_sheet(workbook, name, d, header_colors, formats):
+    """Tulis DataFrame ke sheet baru dengan style: font 9, center/middle, header bold wrap."""
+    ws = workbook.add_worksheet(name)
+    if d.shape[1] == 0:
+        return
+
+    for c, col in enumerate(d.columns):
+        ws.write_string(0, c, str(col), formats["header"][header_colors.get(col, GRAY_HEADER)])
+    ws.set_row(0, 42.75)  # 42.75 pt = 57 px
+    ws.set_column(0, d.shape[1] - 1, 13)
+
+    for c, col in enumerate(d.columns):
+        s = d[col]
+        is_dt = pd.api.types.is_datetime64_any_dtype(s)
+        if pd.api.types.is_float_dtype(s):
+            s = s.replace([np.inf, -np.inf], np.nan)
+        vals = s.astype(object).where(s.notna(), None).tolist()
+        if s.dtype == object:
+            vals = [v.item() if isinstance(v, np.generic) else v for v in vals]
+        ws.write_column(1, c, vals, formats["date"] if is_dt else formats["body"])
+
+
+def to_excel_bytes(df, df_qty_report, df_dash_only, orig_cols=None):
+    import xlsxwriter
+
+    orig = set(orig_cols or [])
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="m/d/yyyy") as writer:
-        df.to_excel(writer, index=False, sheet_name="Sheet1")
-        df_qty_report.to_excel(writer, index=False, sheet_name="Qty Mismatch Report")
-        df_dash_only.to_excel(writer, index=False, sheet_name="Dashboard Not in SAP")
+    workbook = xlsxwriter.Workbook(
+        buf,
+        {"in_memory": True, "strings_to_formulas": False, "strings_to_urls": False},
+    )
+
+    base = {"font_size": 9, "align": "center", "valign": "vcenter"}
+    formats = {
+        "body": workbook.add_format(base),
+        "date": workbook.add_format({**base, "num_format": "m/d/yyyy"}),
+        "header": {
+            color: workbook.add_format({**base, "bold": True, "text_wrap": True, "bg_color": color})
+            for color in (GRAY_HEADER, BLUE_HEADER)
+        },
+    }
+
+    # Sheet utama: abu-abu = kolom asli ZRSD1013, biru = kolom baru
+    main_colors = {c: (GRAY_HEADER if c in orig else BLUE_HEADER) for c in df.columns}
+    _write_styled_sheet(workbook, "Sheet1", df, main_colors, formats)
+    _write_styled_sheet(workbook, "Qty Mismatch Report", df_qty_report, {}, formats)
+    _write_styled_sheet(workbook, "Dashboard Not in SAP", df_dash_only, {}, formats)
+
+    workbook.close()
     return buf.getvalue()
 
 
@@ -875,7 +924,11 @@ with st.sidebar:
     sap_file = st.file_uploader("ZRSD1013 (wajib)", type=["xlsx", "xlsb", "xls"])
     dash_file = st.file_uploader("Dashboard (opsional)", type=["xlsx", "xlsb", "xls"])
     remark_file = st.file_uploader("Remark tambahan (opsional, kolom: Remark, SO)", type=["xlsx", "xls"])
-    so_attr_file = st.file_uploader("Atribut SO (opsional: SO, RFID, Dev. Type, Season, Shipment Method)", type=["xlsx", "xls"])
+    so_attr_file = st.file_uploader(
+        "Upload Master data SAP",
+        type=["xlsx", "xls"],
+        help="Kolom: SO, RFID, Shipment Method, Dev. Type, Season, Packing Type (opsional).",
+    )
     cpr_text = st.text_area(
         "Model No CPR (paste, satu per baris)",
         height=180,
@@ -895,7 +948,7 @@ if run and sap_file is not None:
             so_attr_in = read_excel_file(so_attr_file) if so_attr_file else None
 
             result = clean_data(df_raw, df_dash_in, cpr_models, remark_in, so_attr_in, log)
-            result["excel"] = to_excel_bytes(result["df"], result["qty_report"], result["dash_only"])
+            result["excel"] = to_excel_bytes(result["df"], result["qty_report"], result["dash_only"], result["orig_cols"])
             result["log"] = log
             result["shape_awal"] = df_raw.shape
             result["stamp"] = datetime.datetime.now().strftime("%Y%m%d_%H%M")
