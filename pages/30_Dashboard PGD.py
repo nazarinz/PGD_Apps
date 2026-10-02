@@ -178,10 +178,11 @@ def norm_key(s):
 
 
 def parse_model_list(text):
-    """Ubah teks paste (satu Model No per baris) jadi list unik, huruf besar."""
+    """Ubah teks paste jadi list Model No unik (huruf besar).
+    Pemisah: baris baru, spasi, tab, koma, titik koma - bisa campuran."""
     if not text:
         return []
-    parts = re.split(r"[\n\r\t,;]+", text)
+    parts = re.split(r"[\s,;|]+", text)
     seen, out = set(), []
     for p in parts:
         m = p.strip().upper()
@@ -930,9 +931,9 @@ with st.sidebar:
         help="Kolom: SO, RFID, Shipment Method, Dev. Type, Season, Packing Type (opsional).",
     )
     cpr_text = st.text_area(
-        "Model No CPR (paste, satu per baris)",
+        "Model No CPR (paste: satu per baris atau menyamping)",
         height=180,
-        placeholder="NJG80\nIH1234\n...",
+        placeholder="GWD59\nOQI15\n\natau: GWD59, OQI15",
     )
     run = st.button("Proses", type="primary", disabled=sap_file is None, use_container_width=True)
     st.caption("Sheet pertama dari tiap file yang dibaca. Kolom CPR = Y jika Model No ada di daftar.")
