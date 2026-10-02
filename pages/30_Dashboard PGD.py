@@ -171,6 +171,12 @@ def true_false_to_y(val):
     return " | ".join(mapped)
 
 
+def norm_key(s):
+    """Samakan format kunci (mis. SO): teks, tanpa spasi, tanpa akhiran '.0'."""
+    out = s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    return out.where(s.notna(), np.nan)
+
+
 def parse_model_list(text):
     """Ubah teks paste (satu Model No per baris) jadi list unik, huruf besar."""
     if not text:
@@ -197,7 +203,7 @@ def read_excel_file(uploaded):
 # =========================================================
 # PIPELINE UTAMA
 # =========================================================
-def clean_data(df, df_dash, cpr_models, log):
+def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
     warn = log.append
 
     qty_mismatch_report = []
@@ -246,6 +252,38 @@ def clean_data(df, df_dash, cpr_models, log):
     df["Remark"] = np.where(unconfirmed, "Unconfirmed Order", "")
     df["Remark"] = df["Remark"].replace("", np.nan)
 
+    # ---------- 6a. Remark tambahan dari file (berdasarkan SO) ----------
+    #     Remark dari file menggantikan "Unconfirmed Order" kalau SO-nya ada di file.
+    if remark_df is not None:
+        rd = remark_df.copy()
+        rd.columns = rd.columns.astype(str).str.strip()
+        col_map = {c.lower(): c for c in rd.columns}
+        if "remark" not in col_map or "so" not in col_map:
+            warn("File Remark tambahan harus punya kolom 'Remark' dan 'SO'. Dilewati.")
+        elif "SO" not in df.columns:
+            warn("Kolom 'SO' tidak ditemukan di ZRSD1013, Remark tambahan dilewati.")
+        else:
+            rd = rd.rename(columns={col_map["remark"]: "Remark_ext", col_map["so"]: "SO_key"})
+            rd = rd[["SO_key", "Remark_ext"]]
+            rd["SO_key"] = norm_key(rd["SO_key"])
+            rd["Remark_ext"] = rd["Remark_ext"].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
+            rd = rd.dropna(subset=["SO_key", "Remark_ext"])
+
+            ext = rd.groupby("SO_key")["Remark_ext"].agg(combine_unique_values)
+            so_key = norm_key(df["SO"])
+            ext_remark = so_key.map(ext)
+            df["Remark"] = ext_remark.combine_first(df["Remark"])
+
+            not_found = sorted(set(ext.index) - set(so_key.dropna()))
+            warn(
+                f"Remark tambahan: {len(ext)} SO di file, "
+                f"{int(ext_remark.notna().sum())} baris di data terisi."
+            )
+            if not_found:
+                shown = ", ".join(not_found[:30])
+                more = f" (+{len(not_found) - 30} lainnya)" if len(not_found) > 30 else ""
+                warn(f"Remark tambahan: {len(not_found)} SO di file tidak ada di data: {shown}{more}")
+
     if "SO" in df.columns:
         cols = list(df.columns)
         cols.remove("Remark")
@@ -253,6 +291,46 @@ def clean_data(df, df_dash, cpr_models, log):
         df = df[cols]
     else:
         warn("Kolom 'SO' tidak ditemukan, 'Remark' ditambahkan di akhir.")
+
+    # ---------- 6a2. Kolom tambahan dari file (berdasarkan SO) ----------
+    #     RFID, Dev. Type, Season, Shipment Method
+    SO_ATTR_COLS = ["RFID", "Dev. Type", "Season", "Shipment Method"]
+    if so_attr_df is not None:
+        ad = so_attr_df.copy()
+        ad.columns = ad.columns.astype(str).str.strip()
+        col_map = {c.lower(): c for c in ad.columns}
+        if "so" not in col_map:
+            warn("File atribut SO harus punya kolom 'SO'. Dilewati.")
+        elif "SO" not in df.columns:
+            warn("Kolom 'SO' tidak ditemukan di ZRSD1013, atribut SO dilewati.")
+        else:
+            ad = ad.rename(columns={col_map["so"]: "SO_key"})
+            ad["SO_key"] = norm_key(ad["SO_key"])
+            ad = ad.dropna(subset=["SO_key"])
+            so_key = norm_key(df["SO"])
+            filled_rows = pd.Series(False, index=df.index)
+
+            for attr in SO_ATTR_COLS:
+                src_col = col_map.get(attr.lower())
+                if src_col is None:
+                    warn(f"Kolom '{attr}' tidak ditemukan di file atribut SO, dilewati.")
+                    continue
+                lk = ad[["SO_key", src_col]].copy()
+                lk[src_col] = lk[src_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
+                lk = lk.groupby("SO_key")[src_col].agg(combine_unique_values)
+                mapped = so_key.map(lk)
+                if attr in df.columns:  # kolom sudah ada di data -> nilai dari file diutamakan
+                    df[attr] = mapped.combine_first(df[attr])
+                else:
+                    df[attr] = mapped
+                filled_rows |= mapped.notna()
+
+            n_file_so = ad["SO_key"].nunique()
+            n_unused = len(set(ad["SO_key"]) - set(so_key.dropna()))
+            warn(
+                f"Atribut SO: {n_file_so} SO di file, {int(filled_rows.sum())} baris di data terisi, "
+                f"{n_unused} SO di file tidak ada di data."
+            )
 
     # ---------- 6b. Isi kosong FPD/LPD/PSDD/PODD dengan CRD ----------
     if "CRD" in df.columns:
@@ -712,7 +790,7 @@ def clean_data(df, df_dash, cpr_models, log):
 
     # ---------- 8. Urutan kolom final ----------
     desired_order = [
-        "Triggering", "Client No", "Order Plant", "Brand Plant Name", "Remark", "SO",
+        "Triggering", "Client No", "Order Plant", "Brand Plant Name", "Remark", "SO", "RFID", "Dev. Type", "Season", "Shipment Method",
         "Order Type", "Order Type (Domestic/Export)", "Order Type Description",
         "PO No.(Full)", "Customer PO item", "PO No.(Short)",
         "Merchandise Category 2", "Shipped Qty",
@@ -796,6 +874,8 @@ with st.sidebar:
     st.header("Upload file")
     sap_file = st.file_uploader("ZRSD1013 (wajib)", type=["xlsx", "xlsb", "xls"])
     dash_file = st.file_uploader("Dashboard (opsional)", type=["xlsx", "xlsb", "xls"])
+    remark_file = st.file_uploader("Remark tambahan (opsional, kolom: Remark, SO)", type=["xlsx", "xls"])
+    so_attr_file = st.file_uploader("Atribut SO (opsional: SO, RFID, Dev. Type, Season, Shipment Method)", type=["xlsx", "xls"])
     cpr_text = st.text_area(
         "Model No CPR (paste, satu per baris)",
         height=180,
@@ -811,8 +891,10 @@ if run and sap_file is not None:
             df_raw = read_excel_file(sap_file)
             df_dash_in = read_excel_file(dash_file) if dash_file else None
             cpr_models = parse_model_list(cpr_text)
+            remark_in = read_excel_file(remark_file) if remark_file else None
+            so_attr_in = read_excel_file(so_attr_file) if so_attr_file else None
 
-            result = clean_data(df_raw, df_dash_in, cpr_models, log)
+            result = clean_data(df_raw, df_dash_in, cpr_models, remark_in, so_attr_in, log)
             result["excel"] = to_excel_bytes(result["df"], result["qty_report"], result["dash_only"])
             result["log"] = log
             result["shape_awal"] = df_raw.shape
