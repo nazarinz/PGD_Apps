@@ -497,10 +497,51 @@ def clean_and_compare(df_merged):
 
     return df_merged
 
+# ================== [NEW] Remark (daftar field mismatch per baris) ==================
+# Urutan di sini = urutan kemunculan di kolom Remark
+REMARK_FIELDS = [
+    ("Result_Market PO",           "Market PO"),
+    ("Result_Quantity",            "Quantity"),
+    ("Result_Model Name",          "Model Name"),
+    ("Result_Article No",          "Article No"),
+    ("Result_Classification Code", "Classification Code"),
+    ("Result_Delay_CRD",           "Delay CRD"),
+    ("Result_Lead Time",           "Lead Time"),
+    ("Result_Sort1",               "GPS Country (Sort1)"),
+    ("Result_Country",             "Ship-to Country"),
+    ("Result_Shipment Method",     "Shipment Method"),
+    ("Result_Delay_PSDD",          "Delay PSDD"),
+    ("Result_Delay_PD",            "Delay PD"),
+    ("Result_PODD",                "PODD"),
+    ("Result_LPD",                 "LPD"),
+    ("Result_PSDD",                "PSDD"),
+    ("Result_FPD",                 "FPD"),
+    ("Result_CRD",                 "CRD"),
+    ("Result_PD",                  "PD"),
+]
+
+def add_remark_column(df):
+    present = [(c, l) for c, l in REMARK_FIELDS if c in df.columns]
+    if present:
+        mask   = np.column_stack([df[c].eq("FALSE").to_numpy() for c, _ in present])
+        labels = np.array([l for _, l in present], dtype=object)
+        remarks = [", ".join(labels[row]) for row in mask]
+    else:
+        remarks = [""] * len(df)
+
+    df["Remark"] = remarks
+    df.loc[df["Remark"] == "", "Remark"] = "ALL MATCH"
+
+    # PO SAP yang tidak ketemu di Infor -> semua field akan FALSE,
+    # jadi dikasih remark khusus supaya tidak menggelembungkan hitungan mismatch
+    if "Order #" in df.columns:
+        df.loc[df["Order #"].isna(), "Remark"] = "NOT FOUND IN INFOR"
+    return df
+
 # ================== Desired Column Order ==================
 DESIRED_ORDER = [
     'Client No', 'Site', 'Brand FTY Name', 'SO', 'Order Type', 'Order Type Description',
-    'PO No.(Full)', 'Customer PO item', 'Order Status Infor',
+    'PO No.(Full)', 'Customer PO item', 'Order Status Infor', 'Remark',
     'Cust Ord No', 'Infor Market PO Number', 'Result_Market PO',
     'PO No.(Short)', 'Merchandise Category 2',
     'Quantity', 'Infor Quantity', 'Result_Quantity',
@@ -548,6 +589,7 @@ def build_report(df_sap, df_infor_raw):
         return pd.DataFrame()
     df = df_sap2.merge(df_infor, how="left", left_on="PO No.(Full)", right_on="Order #")
     clean_and_compare(df)
+    add_remark_column(df)          # [NEW] kolom Remark
     return reorder_columns(df, DESIRED_ORDER)
 
 # ================== Export Helpers ==================
@@ -1033,7 +1075,7 @@ with tab1:
                                 st.dataframe(df_view.head(100), use_container_width=True)
                             elif mode == "Analisis LPD PODD":
                                 cols_lpd = [
-                                    "PO No.(Full)", "Order Status Infor", "DRC",
+                                    "PO No.(Full)", "Order Status Infor", "Remark", "DRC",
                                     "Delay/Early - Confirmation PD",
                                     "Delay/Early - Confirmation CRD", "Infor Delay/Early - Confirmation CRD", "Result_Delay_CRD",
                                     "Delay - PO PSDD Update", "Infor Delay - PO PSDD Update", "Result_Delay_PSDD",
@@ -1044,7 +1086,7 @@ with tab1:
                                 st.dataframe(subset(df_view, cols_lpd).head(2000), use_container_width=True)
                             elif mode == "Analisis FPD PSDD":
                                 cols_fpd_psdd = [
-                                    "PO No.(Full)", "Order Status Infor", "DRC",
+                                    "PO No.(Full)", "Order Status Infor", "Remark", "DRC",
                                     "Delay/Early - Confirmation PD",
                                     "Delay/Early - Confirmation CRD", "Infor Delay/Early - Confirmation CRD", "Result_Delay_CRD",
                                     "Delay - PO PSDD Update", "Infor Delay - PO PSDD Update", "Result_Delay_PSDD",
