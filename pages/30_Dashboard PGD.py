@@ -1,4 +1,5 @@
 import io
+import re
 import itertools
 import datetime
 
@@ -170,6 +171,20 @@ def true_false_to_y(val):
     return " | ".join(mapped)
 
 
+def parse_model_list(text):
+    """Ubah teks paste (satu Model No per baris) jadi list unik, huruf besar."""
+    if not text:
+        return []
+    parts = re.split(r"[\n\r\t,;]+", text)
+    seen, out = set(), []
+    for p in parts:
+        m = p.strip().upper()
+        if m and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
 def read_excel_file(uploaded):
     """Baca file upload (.xlsx / .xlsb / .xls) ke DataFrame (sheet pertama)."""
     name = uploaded.name.lower()
@@ -182,7 +197,7 @@ def read_excel_file(uploaded):
 # =========================================================
 # PIPELINE UTAMA
 # =========================================================
-def clean_data(df, df_dash, df_cpr, log):
+def clean_data(df, df_dash, cpr_models, log):
     warn = log.append
 
     qty_mismatch_report = []
@@ -597,28 +612,26 @@ def clean_data(df, df_dash, df_cpr, log):
     else:
         warn("Kolom DRC sumber tidak ditemukan, 'DRC MDP/SDP' dilewati.")
 
-    # ---------- 6g. Lookup CPR ----------
-    if df_cpr is None:
-        warn("File CPR tidak diupload. Lookup CPR dilewati.")
+    # ---------- 6g. CPR (Y jika Model No ada di daftar yang di-paste) ----------
+    if "Model No" not in df.columns:
+        warn("Kolom 'Model No' tidak ditemukan di ZRSD1013, kolom CPR dilewati.")
+    elif not cpr_models:
+        warn("Daftar Model No CPR kosong. Kolom CPR dibiarkan kosong.")
+        df["CPR"] = np.nan
     else:
-        df_cpr = df_cpr.copy()
-        df_cpr.columns = (
-            df_cpr.columns.astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+        model_norm = df["Model No"].astype(str).str.strip().str.upper()
+        is_cpr = model_norm.isin(set(cpr_models))
+        df["CPR"] = np.where(is_cpr, "Y", "")
+        df["CPR"] = df["CPR"].replace("", np.nan)
+        not_found = [m for m in cpr_models if m not in set(model_norm)]
+        warn(
+            f"CPR: {len(cpr_models)} Model No di daftar, "
+            f"{int(is_cpr.sum())} baris ditandai 'Y'."
         )
-        if "Article Number" not in df_cpr.columns:
-            warn("Kolom 'Article Number' tidak ditemukan di CPR, lookup CPR dilewati.")
-        elif "Article No" not in df.columns:
-            warn("Kolom 'Article No' tidak ditemukan di ZRSD1013, lookup CPR dilewati.")
-        elif "Remark" not in df_cpr.columns:
-            warn("Kolom 'Remark' tidak ditemukan di CPR, lookup CPR dilewati.")
-        else:
-            df["Article No"] = df["Article No"].astype(str).str.strip()
-            df_cpr["Article Number"] = df_cpr["Article Number"].astype(str).str.strip()
-            df_cpr_dedup = df_cpr.drop_duplicates(subset="Article Number", keep="first")
-            cpr_lookup = df_cpr_dedup[["Article Number", "Remark"]].rename(
-                columns={"Article Number": "Article No", "Remark": "CPR"}
-            )
-            df = df.merge(cpr_lookup, on="Article No", how="left")
+        if not_found:
+            shown = ", ".join(not_found[:30])
+            more = f" (+{len(not_found) - 30} lainnya)" if len(not_found) > 30 else ""
+            warn(f"CPR: {len(not_found)} Model No di daftar tidak ada di data: {shown}{more}")
 
     # ---------- 6j. Shipped Qty ----------
     if "FCR Date" in df.columns and "Quantity" in df.columns:
@@ -783,9 +796,13 @@ with st.sidebar:
     st.header("Upload file")
     sap_file = st.file_uploader("ZRSD1013 (wajib)", type=["xlsx", "xlsb", "xls"])
     dash_file = st.file_uploader("Dashboard (opsional)", type=["xlsx", "xlsb", "xls"])
-    cpr_file = st.file_uploader("CPR (opsional)", type=["xlsx", "xls"])
+    cpr_text = st.text_area(
+        "Model No CPR (paste, satu per baris)",
+        height=180,
+        placeholder="NJG80\nIH1234\n...",
+    )
     run = st.button("Proses", type="primary", disabled=sap_file is None, use_container_width=True)
-    st.caption("Sheet pertama dari tiap file yang dibaca.")
+    st.caption("Sheet pertama dari tiap file yang dibaca. Kolom CPR = Y jika Model No ada di daftar.")
 
 if run and sap_file is not None:
     log = []
@@ -793,9 +810,9 @@ if run and sap_file is not None:
         with st.spinner("Memproses data..."):
             df_raw = read_excel_file(sap_file)
             df_dash_in = read_excel_file(dash_file) if dash_file else None
-            df_cpr_in = read_excel_file(cpr_file) if cpr_file else None
+            cpr_models = parse_model_list(cpr_text)
 
-            result = clean_data(df_raw, df_dash_in, df_cpr_in, log)
+            result = clean_data(df_raw, df_dash_in, cpr_models, log)
             result["excel"] = to_excel_bytes(result["df"], result["qty_report"], result["dash_only"])
             result["log"] = log
             result["shape_awal"] = df_raw.shape
