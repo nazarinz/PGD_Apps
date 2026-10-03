@@ -713,11 +713,14 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             more = f" (+{len(not_found) - 30} lainnya)" if len(not_found) > 30 else ""
             warn(f"CPR: {len(not_found)} Model No di daftar tidak ada di data: {shown}{more}")
 
-    # ---------- 6j. Shipped Qty ----------
+    # ---------- 6j. Shipped Qty & Unshipped Qty ----------
+    #     FCR Date ada    -> Shipped = Quantity, Unshipped = 0
+    #     FCR Date kosong -> Shipped = 0,        Unshipped = Quantity
     if "FCR Date" in df.columns and "Quantity" in df.columns:
         df["Shipped Qty"] = np.where(df["FCR Date"].notna(), df["Quantity"], 0)
+        df["Unshipped Qty"] = df["Quantity"] - df["Shipped Qty"]
     else:
-        warn("Kolom 'FCR Date' dan/atau 'Quantity' tidak ditemukan, Shipped Qty tidak dibuat.")
+        warn("Kolom 'FCR Date' dan/atau 'Quantity' tidak ditemukan, Shipped Qty/Unshipped Qty tidak dibuat.")
 
     # ---------- 6k. Shipped Rspsv Qty ----------
     if all(c in df.columns for c in ["Responsiveness", "FCR Date", "Quantity"]):
@@ -767,14 +770,19 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         else:
             warn(f"Kolom '{col}' tidak ditemukan, dilewati.")
 
-    # ---------- 7d. EFD Ontime/Delay Qty ----------
-    if all(c in df.columns for c in ["Elevated Check", "MDP", "Quantity"]):
+    # ---------- 7d. EFD Qty / EFD Delay Qty ----------
+    #     EFD Qty       = Quantity jika Elevated Check = "Y" (ontime maupun fail)
+    #     EFD Delay Qty = Quantity jika Elevated Check = "Y" dan MDP = "FAIL"
+    if "Elevated Check" in df.columns and "Quantity" in df.columns:
         is_elevated = df["Elevated Check"].astype(str).str.strip().str.upper() == "Y"
-        mdp_up = df["MDP"].astype(str).str.strip().str.upper()
-        df["EFD Ontime Qty"] = np.where(is_elevated & (mdp_up == "ON TIME"), df["Quantity"], 0)
-        df["EFD Delay Qty"] = np.where(is_elevated & (mdp_up == "FAIL"), df["Quantity"], 0)
+        df["EFD Qty"] = np.where(is_elevated, df["Quantity"], 0)
+        if "MDP" in df.columns:
+            mdp_up = df["MDP"].astype(str).str.strip().str.upper()
+            df["EFD Delay Qty"] = np.where(is_elevated & (mdp_up == "FAIL"), df["Quantity"], 0)
+        else:
+            warn("Kolom 'MDP' tidak ditemukan, EFD Delay Qty dilewati.")
     else:
-        warn("Kolom 'Elevated Check', 'MDP', dan/atau 'Quantity' tidak ditemukan, EFD Qty dilewati.")
+        warn("Kolom 'Elevated Check' dan/atau 'Quantity' tidak ditemukan, EFD Qty/EFD Delay Qty dilewati.")
 
     # ---------- 7e. Sample Qty / Sample Delay Qty ----------
     required_cols = ["Client No", "Order Type Description", "MDP", "Quantity"]
@@ -795,7 +803,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "Triggering", "Client No", "Order Plant", "Brand Plant Name", "Remark", "SO", "RFID", "Dev. Type", "Season", "Shipment Method",
         "Order Type", "Order Type (Domestic/Export)", "Order Type Description",
         "PO No.(Full)", "Customer PO item", "PO No.(Short)",
-        "Merchandise Category 2", "Shipped Qty",
+        "Merchandise Category 2", "Shipped Qty", "Unshipped Qty",
         "Shipped Rspsv Qty", "Quantity", "Dashboard Quantity", "Qty Diff", "Qty Compare",
         "Sample Qty", "Sample Delay Qty", "Model Name", "Article No",
         "SAP Material", "Pattern Code(Up.No.)", "Model No", "Outsole Mold",
@@ -819,7 +827,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "FCR Date", "Actual PGI", "PODD vs FCR", "PODD vs Actual PGI",
         "PD", "PO Date", "Segment", "S&P LPD", "Currency",
         "Spoma", "Priority Product", "CPR", "ReAct", "Chase",
-        "Key Franchaise", "Elevated Check", "EFD Ontime Qty", "EFD Delay Qty", "Campaign Name",
+        "Key Franchaise", "Elevated Check", "EFD Qty", "EFD Delay Qty", "Campaign Name",
         "Brand Partner", "Responsiveness", "PO Status",
     ]
     existing_desired = [c for c in desired_order if c in df.columns]
