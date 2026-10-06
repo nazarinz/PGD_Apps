@@ -254,6 +254,10 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
     df["Remark"] = np.where(unconfirmed, "Unconfirmed Order", "")
     df["Remark"] = df["Remark"].replace("", np.nan)
 
+    # Penanda unconfirmed (tidak terpengaruh Remark tambahan) - dipakai pivot capacity
+    df["Unconfirmed Flag"] = np.where(unconfirmed, "Y", "")
+    df["Unconfirmed Flag"] = df["Unconfirmed Flag"].replace("", np.nan)
+
     # ---------- 6a. Remark tambahan dari file (berdasarkan SO) ----------
     #     Remark dari file menggantikan "Unconfirmed Order" kalau SO-nya ada di file.
     if remark_df is not None:
@@ -349,6 +353,15 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             df[f"Month - {col}"] = df[f"Day - {col}"].apply(get_month_period)
         else:
             warn(f"Kolom '{col}' tidak ditemukan, Day/Month tidak dibuat.")
+
+    # ---------- 6c1. LPD Key (YYYYMM + 01/02) untuk pivot capacity ----------
+    #     01 = tanggal 1-15 (Mid), 02 = tanggal 16-akhir (End)
+    if "LPD" in df.columns:
+        lpd = pd.to_datetime(df["LPD"], errors="coerce")
+        bucket = np.where(lpd.dt.day <= 15, 1, 2)
+        df["LPD Key"] = (lpd.dt.year * 10000 + lpd.dt.month * 100 + bucket).astype("Int64")
+    else:
+        warn("Kolom 'LPD' tidak ditemukan, 'LPD Key' tidak dibuat.")
 
     # ---------- 6c2. CRD Monthly & 6c3. Triggering ----------
     if "CRD" in df.columns:
@@ -819,7 +832,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "DOL", "Article Lead time", "Cust Ord No",
         "Ship-to-Sort1", "Ship-to Country", "Ship to Name", "Packing Type",
         "Document Date", "FPD",
-        "LPD", "Day - LPD", "Month - LPD",
+        "LPD", "Day - LPD", "Month - LPD", "LPD Key", "Unconfirmed Flag",
         "CRD", "Day - CRD", "Month - CRD", "CRD Monthly",
         "Dashboard CRD", "CRD Diff", "CRD Compare",
         "PSDD",
@@ -883,7 +896,241 @@ def _write_styled_sheet(workbook, name, d, header_colors, formats):
         ws.write_column(1, c, vals, formats["date"] if is_dt else formats["body"])
 
 
-def to_excel_bytes(df, df_qty_report, df_dash_only, orig_cols=None):
+CAP_CATEGORY = "Finished Goods"
+MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def build_capacity_pivot(df, cap_df, warn):
+    """Hitung pivot capacity (nilai) dari hasil cleaning + master capacity.
+    Hanya baris Merchandise Category 2 = Finished Goods."""
+    if cap_df is None:
+        return None
+
+    cd = cap_df.copy()
+    cd.columns = cd.columns.astype(str).str.strip()
+    cmap = {c.lower(): c for c in cd.columns}
+
+    def pick(*names):
+        for n in names:
+            if n in cmap:
+                return cmap[n]
+        return None
+
+    c_key = pick("period key", "key")
+    c_wd = pick("working days", "working day")
+    c_cap = pick("capacity", "offered capacity")
+    if not (c_key and c_wd and c_cap):
+        warn("Master Capacity harus punya kolom 'Period Key', 'Working Days', dan 'Capacity'. Capacity Pivot dilewati.")
+        return None
+
+    needed = ["Merchandise Category 2", "LPD Key", "Unconfirmed Flag", "Quantity"]
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        warn(f"Kolom {missing} tidak ditemukan di data, Capacity Pivot dilewati.")
+        return None
+
+    m = pd.DataFrame({
+        "key": pd.to_numeric(norm_key(cd[c_key]), errors="coerce"),
+        "wd": pd.to_numeric(cd[c_wd], errors="coerce"),
+        "cap": pd.to_numeric(cd[c_cap], errors="coerce"),
+    })
+    m = m.dropna(subset=["key"])
+    n_dup = int(m["key"].duplicated().sum())
+    if n_dup:
+        warn(f"Master Capacity: {n_dup} Period Key ganda, dipakai yang pertama.")
+        m = m.drop_duplicates(subset="key", keep="first")
+    if m.empty:
+        warn("Master Capacity tidak punya Period Key yang valid. Capacity Pivot dilewati.")
+        return None
+    m["key"] = m["key"].astype("int64")
+    m = m.reset_index(drop=True)
+
+    # Bulan, tahun, dan Mid/End diturunkan dari Period Key (YYYYMM01 / YYYYMM02)
+    m["year"] = m["key"] // 10000
+    m["month"] = (m["key"] // 100) % 100
+    m["bucket"] = np.where(m["key"] % 100 == 1, "Mid", "End")
+    m["month_abbr"] = m["month"].map(lambda x: MONTH_ABBR[x - 1] if 1 <= x <= 12 else str(x))
+    m["label_month"] = m["month_abbr"] + " " + (m["year"] % 100).astype(str).str.zfill(2) + "'"
+    m["label_half"] = m["bucket"] + " " + m["month_abbr"]
+    chg = (m[["year", "month"]] != m[["year", "month"]].shift()).any(axis=1)
+    m["grp"] = chg.cumsum()
+
+    # Nilai aktual: hanya Finished Goods
+    is_fg = df["Merchandise Category 2"].astype(str).str.strip().str.lower() == CAP_CATEGORY.lower()
+    fg = df[is_fg]
+    flag_y = fg["Unconfirmed Flag"].astype(str).str.strip().str.upper() == "Y"
+    q = pd.to_numeric(fg["Quantity"], errors="coerce")
+    lpd_key = pd.to_numeric(fg["LPD Key"], errors="coerce")
+    actual = q[~flag_y].groupby(lpd_key[~flag_y]).sum()
+    uncon = q[flag_y].groupby(lpd_key[flag_y]).sum()
+    actual.index = actual.index.astype("int64")
+    uncon.index = uncon.index.astype("int64")
+
+    m["actual"] = m["key"].map(actual).fillna(0)
+    m["uncon"] = m["key"].map(uncon).fillna(0)
+    m["total"] = m["actual"] + m["uncon"]
+    m["fr"] = np.where(m["cap"].fillna(0) > 0, m["total"] / m["cap"].replace(0, np.nan), np.nan)
+    m["g_total"] = m.groupby("grp")["total"].transform("sum")
+    m["g_cap"] = m.groupby("grp")["cap"].transform("sum")
+    m["first_in_grp"] = ~m["grp"].duplicated()
+    m["g_fr"] = np.where(m["g_cap"].fillna(0) > 0, m["g_total"] / m["g_cap"].replace(0, np.nan), np.nan)
+
+    tot = {
+        "cap": m["cap"].sum(),
+        "actual": m["actual"].sum(),
+        "uncon": m["uncon"].sum(),
+        "total": m["total"].sum(),
+    }
+    tot["fr"] = tot["total"] / tot["cap"] if tot["cap"] else np.nan
+
+    # Tampilan untuk UI (teks)
+    def i_(v):
+        return "" if pd.isna(v) else f"{v:,.0f}"
+
+    def p_(v):
+        return "" if pd.isna(v) else f"{v:.2%}"
+
+    display = pd.DataFrame(
+        {
+            "Bulan": list(m["label_month"]) + [""],
+            "Periode": list(m["label_half"]) + ["Total"],
+            "Working Days": [("" if pd.isna(v) else f"{v:.1f}") for v in m["wd"]] + [""],
+            "Offered Capacity": [i_(v) for v in m["cap"]] + [i_(tot["cap"])],
+            "Actual Orders On-Hand (by LPD)": [i_(v) for v in m["actual"]] + [i_(tot["actual"])],
+            "Unconfirmed Order": [i_(v) for v in m["uncon"]] + [i_(tot["uncon"])],
+            "Total Actual Qty Mid/Month": [i_(v) for v in m["total"]] + [i_(tot["total"])],
+            "Total Actual Qty per Month": [
+                (i_(g) if f else "") for g, f in zip(m["g_total"], m["first_in_grp"])
+            ] + [i_(tot["total"])],
+            "Actual FR": [p_(v) for v in m["fr"]] + [p_(tot["fr"])],
+            "Actual FR per Month": [
+                (p_(g) if f else "") for g, f in zip(m["g_fr"], m["first_in_grp"])
+            ] + [""],
+        },
+        index=[str(k) for k in m["key"]] + ["Total"],
+    ).T
+
+    n_keys_no_data = int(((m["total"] == 0)).sum())
+    warn(
+        f"Capacity Pivot: {len(m)} periode dari master, kategori '{CAP_CATEGORY}' "
+        f"({int(is_fg.sum()):,} baris data). {n_keys_no_data} periode tanpa qty."
+    )
+    return {"m": m, "tot": tot, "display": display}
+
+
+def _write_pivot_sheet(workbook, pv, df):
+    """Sheet 'Capacity Pivot': tampilan pivot dengan rumus SUMIFS ke Sheet1."""
+    from xlsxwriter.utility import xl_col_to_name, xl_rowcol_to_cell
+
+    m, tot = pv["m"], pv["tot"]
+    n = len(m)
+    ws = workbook.add_worksheet("Capacity Pivot")
+
+    base = {"font_size": 9, "align": "center", "valign": "vcenter", "border": 1}
+    f_lbl = workbook.add_format({**base, "align": "left", "bold": True})
+    f_hdr = workbook.add_format({**base, "bold": True, "text_wrap": True, "bg_color": GRAY_HEADER})
+    f_key = workbook.add_format({**base, "bold": True, "bg_color": GRAY_HEADER, "num_format": "0"})
+    f_wd = workbook.add_format({**base, "num_format": "0.0"})
+    f_int = workbook.add_format({**base, "num_format": "#,##0"})
+    f_int_b = workbook.add_format({**base, "num_format": "#,##0", "bold": True})
+    f_pct = workbook.add_format({**base, "num_format": "0.00%"})
+    f_pct_b = workbook.add_format({**base, "num_format": "0.00%", "bold": True})
+    f_blank = workbook.add_format(base)
+
+    letters = {c: xl_col_to_name(i) for i, c in enumerate(df.columns)}
+    last = len(df) + 1
+
+    def rng(col):
+        L = letters[col]
+        return f"Sheet1!${L}$2:${L}${last}"
+
+    R_WD, R_MONTH, R_HALF, R_KEY, R_CAP, R_ACT, R_UNC, R_TOT, R_MTOT, R_FR, R_MFR = range(11)
+    tc = n + 1  # kolom Total
+
+    labels = {
+        R_WD: "Working Days",
+        R_MONTH: "PGD",
+        R_HALF: "",
+        R_KEY: CAP_CATEGORY,
+        R_CAP: "Offered Capacity in BP (Portal)",
+        R_ACT: "Actual Orders On-Hand (by LPD)",
+        R_UNC: "Unconfirmed Order",
+        R_TOT: "Total Actual Qty Mid/Month",
+        R_MTOT: "Total Actual Qty per Month",
+        R_FR: "Actual FR",
+        R_MFR: "Actual FR per Month",
+    }
+    for r, text in labels.items():
+        ws.write_string(r, 0, text, f_hdr if r in (R_MONTH, R_HALF, R_KEY) else f_lbl)
+
+    def num_or_blank(r, c, v, fmt):
+        if pd.isna(v):
+            ws.write_blank(r, c, None, fmt)
+        else:
+            ws.write_number(r, c, float(v), fmt)
+
+    def ref(r, c):
+        return xl_rowcol_to_cell(r, c)
+
+    def fr_formula(tot_cell, cap_expr):
+        return f'=IF(N({cap_expr})=0,"",{tot_cell}/{cap_expr})'
+
+    for i, row in m.iterrows():
+        c = i + 1
+        num_or_blank(R_WD, c, row["wd"], f_wd)
+        ws.write_string(R_HALF, c, row["label_half"], f_hdr)
+        ws.write_number(R_KEY, c, int(row["key"]), f_key)
+        num_or_blank(R_CAP, c, row["cap"], f_int)
+
+        keycell = xl_rowcol_to_cell(R_KEY, c, row_abs=True)
+        base_f = f'SUMIFS({rng("Quantity")},{rng("Merchandise Category 2")},"{CAP_CATEGORY}",{rng("LPD Key")},{keycell}'
+        ws.write_formula(R_ACT, c, f'={base_f},{rng("Unconfirmed Flag")},"<>Y")', f_int, row["actual"])
+        ws.write_formula(R_UNC, c, f'={base_f},{rng("Unconfirmed Flag")},"Y")', f_int, row["uncon"])
+        ws.write_formula(R_TOT, c, f"={ref(R_ACT, c)}+{ref(R_UNC, c)}", f_int_b, row["total"])
+        ws.write_formula(
+            R_FR, c, fr_formula(ref(R_TOT, c), ref(R_CAP, c)), f_pct,
+            "" if pd.isna(row["fr"]) else float(row["fr"]),
+        )
+
+    # Header bulan + total/FR per bulan (digabung per grup bulan)
+    for _, g in m.groupby("grp", sort=False):
+        c1, c2 = g.index[0] + 1, g.index[-1] + 1
+        label = g["label_month"].iloc[0]
+        tot_rng = f"{ref(R_TOT, c1)}:{ref(R_TOT, c2)}"
+        cap_rng = f"{ref(R_CAP, c1)}:{ref(R_CAP, c2)}"
+        mtot_val = float(g["total"].sum())
+        gcap = g["cap"].sum()
+        mfr_val = "" if not gcap else mtot_val / float(gcap)
+
+        if c1 == c2:
+            ws.write_string(R_MONTH, c1, label, f_hdr)
+            ws.write_formula(R_MTOT, c1, f"=SUM({tot_rng})", f_int_b, mtot_val)
+            ws.write_formula(R_MFR, c1, f'=IF(SUM({cap_rng})=0,"",{ref(R_MTOT, c1)}/SUM({cap_rng}))', f_pct_b, mfr_val)
+        else:
+            ws.merge_range(R_MONTH, c1, R_MONTH, c2, label, f_hdr)
+            ws.merge_range(R_MTOT, c1, R_MTOT, c2, "", f_int_b)
+            ws.write_formula(R_MTOT, c1, f"=SUM({tot_rng})", f_int_b, mtot_val)
+            ws.merge_range(R_MFR, c1, R_MFR, c2, "", f_pct_b)
+            ws.write_formula(R_MFR, c1, f'=IF(SUM({cap_rng})=0,"",{ref(R_MTOT, c1)}/SUM({cap_rng}))', f_pct_b, mfr_val)
+
+    # Kolom Total
+    ws.merge_range(R_MONTH, tc, R_KEY, tc, "Total", f_hdr)
+    ws.write_blank(R_WD, tc, None, f_blank)
+    for r, key, fmt in [(R_CAP, "cap", f_int_b), (R_ACT, "actual", f_int_b), (R_UNC, "uncon", f_int_b), (R_TOT, "total", f_int_b)]:
+        ws.write_formula(r, tc, f"=SUM({ref(r, 1)}:{ref(r, n)})", fmt, float(tot[key]))
+    ws.write_formula(R_MTOT, tc, f"={ref(R_TOT, tc)}", f_int_b, float(tot["total"]))
+    ws.write_formula(
+        R_FR, tc, fr_formula(ref(R_TOT, tc), ref(R_CAP, tc)), f_pct_b,
+        "" if pd.isna(tot["fr"]) else float(tot["fr"]),
+    )
+    ws.write_blank(R_MFR, tc, None, f_blank)
+
+    ws.set_column(0, 0, 32)
+    ws.set_column(1, tc, 11.5)
+    ws.freeze_panes(R_CAP, 1)
+
+
+def to_excel_bytes(df, df_qty_report, df_dash_only, orig_cols=None, pivot=None):
     import xlsxwriter
 
     orig = set(orig_cols or [])
@@ -906,6 +1153,8 @@ def to_excel_bytes(df, df_qty_report, df_dash_only, orig_cols=None):
     # Sheet utama: abu-abu = kolom asli ZRSD1013, biru = kolom baru
     main_colors = {c: (GRAY_HEADER if c in orig else BLUE_HEADER) for c in df.columns}
     _write_styled_sheet(workbook, "Sheet1", df, main_colors, formats)
+    if pivot is not None:
+        _write_pivot_sheet(workbook, pivot, df)
     _write_styled_sheet(workbook, "Qty Mismatch Report", df_qty_report, {}, formats)
     _write_styled_sheet(workbook, "Dashboard Not in SAP", df_dash_only, {}, formats)
 
@@ -938,6 +1187,11 @@ with st.sidebar:
         type=["xlsx", "xls"],
         help="Kolom: SO, RFID, Shipment Method, Dev. Type, Season, Packing Type (opsional).",
     )
+    cap_file = st.file_uploader(
+        "Upload Master Capacity",
+        type=["xlsx", "xls"],
+        help="Kolom: Period Key, Month, Year, Bucket, Working Days, Capacity. Dipakai untuk sheet 'Capacity Pivot' (Finished Goods saja).",
+    )
     cpr_text = st.text_area(
         "Model No CPR (paste: satu per baris atau menyamping)",
         height=180,
@@ -957,7 +1211,11 @@ if run and sap_file is not None:
             so_attr_in = read_excel_file(so_attr_file) if so_attr_file else None
 
             result = clean_data(df_raw, df_dash_in, cpr_models, remark_in, so_attr_in, log)
-            result["excel"] = to_excel_bytes(result["df"], result["qty_report"], result["dash_only"], result["orig_cols"])
+            cap_in = read_excel_file(cap_file) if cap_file else None
+            result["pivot"] = build_capacity_pivot(result["df"], cap_in, log.append)
+            result["excel"] = to_excel_bytes(
+                result["df"], result["qty_report"], result["dash_only"], result["orig_cols"], result["pivot"]
+            )
             result["log"] = log
             result["shape_awal"] = df_raw.shape
             result["stamp"] = datetime.datetime.now().strftime("%Y%m%d_%H%M")
@@ -985,8 +1243,8 @@ if "result" in st.session_state:
         type="primary",
     )
 
-    tab_data, tab_sum, tab_qty, tab_dash, tab_log = st.tabs(
-        ["Hasil", "Ringkasan Compare", "Qty Mismatch Report", "Dashboard Not in SAP", "Log"]
+    tab_data, tab_sum, tab_cap, tab_qty, tab_dash, tab_log = st.tabs(
+        ["Hasil", "Ringkasan Compare", "Capacity Pivot", "Qty Mismatch Report", "Dashboard Not in SAP", "Log"]
     )
 
     with tab_data:
@@ -1028,6 +1286,13 @@ if "result" in st.session_state:
             st.write("Tidak ada missing value.")
         else:
             st.dataframe(ms.rename("Jumlah kosong").to_frame(), use_container_width=True)
+
+    with tab_cap:
+        if res.get("pivot") is None:
+            st.info("Upload Master Capacity (Period Key, Working Days, Capacity) di sidebar, lalu klik **Proses**.")
+        else:
+            st.caption(f"Hanya baris Merchandise Category 2 = {CAP_CATEGORY}. Di Excel, sheet 'Capacity Pivot' berisi rumus SUMIFS ke Sheet1.")
+            st.dataframe(res["pivot"]["display"], use_container_width=True)
 
     with tab_qty:
         st.write(f"{len(res['qty_report']):,} baris")
