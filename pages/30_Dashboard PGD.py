@@ -814,12 +814,15 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             (df["Client No"].astype(str).str.strip().str.upper() == "ZSAS")
             & (df["Order Type Description"].astype(str).str.strip().str.upper() == "SALES SAMPLE ORDER")
         )
-        is_fail_sample = is_sample_order & (df["MDP"].astype(str).str.strip().str.upper() == "FAIL")
+        mdp_sample = df["MDP"].astype(str).str.strip().str.upper()
+        is_ontime_sample = is_sample_order & (mdp_sample == "ON TIME")
+        is_fail_sample = is_sample_order & (mdp_sample == "FAIL")
         df["Sample Qty"] = np.where(is_sample_order, df["Quantity"], 0)
+        df["Sample Ontime Qty"] = np.where(is_ontime_sample, df["Quantity"], 0)
         df["Sample Delay Qty"] = np.where(is_fail_sample, df["Quantity"], 0)
     else:
         missing = [c for c in required_cols if c not in df.columns]
-        warn(f"Kolom {missing} tidak ditemukan, Sample Qty/Sample Delay Qty dilewati.")
+        warn(f"Kolom {missing} tidak ditemukan, Sample Qty/Sample Ontime Qty/Sample Delay Qty dilewati.")
 
     # ---------- 8. Urutan kolom final ----------
     desired_order = [
@@ -828,7 +831,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "PO No.(Full)", "Customer PO item", "PO No.(Short)",
         "Merchandise Category 2", "Shipped Qty", "Unshipped Qty",
         "Shipped Rspsv Qty", "Quantity", "Dashboard Quantity", "Qty Diff", "Qty Compare",
-        "Sample Qty", "Sample Delay Qty", "Model Name", "Article No",
+        "Sample Qty", "Sample Ontime Qty", "Sample Delay Qty", "Model Name", "Article No",
         "SAP Material", "Pattern Code(Up.No.)", "Model No", "Outsole Mold",
         "Gender", "Category 1", "Category 2", "Category 3", "Unit Price",
         "Classification Code", "DRC",
