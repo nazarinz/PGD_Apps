@@ -910,14 +910,26 @@ def _write_styled_sheet(workbook, name, d, header_colors, formats):
 
 
 CAP_CATEGORY = "Finished Goods"
-WC_REGEX = r"wc.26 orders"      # untuk pandas (titik = tanda kutip lurus/miring)
-WC_PATTERN = "*WC?26 Orders*"   # untuk kriteria SUMIFS Excel
+CAP_LABEL = "Non-Component"
+COMPONENT_TYPE = "Component Order"
+EXCLUDED_TYPES = ["Free Of Charge Order", "Sales Sample Order", "Replenishment Order"]
 MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# Remark yang dikenali (regex untuk pandas, pola wildcard untuk SUMIFS Excel)
+WC_REGEX = r"wc.26 orders"          # titik = tanda kutip lurus/miring
+WC_PATTERN = "*WC?26 Orders*"
+BIS_REGEX = r"p(?:ci|gs) bis"
+BIS_PATTERNS = ["*PCI BIS*", "*PGS BIS*"]
 
 
 def build_capacity_pivot(df, cap_df, warn):
     """Hitung pivot capacity (nilai) dari hasil cleaning + master capacity.
-    Hanya baris Merchandise Category 2 = Finished Goods."""
+
+    Non-Component = Merchandise Category 2 'Finished Goods', Order Type Description bukan
+    Component Order dan bukan FOC / Sales Sample / Replenishment.
+    CKD-LPD       = Order Type Description 'Component Order'.
+    FOC / Sales Sample / Replenishment tidak dihitung sama sekali.
+    """
     if cap_df is None:
         return None
 
@@ -938,7 +950,8 @@ def build_capacity_pivot(df, cap_df, warn):
         warn("Master Capacity harus punya kolom 'Period Key', 'Working Days', dan 'Capacity'. Capacity Pivot dilewati.")
         return None
 
-    needed = ["Merchandise Category 2", "LPD Key", "Unconfirmed Flag", "Quantity", "Remark"]
+    needed = ["Merchandise Category 2", "Order Type Description", "LPD Key",
+              "Unconfirmed Flag", "Quantity", "Remark"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         warn(f"Kolom {missing} tidak ditemukan di data, Capacity Pivot dilewati.")
@@ -970,37 +983,45 @@ def build_capacity_pivot(df, cap_df, warn):
     chg = (m[["year", "month"]] != m[["year", "month"]].shift()).any(axis=1)
     m["grp"] = chg.cumsum()
 
-    # Nilai aktual: hanya Finished Goods
+    # ---- Pilih baris ----
+    typ = df["Order Type Description"].astype(str).str.strip().str.lower()
+    is_excl = typ.isin([t.lower() for t in EXCLUDED_TYPES])
+    is_comp = typ == COMPONENT_TYPE.lower()
     is_fg = df["Merchandise Category 2"].astype(str).str.strip().str.lower() == CAP_CATEGORY.lower()
-    fg = df[is_fg]
-    flag_y = fg["Unconfirmed Flag"].astype(str).str.strip().str.upper() == "Y"
-    q = pd.to_numeric(fg["Quantity"], errors="coerce")
-    lpd_key = pd.to_numeric(fg["LPD Key"], errors="coerce")
-    # Kategori saling lepas: WC'26 (dari Remark) > Unconfirmed > Actual
-    is_wc = fg["Remark"].astype(str).str.contains(WC_REGEX, case=False, regex=True, na=False)
-    actual = q[~flag_y & ~is_wc].groupby(lpd_key[~flag_y & ~is_wc]).sum()
-    uncon = q[flag_y & ~is_wc].groupby(lpd_key[flag_y & ~is_wc]).sum()
-    wc = q[is_wc].groupby(lpd_key[is_wc]).sum()
-    for s_ in (actual, uncon, wc):
-        s_.index = s_.index.astype("int64")
 
-    m["actual"] = m["key"].map(actual).fillna(0)
-    m["uncon"] = m["key"].map(uncon).fillna(0)
-    m["wc"] = m["key"].map(wc).fillna(0)
-    m["total"] = m["actual"] + m["uncon"] + m["wc"]
+    nc = df[is_fg & ~is_excl & ~is_comp]          # Non-Component
+    ckd_df = df[is_comp]                          # CKD-LPD
+
+    def sum_by_key(frame, mask=None):
+        qq = pd.to_numeric(frame["Quantity"], errors="coerce")
+        kk = pd.to_numeric(frame["LPD Key"], errors="coerce")
+        if mask is not None:
+            qq, kk = qq[mask], kk[mask]
+        out = qq.groupby(kk).sum()
+        out.index = out.index.astype("int64")
+        return out
+
+    # Kategori Non-Component saling lepas: WC'26 > PCI/PGS BIS > Unconfirmed > Actual
+    flag_y = nc["Unconfirmed Flag"].astype(str).str.strip().str.upper() == "Y"
+    rem = nc["Remark"].astype(str)
+    is_wc = rem.str.contains(WC_REGEX, case=False, regex=True, na=False)
+    is_bis = rem.str.contains(BIS_REGEX, case=False, regex=True, na=False) & ~is_wc
+    other = ~is_wc & ~is_bis
+
+    m["actual"] = m["key"].map(sum_by_key(nc, ~flag_y & other)).fillna(0)
+    m["uncon"] = m["key"].map(sum_by_key(nc, flag_y & other)).fillna(0)
+    m["ckd"] = m["key"].map(sum_by_key(ckd_df)).fillna(0)
+    m["wc"] = m["key"].map(sum_by_key(nc, is_wc)).fillna(0)
+    m["bis"] = m["key"].map(sum_by_key(nc, is_bis)).fillna(0)
+    m["total"] = m[["actual", "uncon", "ckd", "wc", "bis"]].sum(axis=1)
+
     m["fr"] = np.where(m["cap"].fillna(0) > 0, m["total"] / m["cap"].replace(0, np.nan), np.nan)
     m["g_total"] = m.groupby("grp")["total"].transform("sum")
     m["g_cap"] = m.groupby("grp")["cap"].transform("sum")
     m["first_in_grp"] = ~m["grp"].duplicated()
     m["g_fr"] = np.where(m["g_cap"].fillna(0) > 0, m["g_total"] / m["g_cap"].replace(0, np.nan), np.nan)
 
-    tot = {
-        "cap": m["cap"].sum(),
-        "actual": m["actual"].sum(),
-        "uncon": m["uncon"].sum(),
-        "wc": m["wc"].sum(),
-        "total": m["total"].sum(),
-    }
+    tot = {k: m[k].sum() for k in ["cap", "actual", "uncon", "ckd", "wc", "bis", "total"]}
     tot["fr"] = tot["total"] / tot["cap"] if tot["cap"] else np.nan
 
     # Tampilan untuk UI (teks)
@@ -1018,7 +1039,9 @@ def build_capacity_pivot(df, cap_df, warn):
             "Offered Capacity": [i_(v) for v in m["cap"]] + [i_(tot["cap"])],
             "Actual Orders On-Hand (by LPD)": [i_(v) for v in m["actual"]] + [i_(tot["actual"])],
             "Unconfirmed Order": [i_(v) for v in m["uncon"]] + [i_(tot["uncon"])],
+            "CKD-LPD": [i_(v) for v in m["ckd"]] + [i_(tot["ckd"])],
             "WC'26 Order": [i_(v) for v in m["wc"]] + [i_(tot["wc"])],
+            "PCI/PGS BIS": [i_(v) for v in m["bis"]] + [i_(tot["bis"])],
             "Total Actual Qty Mid/Month": [i_(v) for v in m["total"]] + [i_(tot["total"])],
             "Total Actual Qty per Month": [
                 (i_(g) if f else "") for g, f in zip(m["g_total"], m["first_in_grp"])
@@ -1031,10 +1054,10 @@ def build_capacity_pivot(df, cap_df, warn):
         index=[str(k) for k in m["key"]] + ["Total"],
     ).T
 
-    n_keys_no_data = int(((m["total"] == 0)).sum())
     warn(
-        f"Capacity Pivot: {len(m)} periode dari master, kategori '{CAP_CATEGORY}' "
-        f"({int(is_fg.sum()):,} baris data). {n_keys_no_data} periode tanpa qty."
+        f"Capacity Pivot: {len(m)} periode dari master. {CAP_LABEL}: {len(nc):,} baris, "
+        f"CKD-LPD: {len(ckd_df):,} baris, {int(is_excl.sum()):,} baris "
+        f"(FOC / Sales Sample / Replenishment) tidak dihitung."
     )
     return {"m": m, "tot": tot, "display": display}
 
@@ -1065,18 +1088,21 @@ def _write_pivot_sheet(workbook, pv, df):
         L = letters[col]
         return f"Sheet1!${L}$2:${L}${last}"
 
-    R_WD, R_MONTH, R_HALF, R_KEY, R_CAP, R_ACT, R_UNC, R_WC, R_TOT, R_MTOT, R_FR, R_MFR = range(12)
+    (R_WD, R_MONTH, R_HALF, R_KEY, R_CAP, R_ACT, R_UNC, R_CKD, R_WC, R_BIS,
+     R_TOT, R_MTOT, R_FR, R_MFR) = range(14)
     tc = n + 1  # kolom Total
 
     labels = {
         R_WD: "Working Days",
         R_MONTH: "PGD",
         R_HALF: "",
-        R_KEY: CAP_CATEGORY,
+        R_KEY: CAP_LABEL,
         R_CAP: "Offered Capacity in BP (Portal)",
         R_ACT: "Actual Orders On-Hand (by LPD)",
         R_UNC: "Unconfirmed Order",
+        R_CKD: "CKD-LPD",
         R_WC: "WC'26 Order",
+        R_BIS: "PCI/PGS BIS",
         R_TOT: "Total Actual Qty Mid/Month",
         R_MTOT: "Total Actual Qty per Month",
         R_FR: "Actual FR",
@@ -1097,6 +1123,13 @@ def _write_pivot_sheet(workbook, pv, df):
     def fr_formula(tot_cell, cap_expr):
         return f'=IF(N({cap_expr})=0,"",{tot_cell}/{cap_expr})'
 
+    # Potongan kriteria SUMIFS (dipakai ulang di semua kolom)
+    q_rng, cat_rng, key_rng = rng("Quantity"), rng("Merchandise Category 2"), rng("LPD Key")
+    typ_rng, flag_rng, rem_rng = rng("Order Type Description"), rng("Unconfirmed Flag"), rng("Remark")
+    excl = ",".join(f'{typ_rng},"<>{t}"' for t in EXCLUDED_TYPES)
+    not_wc = f'{rem_rng},"<>{WC_PATTERN}"'
+    not_bis = ",".join(f'{rem_rng},"<>{p}"' for p in BIS_PATTERNS)
+
     for i, row in m.iterrows():
         c = i + 1
         num_or_blank(R_WD, c, row["wd"], f_wd)
@@ -1105,12 +1138,21 @@ def _write_pivot_sheet(workbook, pv, df):
         num_or_blank(R_CAP, c, row["cap"], f_int)
 
         keycell = xl_rowcol_to_cell(R_KEY, c, row_abs=True)
-        base_f = f'SUMIFS({rng("Quantity")},{rng("Merchandise Category 2")},"{CAP_CATEGORY}",{rng("LPD Key")},{keycell}'
-        rem = rng("Remark")
-        ws.write_formula(R_ACT, c, f'={base_f},{rng("Unconfirmed Flag")},"<>Y",{rem},"<>{WC_PATTERN}")', f_int, row["actual"])
-        ws.write_formula(R_UNC, c, f'={base_f},{rng("Unconfirmed Flag")},"Y",{rem},"<>{WC_PATTERN}")', f_int, row["uncon"])
-        ws.write_formula(R_WC, c, f'={base_f},{rem},"{WC_PATTERN}")', f_int, row["wc"])
-        ws.write_formula(R_TOT, c, f"={ref(R_ACT, c)}+{ref(R_UNC, c)}+{ref(R_WC, c)}", f_int_b, row["total"])
+        nc_f = (
+            f'SUMIFS({q_rng},{cat_rng},"{CAP_CATEGORY}",{key_rng},{keycell},'
+            f'{excl},{typ_rng},"<>{COMPONENT_TYPE}"'
+        )
+        ws.write_formula(R_ACT, c, f'={nc_f},{flag_rng},"<>Y",{not_wc},{not_bis})', f_int, row["actual"])
+        ws.write_formula(R_UNC, c, f'={nc_f},{flag_rng},"Y",{not_wc},{not_bis})', f_int, row["uncon"])
+        ws.write_formula(
+            R_CKD, c, f'=SUMIFS({q_rng},{key_rng},{keycell},{typ_rng},"{COMPONENT_TYPE}")', f_int, row["ckd"]
+        )
+        ws.write_formula(R_WC, c, f'={nc_f},{rem_rng},"{WC_PATTERN}")', f_int, row["wc"])
+        bis_f = "+".join(f'{nc_f},{rem_rng},"{p}",{not_wc})' for p in BIS_PATTERNS)
+        ws.write_formula(R_BIS, c, f"={bis_f}", f_int, row["bis"])
+
+        parts = "+".join(ref(r, c) for r in (R_ACT, R_UNC, R_CKD, R_WC, R_BIS))
+        ws.write_formula(R_TOT, c, f"={parts}", f_int_b, row["total"])
         ws.write_formula(
             R_FR, c, fr_formula(ref(R_TOT, c), ref(R_CAP, c)), f_pct,
             "" if pd.isna(row["fr"]) else float(row["fr"]),
@@ -1140,8 +1182,9 @@ def _write_pivot_sheet(workbook, pv, df):
     # Kolom Total
     ws.merge_range(R_MONTH, tc, R_KEY, tc, "Total", f_hdr)
     ws.write_blank(R_WD, tc, None, f_blank)
-    for r, key, fmt in [(R_CAP, "cap", f_int_b), (R_ACT, "actual", f_int_b), (R_UNC, "uncon", f_int_b), (R_WC, "wc", f_int_b), (R_TOT, "total", f_int_b)]:
-        ws.write_formula(r, tc, f"=SUM({ref(r, 1)}:{ref(r, n)})", fmt, float(tot[key]))
+    for r, key in [(R_CAP, "cap"), (R_ACT, "actual"), (R_UNC, "uncon"), (R_CKD, "ckd"),
+                   (R_WC, "wc"), (R_BIS, "bis"), (R_TOT, "total")]:
+        ws.write_formula(r, tc, f"=SUM({ref(r, 1)}:{ref(r, n)})", f_int_b, float(tot[key]))
     ws.write_formula(R_MTOT, tc, f"={ref(R_TOT, tc)}", f_int_b, float(tot["total"]))
     ws.write_formula(
         R_FR, tc, fr_formula(ref(R_TOT, tc), ref(R_CAP, tc)), f_pct_b,
@@ -1315,7 +1358,11 @@ if "result" in st.session_state:
         if res.get("pivot") is None:
             st.info("Upload Master Capacity (Period Key, Working Days, Capacity) di sidebar, lalu klik **Proses**.")
         else:
-            st.caption(f"Hanya baris Merchandise Category 2 = {CAP_CATEGORY}. Di Excel, sheet 'Capacity Pivot' berisi rumus SUMIFS ke Sheet1.")
+            st.caption(
+                f"{CAP_LABEL}: Merchandise Category 2 = {CAP_CATEGORY}, Order Type bukan {COMPONENT_TYPE}. "
+                f"CKD-LPD: {COMPONENT_TYPE}. FOC / Sales Sample / Replenishment tidak dihitung. "
+                "Di Excel, sheet 'Capacity Pivot' berisi rumus SUMIFS ke Sheet1."
+            )
             st.dataframe(res["pivot"]["display"], use_container_width=True)
 
     with tab_qty:
