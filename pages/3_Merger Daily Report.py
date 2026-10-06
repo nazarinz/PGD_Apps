@@ -3,7 +3,7 @@ from utils.auth import require_login
 require_login()
 
 # pages/3_Merger Daily Report.py
-# Adapted from user's HTML-XLS merger app
+# Adapted from user's HTML-XLS merger app (kini mendukung XLSX)
 import io
 from datetime import datetime
 from io import StringIO
@@ -14,16 +14,16 @@ import streamlit as st
 
 st.set_page_config(page_title="PGD Apps — Merger Daily Report", page_icon="📚", layout="wide")
 st.title("📚 Merger Daily Report")
-st.caption("Dirancang untuk file *.xls* yang sebenarnya berisi HTML (sering dari export sistem).")
+st.caption("Mendukung file *.xlsx* (utama), serta *.xls* / *.html* hasil export sistem.")
 
 st.markdown('''
 **Langkah:**
-1) Upload banyak file `.xls` / `.html` (bisa banyak).
+1) Upload banyak file `.xlsx` (atau `.xls` / `.html`).
 2) Klik **Proses**.
 3) Lihat preview & unduh rekap Excel/CSV.
 
 **Pembersihan yang dilakukan:**
-- Ambil **tabel pertama** dari setiap file (`pandas.read_html`).
+- Baca sheet dari setiap file (`.xlsx` via `pandas.read_excel`, HTML via `pandas.read_html`).
 - Deteksi otomatis baris header, mendukung dua format:
   - Format baru: `fact_order, vbeln, auart, zzmdmark, zzmdnam, bstkd, sizeno, prod_qty`
   - Format lama: `FactOrder, Order no, Prod. Order Type, ...`
@@ -35,8 +35,8 @@ st.markdown('''
 ''')
 
 files = st.file_uploader(
-    "Upload file .xls/.html (bisa banyak)",
-    type=["xls", "html", "htm"],
+    "Upload file .xlsx / .xls / .html (bisa banyak)",
+    type=["xlsx", "xls", "html", "htm"],
     accept_multiple_files=True,
 )
 btn = st.button("🚀 Proses")
@@ -65,30 +65,53 @@ def _norm(x) -> str:
     )
 
 
-def read_html_tables_from_upload(f) -> List[pd.DataFrame]:
+def _get_raw(f) -> bytes:
     if hasattr(f, "getvalue"):
-        raw = f.getvalue()
-    else:
-        try:
-            f.seek(0)
-        except Exception:
-            pass
-        raw = f.read()
+        return f.getvalue()
+    try:
+        f.seek(0)
+    except Exception:
+        pass
+    return f.read()
 
+
+def _read_html_bytes(raw: bytes) -> List[pd.DataFrame]:
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
             text = raw.decode(enc, errors="ignore")
-            # header=None -> semua baris (termasuk judul & header) dibaca sebagai data
             tables = pd.read_html(StringIO(text), header=None)
             if tables:
                 return tables
         except Exception:
             continue
-    try:
-        tables = pd.read_html(io.BytesIO(raw), header=None)
-        return tables
-    except Exception:
-        return []
+    return []
+
+
+def _read_excel_bytes(raw: bytes, engine: Optional[str] = None) -> List[pd.DataFrame]:
+    # sheet_name=None -> dict semua sheet; header=None & dtype=str -> semua sel dibaca apa adanya
+    sheets = pd.read_excel(io.BytesIO(raw), sheet_name=None, header=None, dtype=str, engine=engine)
+    return list(sheets.values())
+
+
+def read_tables_from_upload(f) -> List[pd.DataFrame]:
+    """Kembalikan list DataFrame mentah (tanpa header). Pilih cara baca sesuai ekstensi."""
+    raw = _get_raw(f)
+    name = f.name.lower()
+
+    if name.endswith(".xlsx"):
+        try:
+            return _read_excel_bytes(raw, engine="openpyxl")
+        except Exception:
+            return _read_html_bytes(raw)  # jaga-jaga kalau ternyata bukan xlsx asli
+
+    if name.endswith(".xls"):
+        try:
+            return _read_excel_bytes(raw)
+        except Exception:
+            return _read_html_bytes(raw)  # .xls yang sebenarnya HTML
+
+    # .html / .htm
+    return _read_html_bytes(raw)
 
 
 def find_header_row(df: pd.DataFrame) -> Optional[int]:
@@ -102,6 +125,15 @@ def find_header_row(df: pd.DataFrame) -> Optional[int]:
 
 def is_header_like(row) -> bool:
     return sum(_norm(v) in HEADER_ALIASES for v in row) >= 4
+
+
+def pick_table(tables: List[pd.DataFrame]) -> pd.DataFrame:
+    """Pilih sheet/tabel pertama yang punya baris header; fallback ke yang pertama."""
+    for t in tables:
+        t2 = t.dropna(how="all").reset_index(drop=True)
+        if not t2.empty and find_header_row(t2) is not None:
+            return t
+    return tables[0]
 
 
 def clean_text(s: pd.Series) -> pd.Series:
@@ -164,11 +196,11 @@ if btn:
     log_rows = []
     for f in files:
         try:
-            tables = read_html_tables_from_upload(f)
+            tables = read_tables_from_upload(f)
             if not tables:
-                log_rows.append([f.name, "Gagal baca HTML", "-"])
+                log_rows.append([f.name, "Gagal baca file", "-"])
                 continue
-            df = process_table(tables[0])
+            df = process_table(pick_table(tables))
             df["Source_File"] = f.name
             frames.append(df)
             log_rows.append([f.name, "OK", f"{df.shape[0]} rows"])
@@ -200,7 +232,7 @@ if btn:
     st.download_button(
         label="📥 Download Rekap (Excel)",
         data=buf_xlsx.getvalue(),
-        file_name=f"rekap_html_xls_{ts}.xlsx",
+        file_name=f"rekap_xlsx_{ts}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -208,6 +240,6 @@ if btn:
     st.download_button(
         label="📥 Download Rekap (CSV)",
         data=csv_data,
-        file_name=f"rekap_html_xls_{ts}.csv",
+        file_name=f"rekap_xlsx_{ts}.csv",
         mime="text/csv",
     )
