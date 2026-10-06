@@ -6,7 +6,9 @@ require_login()
 # Adapted from user's HTML-XLS merger app
 import io
 from datetime import datetime
-from typing import List
+from io import StringIO
+from typing import List, Optional
+
 import pandas as pd
 import streamlit as st
 
@@ -22,21 +24,48 @@ st.markdown('''
 
 **Pembersihan yang dilakukan:**
 - Ambil **tabel pertama** dari setiap file (`pandas.read_html`).
-- Drop baris kosong & baris yang kolom pertama = `FactOrder` (header duplikat).
-- Drop baris yang kolom pertama mengandung kata **"Total"**.
-- Ambil **8 kolom pertama**.
-- Set nama kolom menjadi: `['FactOrder','Order no','Prod. Order Type','Article','Style Name','PO No','Size','Production Qty']`
+- Deteksi otomatis baris header, mendukung dua format:
+  - Format baru: `fact_order, vbeln, auart, zzmdmark, zzmdnam, bstkd, sizeno, prod_qty`
+  - Format lama: `FactOrder, Order no, Prod. Order Type, ...`
+- Baris judul di atas header (mis. `ASB_Hourly_Productivity_Rep_Detail_...`) diabaikan.
+- Drop baris kosong, header duplikat, dan baris yang kolom pertama mengandung **"Total"**.
+- Ambil **8 kolom pertama** lalu ganti nama menjadi:
+  `['FactOrder','Order no','Prod. Order Type','Article','Style Name','PO No','Size','Production Qty']`
 - Tambah kolom `Source_File`.
 ''')
 
-files = st.file_uploader("Upload file .xls/.html (bisa banyak)", type=["xls","html","htm"], accept_multiple_files=True)
+files = st.file_uploader(
+    "Upload file .xls/.html (bisa banyak)",
+    type=["xls", "html", "htm"],
+    accept_multiple_files=True,
+)
 btn = st.button("🚀 Proses")
 
 DEFAULT_COLS = ['FactOrder', 'Order no', 'Prod. Order Type', 'Article',
                 'Style Name', 'PO No', 'Size', 'Production Qty']
 
+# Nama header yang dikenali (format baru + format lama), dinormalisasi lowercase tanpa spasi/titik
+HEADER_ALIASES = {
+    "factorder", "fact_order",
+    "orderno", "vbeln",
+    "prodordertype", "auart",
+    "article", "zzmdmark",
+    "stylename", "zzmdnam",
+    "pono", "bstkd",
+    "size", "sizeno",
+    "productionqty", "prod_qty",
+}
+
+
+def _norm(x) -> str:
+    return (
+        str(x).strip().lower()
+        .replace(" ", "").replace(".", "")
+        if pd.notna(x) else ""
+    )
+
+
 def read_html_tables_from_upload(f) -> List[pd.DataFrame]:
-    raw = None
     if hasattr(f, "getvalue"):
         raw = f.getvalue()
     else:
@@ -45,19 +74,86 @@ def read_html_tables_from_upload(f) -> List[pd.DataFrame]:
         except Exception:
             pass
         raw = f.read()
+
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
             text = raw.decode(enc, errors="ignore")
-            tables = pd.read_html(text)
-            if tables and len(tables) > 0:
+            # header=None -> semua baris (termasuk judul & header) dibaca sebagai data
+            tables = pd.read_html(StringIO(text), header=None)
+            if tables:
                 return tables
         except Exception:
             continue
     try:
-        tables = pd.read_html(io.BytesIO(raw))
+        tables = pd.read_html(io.BytesIO(raw), header=None)
         return tables
     except Exception:
         return []
+
+
+def find_header_row(df: pd.DataFrame) -> Optional[int]:
+    """Cari baris yang paling mirip header (>=4 sel cocok dengan alias)."""
+    for i in range(min(len(df), 20)):
+        hits = sum(_norm(v) in HEADER_ALIASES for v in df.iloc[i].tolist())
+        if hits >= 4:
+            return i
+    return None
+
+
+def is_header_like(row) -> bool:
+    return sum(_norm(v) in HEADER_ALIASES for v in row) >= 4
+
+
+def clean_text(s: pd.Series) -> pd.Series:
+    s = s.astype("string").str.strip()
+    s = s.replace({"": pd.NA, "nan": pd.NA, "NaN": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+    return s
+
+
+def clean_id(s: pd.Series) -> pd.Series:
+    """Bersihkan kolom ID/angka-teks (mis. 10198957.0 -> 10198957)."""
+    s = clean_text(s)
+    return s.str.replace(r"\.0+$", "", regex=True)
+
+
+def process_table(raw_df: pd.DataFrame) -> pd.DataFrame:
+    df = raw_df.copy()
+    df = df.dropna(how="all").reset_index(drop=True)
+
+    # Buang semua baris sampai header (judul laporan, dsb.)
+    hdr_idx = find_header_row(df)
+    if hdr_idx is not None:
+        df = df.iloc[hdr_idx + 1:].reset_index(drop=True)
+
+    # Buang header duplikat di tengah data
+    df = df[~df.apply(lambda r: is_header_like(r.tolist()), axis=1)]
+
+    # Pastikan minimal 8 kolom, ambil 8 kolom pertama
+    if df.shape[1] < 8:
+        for i in range(df.shape[1], 8):
+            df[f"col_{i+1}"] = pd.NA
+    df = df.iloc[:, :8].copy()
+    df.columns = DEFAULT_COLS
+
+    # Bersihkan nilai
+    for c in ["FactOrder", "Prod. Order Type", "Article", "Style Name", "PO No", "Size"]:
+        df[c] = clean_text(df[c])
+    df["Order no"] = clean_id(df["Order no"])
+
+    # Buang baris Total (kolom pertama mengandung "Total")
+    df = df[~df["FactOrder"].fillna("").str.contains("total", case=False)]
+
+    # Production Qty -> numerik
+    df["Production Qty"] = pd.to_numeric(
+        df["Production Qty"].astype("string").str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+
+    # Buang baris tanpa Order no & tanpa qty (sisa baris kosong/tidak valid)
+    df = df[~(df["Order no"].isna() & df["Production Qty"].isna())]
+
+    return df.reset_index(drop=True)
+
 
 if btn:
     if not files:
@@ -72,16 +168,7 @@ if btn:
             if not tables:
                 log_rows.append([f.name, "Gagal baca HTML", "-"])
                 continue
-            df = tables[0].copy()
-            df = df.dropna(how='all')
-            first_col = df.columns[0]
-            df = df[df[first_col].astype(str) != "FactOrder"]
-            df = df[~df[first_col].astype(str).str.contains("Total", na=False, case=False)]
-            if df.shape[1] < 8:
-                for i in range(df.shape[1], 8):
-                    df[f"col_{i+1}"] = pd.NA
-            df = df.iloc[:, :8]
-            df.columns = DEFAULT_COLS
+            df = process_table(tables[0])
             df["Source_File"] = f.name
             frames.append(df)
             log_rows.append([f.name, "OK", f"{df.shape[0]} rows"])
@@ -90,6 +177,7 @@ if btn:
 
     if not frames:
         st.error("Tidak ada tabel yang berhasil dibaca dari file yang diupload.")
+        st.dataframe(pd.DataFrame(log_rows, columns=["File", "Status", "Info"]), use_container_width=True)
         st.stop()
 
     combined = pd.concat(frames, ignore_index=True)
