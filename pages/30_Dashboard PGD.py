@@ -207,6 +207,7 @@ def read_excel_file(uploaded):
 def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
     warn = log.append
 
+    dropped_pos = set()  # PO yang barisnya dihapus (Pending Cancel)
     qty_mismatch_report = []
     dash_num_map = {}
     dash_date_map = {}
@@ -289,6 +290,15 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                 shown = ", ".join(not_found[:30])
                 more = f" (+{len(not_found) - 30} lainnya)" if len(not_found) > 30 else ""
                 warn(f"Remark tambahan: {len(not_found)} SO di file tidak ada di data: {shown}{more}")
+
+            # Remark "Pending Cancel" -> baris dihapus dari data
+            is_cancel = df["Remark"].astype(str).str.contains("pending cancel", case=False, na=False)
+            n_cancel = int(is_cancel.sum())
+            if n_cancel:
+                if "PO No.(Full)" in df.columns:
+                    dropped_pos = set(df.loc[is_cancel, "PO No.(Full)"].astype(str).str.strip())
+                df = df.loc[~is_cancel].reset_index(drop=True)
+            warn(f"Pending Cancel: {n_cancel} baris dihapus dari data.")
 
     if "SO" in df.columns:
         cols = list(df.columns)
@@ -491,7 +501,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             df = df.merge(lookup_table, on="PO No.(Full)", how="left")
 
             # --- PO ada di Dashboard tapi tidak ada di SAP ---
-            not_in_sap_mask = ~df_dash["PO"].isin(set(df["PO No.(Full)"]))
+            not_in_sap_mask = ~df_dash["PO"].isin(set(df["PO No.(Full)"]) | dropped_pos)
             df_dash_only = df_dash_raw.loc[not_in_sap_mask].copy()
             df_dash_only["PO"] = df_dash.loc[not_in_sap_mask, "PO"]
             warn(
@@ -897,6 +907,8 @@ def _write_styled_sheet(workbook, name, d, header_colors, formats):
 
 
 CAP_CATEGORY = "Finished Goods"
+WC_REGEX = r"wc.26 orders"      # untuk pandas (titik = tanda kutip lurus/miring)
+WC_PATTERN = "*WC?26 Orders*"   # untuk kriteria SUMIFS Excel
 MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
@@ -923,7 +935,7 @@ def build_capacity_pivot(df, cap_df, warn):
         warn("Master Capacity harus punya kolom 'Period Key', 'Working Days', dan 'Capacity'. Capacity Pivot dilewati.")
         return None
 
-    needed = ["Merchandise Category 2", "LPD Key", "Unconfirmed Flag", "Quantity"]
+    needed = ["Merchandise Category 2", "LPD Key", "Unconfirmed Flag", "Quantity", "Remark"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         warn(f"Kolom {missing} tidak ditemukan di data, Capacity Pivot dilewati.")
@@ -961,14 +973,18 @@ def build_capacity_pivot(df, cap_df, warn):
     flag_y = fg["Unconfirmed Flag"].astype(str).str.strip().str.upper() == "Y"
     q = pd.to_numeric(fg["Quantity"], errors="coerce")
     lpd_key = pd.to_numeric(fg["LPD Key"], errors="coerce")
-    actual = q[~flag_y].groupby(lpd_key[~flag_y]).sum()
-    uncon = q[flag_y].groupby(lpd_key[flag_y]).sum()
-    actual.index = actual.index.astype("int64")
-    uncon.index = uncon.index.astype("int64")
+    # Kategori saling lepas: WC'26 (dari Remark) > Unconfirmed > Actual
+    is_wc = fg["Remark"].astype(str).str.contains(WC_REGEX, case=False, regex=True, na=False)
+    actual = q[~flag_y & ~is_wc].groupby(lpd_key[~flag_y & ~is_wc]).sum()
+    uncon = q[flag_y & ~is_wc].groupby(lpd_key[flag_y & ~is_wc]).sum()
+    wc = q[is_wc].groupby(lpd_key[is_wc]).sum()
+    for s_ in (actual, uncon, wc):
+        s_.index = s_.index.astype("int64")
 
     m["actual"] = m["key"].map(actual).fillna(0)
     m["uncon"] = m["key"].map(uncon).fillna(0)
-    m["total"] = m["actual"] + m["uncon"]
+    m["wc"] = m["key"].map(wc).fillna(0)
+    m["total"] = m["actual"] + m["uncon"] + m["wc"]
     m["fr"] = np.where(m["cap"].fillna(0) > 0, m["total"] / m["cap"].replace(0, np.nan), np.nan)
     m["g_total"] = m.groupby("grp")["total"].transform("sum")
     m["g_cap"] = m.groupby("grp")["cap"].transform("sum")
@@ -979,6 +995,7 @@ def build_capacity_pivot(df, cap_df, warn):
         "cap": m["cap"].sum(),
         "actual": m["actual"].sum(),
         "uncon": m["uncon"].sum(),
+        "wc": m["wc"].sum(),
         "total": m["total"].sum(),
     }
     tot["fr"] = tot["total"] / tot["cap"] if tot["cap"] else np.nan
@@ -998,6 +1015,7 @@ def build_capacity_pivot(df, cap_df, warn):
             "Offered Capacity": [i_(v) for v in m["cap"]] + [i_(tot["cap"])],
             "Actual Orders On-Hand (by LPD)": [i_(v) for v in m["actual"]] + [i_(tot["actual"])],
             "Unconfirmed Order": [i_(v) for v in m["uncon"]] + [i_(tot["uncon"])],
+            "WC'26 Order": [i_(v) for v in m["wc"]] + [i_(tot["wc"])],
             "Total Actual Qty Mid/Month": [i_(v) for v in m["total"]] + [i_(tot["total"])],
             "Total Actual Qty per Month": [
                 (i_(g) if f else "") for g, f in zip(m["g_total"], m["first_in_grp"])
@@ -1044,7 +1062,7 @@ def _write_pivot_sheet(workbook, pv, df):
         L = letters[col]
         return f"Sheet1!${L}$2:${L}${last}"
 
-    R_WD, R_MONTH, R_HALF, R_KEY, R_CAP, R_ACT, R_UNC, R_TOT, R_MTOT, R_FR, R_MFR = range(11)
+    R_WD, R_MONTH, R_HALF, R_KEY, R_CAP, R_ACT, R_UNC, R_WC, R_TOT, R_MTOT, R_FR, R_MFR = range(12)
     tc = n + 1  # kolom Total
 
     labels = {
@@ -1055,6 +1073,7 @@ def _write_pivot_sheet(workbook, pv, df):
         R_CAP: "Offered Capacity in BP (Portal)",
         R_ACT: "Actual Orders On-Hand (by LPD)",
         R_UNC: "Unconfirmed Order",
+        R_WC: "WC'26 Order",
         R_TOT: "Total Actual Qty Mid/Month",
         R_MTOT: "Total Actual Qty per Month",
         R_FR: "Actual FR",
@@ -1084,9 +1103,11 @@ def _write_pivot_sheet(workbook, pv, df):
 
         keycell = xl_rowcol_to_cell(R_KEY, c, row_abs=True)
         base_f = f'SUMIFS({rng("Quantity")},{rng("Merchandise Category 2")},"{CAP_CATEGORY}",{rng("LPD Key")},{keycell}'
-        ws.write_formula(R_ACT, c, f'={base_f},{rng("Unconfirmed Flag")},"<>Y")', f_int, row["actual"])
-        ws.write_formula(R_UNC, c, f'={base_f},{rng("Unconfirmed Flag")},"Y")', f_int, row["uncon"])
-        ws.write_formula(R_TOT, c, f"={ref(R_ACT, c)}+{ref(R_UNC, c)}", f_int_b, row["total"])
+        rem = rng("Remark")
+        ws.write_formula(R_ACT, c, f'={base_f},{rng("Unconfirmed Flag")},"<>Y",{rem},"<>{WC_PATTERN}")', f_int, row["actual"])
+        ws.write_formula(R_UNC, c, f'={base_f},{rng("Unconfirmed Flag")},"Y",{rem},"<>{WC_PATTERN}")', f_int, row["uncon"])
+        ws.write_formula(R_WC, c, f'={base_f},{rem},"{WC_PATTERN}")', f_int, row["wc"])
+        ws.write_formula(R_TOT, c, f"={ref(R_ACT, c)}+{ref(R_UNC, c)}+{ref(R_WC, c)}", f_int_b, row["total"])
         ws.write_formula(
             R_FR, c, fr_formula(ref(R_TOT, c), ref(R_CAP, c)), f_pct,
             "" if pd.isna(row["fr"]) else float(row["fr"]),
@@ -1116,7 +1137,7 @@ def _write_pivot_sheet(workbook, pv, df):
     # Kolom Total
     ws.merge_range(R_MONTH, tc, R_KEY, tc, "Total", f_hdr)
     ws.write_blank(R_WD, tc, None, f_blank)
-    for r, key, fmt in [(R_CAP, "cap", f_int_b), (R_ACT, "actual", f_int_b), (R_UNC, "uncon", f_int_b), (R_TOT, "total", f_int_b)]:
+    for r, key, fmt in [(R_CAP, "cap", f_int_b), (R_ACT, "actual", f_int_b), (R_UNC, "uncon", f_int_b), (R_WC, "wc", f_int_b), (R_TOT, "total", f_int_b)]:
         ws.write_formula(r, tc, f"=SUM({ref(r, 1)}:{ref(r, n)})", fmt, float(tot[key]))
     ws.write_formula(R_MTOT, tc, f"={ref(R_TOT, tc)}", f_int_b, float(tot["total"]))
     ws.write_formula(
