@@ -414,12 +414,12 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         warn("File Dashboard tidak diupload. Lookup Dashboard dilewati.")
     else:
         df_dash = df_dash.copy()
+        df_dash_raw = df_dash.copy()  # header & nilai asli, untuk sheet "Dashboard Not in SAP"
         df_dash.columns = (
             df_dash.columns.astype(str)
             .str.replace(r"\s+", " ", regex=True)
             .str.strip()
         )
-        df_dash_raw = df_dash.copy()
 
         dash_cols_to_pull = [
             "is_SPOMA", "is_Product Prio", "ReAct", "Chase", "is_Key Franchise",
@@ -503,7 +503,8 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             # --- PO ada di Dashboard tapi tidak ada di SAP ---
             not_in_sap_mask = ~df_dash["PO"].isin(set(df["PO No.(Full)"]) | dropped_pos)
             df_dash_only = df_dash_raw.loc[not_in_sap_mask].copy()
-            df_dash_only["PO"] = df_dash.loc[not_in_sap_mask, "PO"]
+            po_pos = df_dash.columns.get_loc("PO")
+            df_dash_only.iloc[:, po_pos] = df_dash.loc[not_in_sap_mask, "PO"].values  # PO yang sudah dikoreksi (M -> 0)
             warn(
                 f"PO di Dashboard yang tidak ada di SAP: "
                 f"{df_dash_only['PO'].nunique()} PO ({len(df_dash_only)} baris)."
@@ -887,8 +888,15 @@ GRAY_HEADER = "#D9D9D9"   # kolom asli dari ZRSD1013
 BLUE_HEADER = "#9DC3E6"   # kolom baru
 
 
-def _write_styled_sheet(workbook, name, d, header_colors, formats):
-    """Tulis DataFrame ke sheet baru dengan style: font 9, center/middle, header bold wrap."""
+# Nama kolom yang dianggap tanggal (untuk sheet salinan Dashboard): mengandung kata "date"
+# (Release Date_, FGR Document Date_, ...) atau berakhiran "_" (CRD_, PSDD_, FPD_, LPD_, PODD_)
+DATE_NAME_RE = re.compile(r"(?<![a-z])date(?![a-z])|_$", re.IGNORECASE)
+MAX_EXCEL_SERIAL = 2958465
+
+
+def _write_styled_sheet(workbook, name, d, header_colors, formats, date_like=False):
+    """Tulis DataFrame ke sheet baru dengan style: font 9, center/middle, header bold wrap.
+    date_like=True: kolom bernama tanggal diberi format tanggal walau isinya angka serial Excel."""
     ws = workbook.add_worksheet(name)
     if d.shape[1] == 0:
         return
@@ -898,6 +906,9 @@ def _write_styled_sheet(workbook, name, d, header_colors, formats):
     ws.set_row(0, 42.75)  # 42.75 pt = 57 px
     ws.set_column(0, d.shape[1] - 1, 13)
 
+    def is_dt_value(v):
+        return isinstance(v, (datetime.datetime, datetime.date, pd.Timestamp))
+
     for c, col in enumerate(d.columns):
         s = d[col]
         is_dt = pd.api.types.is_datetime64_any_dtype(s)
@@ -906,7 +917,24 @@ def _write_styled_sheet(workbook, name, d, header_colors, formats):
         vals = s.astype(object).where(s.notna(), None).tolist()
         if s.dtype == object:
             vals = [v.item() if isinstance(v, np.generic) else v for v in vals]
-        ws.write_column(1, c, vals, formats["date"] if is_dt else formats["body"])
+
+        name_is_date = date_like and bool(DATE_NAME_RE.search(str(col)))
+        has_dt_obj = (s.dtype == object) and any(is_dt_value(v) for v in vals)
+
+        if is_dt or not (name_is_date or has_dt_obj):
+            ws.write_column(1, c, vals, formats["date"] if is_dt else formats["body"])
+            continue
+
+        # Kolom tanggal campuran / angka serial: tentukan format per sel
+        for r, v in enumerate(vals, start=1):
+            if v is None:
+                ws.write_blank(r, c, None, formats["date"])
+            elif is_dt_value(v):
+                ws.write_datetime(r, c, pd.Timestamp(v).to_pydatetime(), formats["date"])
+            elif isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < MAX_EXCEL_SERIAL:
+                ws.write_number(r, c, v, formats["date"])
+            else:
+                ws.write(r, c, v, formats["body"])
 
 
 CAP_CATEGORY = "Finished Goods"
@@ -1223,7 +1251,7 @@ def to_excel_bytes(df, df_qty_report, df_dash_only, orig_cols=None, pivot=None):
     if pivot is not None:
         _write_pivot_sheet(workbook, pivot, df)
     _write_styled_sheet(workbook, "Qty Mismatch Report", df_qty_report, {}, formats)
-    _write_styled_sheet(workbook, "Dashboard Not in SAP", df_dash_only, {}, formats)
+    _write_styled_sheet(workbook, "Dashboard Not in SAP", df_dash_only, {}, formats, date_like=True)
 
     workbook.close()
     return buf.getvalue()
