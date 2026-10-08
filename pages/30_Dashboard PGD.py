@@ -461,6 +461,12 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                 dash_num_map[qty_col_dash] = "Dashboard Quantity"
             dash_num_map["MDP Delay Adjusted"] = "Dashboard MDP Delay"
             dash_num_map["SDP Delay Adjusted"] = "Dashboard SDP Delay"
+            dash_num_map["Shipped Qty"] = "Dashboard Shipped Qty"
+            dash_num_map["Shipped Rspsv Qty"] = "Dashboard Shipped Rspsv Qty"
+            dash_num_map["Elevated Qty"] = "Dashboard Elevated Qty"
+            dash_num_map["Elevated Delay Qty"] = "Dashboard Elevated Delay Qty"
+            dash_num_map["Sample GR Qty"] = "Dashboard Sample Qty"
+            dash_num_map["Sample Delay Qty"] = "Dashboard Sample Delay Qty"
 
             missing_num = [c for c in dash_num_map if c not in df_dash.columns]
             if missing_num:
@@ -794,19 +800,19 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         else:
             warn(f"Kolom '{col}' tidak ditemukan, dilewati.")
 
-    # ---------- 7d. EFD Qty / EFD Delay Qty ----------
-    #     EFD Qty       = Quantity jika Elevated Check = "Y" (ontime maupun fail)
-    #     EFD Delay Qty = Quantity jika Elevated Check = "Y" dan MDP = "FAIL"
+    # ---------- 7d. Elevated Qty / Elevated Delay Qty ----------
+    #     Elevated Qty       = Quantity jika Elevated Check = "Y" (ontime maupun fail)
+    #     Elevated Delay Qty = Quantity jika Elevated Check = "Y" dan MDP = "FAIL"
     if "Elevated Check" in df.columns and "Quantity" in df.columns:
         is_elevated = df["Elevated Check"].astype(str).str.strip().str.upper() == "Y"
-        df["EFD Qty"] = np.where(is_elevated, df["Quantity"], 0)
+        df["Elevated Qty"] = np.where(is_elevated, df["Quantity"], 0)
         if "MDP" in df.columns:
             mdp_up = df["MDP"].astype(str).str.strip().str.upper()
-            df["EFD Delay Qty"] = np.where(is_elevated & (mdp_up == "FAIL"), df["Quantity"], 0)
+            df["Elevated Delay Qty"] = np.where(is_elevated & (mdp_up == "FAIL"), df["Quantity"], 0)
         else:
-            warn("Kolom 'MDP' tidak ditemukan, EFD Delay Qty dilewati.")
+            warn("Kolom 'MDP' tidak ditemukan, Elevated Delay Qty dilewati.")
     else:
-        warn("Kolom 'Elevated Check' dan/atau 'Quantity' tidak ditemukan, EFD Qty/EFD Delay Qty dilewati.")
+        warn("Kolom 'Elevated Check' dan/atau 'Quantity' tidak ditemukan, Elevated Qty/Elevated Delay Qty dilewati.")
 
     # ---------- 7e. Sample Qty / Sample Delay Qty ----------
     required_cols = ["Client No", "Order Type Description", "MDP", "Quantity"]
@@ -825,14 +831,36 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         missing = [c for c in required_cols if c not in df.columns]
         warn(f"Kolom {missing} tidak ditemukan, Sample Qty/Sample Ontime Qty/Sample Delay Qty dilewati.")
 
+    # ---------- 7f. GAP Dashboard vs SAP: Shipped / Elevated / Sample ----------
+    #     GAP = Dashboard - SAP (arah sama seperti GAP MDP / GAP SDP)
+    gap_pairs = [
+        ("Shipped Qty", "Dashboard Shipped Qty", "GAP Shipped Qty"),
+        ("Shipped Rspsv Qty", "Dashboard Shipped Rspsv Qty", "GAP Shipped Rspsv Qty"),
+        ("Elevated Qty", "Dashboard Elevated Qty", "GAP Elevated Qty"),
+        ("Elevated Delay Qty", "Dashboard Elevated Delay Qty", "GAP Elevated Delay Qty"),
+        ("Sample Qty", "Dashboard Sample Qty", "GAP Sample Qty"),
+        ("Sample Delay Qty", "Dashboard Sample Delay Qty", "GAP Sample Delay Qty"),
+    ]
+    skipped_gap = []
+    for sap_col, dash_col, gap_col in gap_pairs:
+        if sap_col in df.columns and dash_col in df.columns:
+            df[gap_col] = df[dash_col] - df[sap_col]
+        else:
+            skipped_gap.append(gap_col)
+    if skipped_gap and df_dash is not None:
+        warn(f"GAP dilewati karena kolom SAP/Dashboard tidak lengkap: {skipped_gap}")
+
     # ---------- 8. Urutan kolom final ----------
     desired_order = [
         "Triggering", "Client No", "Order Plant", "Brand Plant Name", "Remark", "SO", "RFID", "Dev. Type", "Season", "Shipment Method",
         "Order Type", "Order Type (Domestic/Export)", "Order Type Description",
         "PO No.(Full)", "Customer PO item", "PO No.(Short)",
-        "Merchandise Category 2", "Shipped Qty", "Unshipped Qty",
-        "Shipped Rspsv Qty", "Quantity", "Dashboard Quantity", "Qty Diff", "Qty Compare",
-        "Sample Qty", "Sample Ontime Qty", "Sample Delay Qty", "Model Name", "Article No",
+        "Merchandise Category 2", "Shipped Qty", "Dashboard Shipped Qty", "GAP Shipped Qty", "Unshipped Qty",
+        "Shipped Rspsv Qty", "Dashboard Shipped Rspsv Qty", "GAP Shipped Rspsv Qty",
+        "Quantity", "Dashboard Quantity", "Qty Diff", "Qty Compare",
+        "Sample Qty", "Dashboard Sample Qty", "GAP Sample Qty", "Sample Ontime Qty",
+        "Sample Delay Qty", "Dashboard Sample Delay Qty", "GAP Sample Delay Qty",
+        "Model Name", "Article No",
         "SAP Material", "Pattern Code(Up.No.)", "Model No", "Outsole Mold",
         "Gender", "Category 1", "Category 2", "Category 3", "Unit Price",
         "Classification Code", "DRC",
@@ -854,7 +882,10 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "FCR Date", "Actual PGI", "PODD vs FCR", "PODD vs Actual PGI",
         "PD", "PO Date", "Segment", "S&P LPD", "Currency",
         "Spoma", "Priority Product", "CPR", "ReAct", "Chase",
-        "Key Franchaise", "Elevated Check", "EFD Qty", "EFD Delay Qty", "Campaign Name",
+        "Key Franchaise", "Elevated Check",
+        "Elevated Qty", "Dashboard Elevated Qty", "GAP Elevated Qty",
+        "Elevated Delay Qty", "Dashboard Elevated Delay Qty", "GAP Elevated Delay Qty",
+        "Campaign Name",
         "Brand Partner", "Responsiveness", "PO Status",
     ]
     existing_desired = [c for c in desired_order if c in df.columns]
