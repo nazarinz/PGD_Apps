@@ -1,5 +1,7 @@
 import io
 import re
+import zipfile
+import zlib
 import itertools
 import datetime
 
@@ -155,19 +157,27 @@ def best_matching_subset(remaining_idx, qty_map, target, sap_crd=None, crd_map=N
     return best_subset, (best_key[0] if best_key else None)
 
 
+TRUE_FLAGS = {"TRUE", "1", "1.0", "Y", "YES"}
+FALSE_FLAGS = {"FALSE", "0", "0.0", "N", "NO"}
+
+
 def true_false_to_y(val):
+    """Flag Dashboard -> "Y" (TRUE / 1 / Y) atau kosong (FALSE / 0 / N).
+    Nilai gabungan dari beberapa baris Dashboard ("FALSE | TRUE") jadi "Y" kalau ada yang TRUE.
+    Nilai lain dibiarkan apa adanya."""
     if is_empty_val(val):
         return np.nan
-    parts = [p.strip() for p in str(val).split(" | ")]
     mapped = []
-    for p in parts:
-        pu = p.upper()
-        if pu == "TRUE":
-            mapped.append("Y")
-        elif pu == "FALSE":
-            mapped.append("")
+    for p in str(val).split(" | "):
+        pu = p.strip().upper()
+        if pu in TRUE_FLAGS:
+            out = "Y"
+        elif pu in FALSE_FLAGS:
+            out = ""
         else:
-            mapped.append(p)
+            out = p.strip()
+        if out and out not in mapped:
+            mapped.append(out)
     return " | ".join(mapped)
 
 
@@ -193,12 +203,33 @@ def parse_model_list(text):
 
 
 def read_excel_file(uploaded):
-    """Baca file upload (.xlsx / .xlsb / .xls) ke DataFrame (sheet pertama)."""
-    name = uploaded.name.lower()
-    uploaded.seek(0)
-    if name.endswith(".xlsb"):
-        return pd.read_excel(uploaded, engine="pyxlsb")
-    return pd.read_excel(uploaded)
+    """Baca file upload (.xlsx / .xlsb / .xls) ke DataFrame (sheet pertama).
+    File .xlsx/.xlsb/.xlsm adalah ZIP: diverifikasi dulu supaya file rusak / tidak lengkap
+    memberi pesan yang jelas (bukan traceback BadZipFile)."""
+    name = uploaded.name
+    lower = name.lower()
+    data = uploaded.getvalue()
+
+    if lower.endswith((".xlsx", ".xlsb", ".xlsm")):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                bad_member = zf.testzip()
+        except (zipfile.BadZipFile, zlib.error, EOFError):
+            raise ValueError(
+                f"File '{name}' ({len(data):,} byte) rusak, bukan file Excel yang valid, atau tidak lengkap. "
+                "Unduh / export ulang file-nya, lalu upload lagi."
+            )
+        if bad_member:
+            raise ValueError(
+                f"File '{name}' rusak: bagian '{bad_member}' gagal verifikasi (CRC). "
+                "Biasanya karena file belum selesai disimpan / disinkronkan atau unduhan terputus. "
+                "Buka file di Excel lalu Save As ulang (.xlsx), atau unduh ulang, lalu upload lagi."
+            )
+
+    buf = io.BytesIO(data)
+    if lower.endswith(".xlsb"):
+        return pd.read_excel(buf, engine="pyxlsb")
+    return pd.read_excel(buf)
 
 
 # =========================================================
@@ -1346,6 +1377,9 @@ if run and sap_file is not None:
             result["shape_awal"] = df_raw.shape
             result["stamp"] = datetime.datetime.now().strftime("%Y%m%d_%H%M")
             st.session_state["result"] = result
+    except ValueError as e:
+        st.error(str(e))
+        st.session_state.pop("result", None)
     except Exception as e:
         st.error("Terjadi error saat memproses data.")
         st.exception(e)
