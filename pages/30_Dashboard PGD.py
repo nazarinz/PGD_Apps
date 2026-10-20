@@ -181,6 +181,16 @@ def true_false_to_y(val):
     return " | ".join(mapped)
 
 
+def norm_po(s):
+    """Kunci pencocokan nomor PO: teks, tanpa spasi, tanpa akhiran '.0', huruf besar,
+    tanpa nol di depan (supaya '0903449667' = '903449667' = 903449667.0)."""
+    out = (
+        s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        .str.upper().str.lstrip("0")
+    )
+    return out.where(s.notna(), np.nan)
+
+
 def norm_key(s):
     """Samakan format kunci (mis. SO): teks, tanpa spasi, tanpa akhiran '.0'."""
     out = s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
@@ -468,8 +478,8 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         elif "PO No.(Full)" not in df.columns:
             warn("Kolom 'PO No.(Full)' tidak ditemukan di ZRSD1013, lookup dilewati.")
         else:
-            df["PO No.(Full)"] = df["PO No.(Full)"].astype(str).str.strip()
-            df_dash["PO"] = df_dash["PO"].astype(str).str.strip()
+            df["PO No.(Full)"] = df["PO No.(Full)"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+            df_dash["PO"] = df_dash["PO"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
 
             # Anomali: PO Dashboard berawalan "M" seharusnya "0"
             anomaly_mask = df_dash["PO"].str.startswith("M")
@@ -478,11 +488,15 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                 warn(f"{n_anomaly} PO di Dashboard berawalan 'M' dikoreksi jadi '0'.")
                 df_dash.loc[anomaly_mask, "PO"] = "0" + df_dash.loc[anomaly_mask, "PO"].str[1:]
 
+            # Kunci pencocokan PO (format disamakan di kedua sisi); kolom aslinya tidak diubah
+            df["_PO_KEY"] = norm_po(df["PO No.(Full)"])
+            df_dash["_PO_KEY"] = norm_po(df_dash["PO"])
+
             df_dash_dedup = (
-                df_dash.groupby("PO", as_index=False)[available_dash_cols]
+                df_dash.groupby("_PO_KEY", as_index=False)[available_dash_cols]
                 .agg(combine_unique_values)
             )
-            lookup_table = df_dash_dedup.rename(columns={"PO": "PO No.(Full)"})
+            lookup_table = df_dash_dedup
 
             # --- Kolom numerik Dashboard (dijumlah per PO) ---
             qty_col_candidates = ["PORD Order Qty.Key Date 1", "GR Qty", "PORD Open Qty.Key Date 1"]
@@ -512,11 +526,11 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
 
             if dash_num_map:
                 dash_num_sum = (
-                    df_dash.groupby("PO", as_index=False)[list(dash_num_map.keys())]
+                    df_dash.groupby("_PO_KEY", as_index=False)[list(dash_num_map.keys())]
                     .sum(min_count=1)
-                    .rename(columns={"PO": "PO No.(Full)", **dash_num_map})
+                    .rename(columns=dash_num_map)
                 )
-                lookup_table = lookup_table.merge(dash_num_sum, on="PO No.(Full)", how="left")
+                lookup_table = lookup_table.merge(dash_num_sum, on="_PO_KEY", how="left")
 
             # --- Dashboard CRD (kolom CRD_) -> tanggal paling awal per PO ---
             if "CRD_" in df_dash.columns:
@@ -529,16 +543,36 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
 
             if dash_date_map:
                 dash_date_min = (
-                    df_dash.groupby("PO", as_index=False)[list(dash_date_map.keys())]
+                    df_dash.groupby("_PO_KEY", as_index=False)[list(dash_date_map.keys())]
                     .min()
-                    .rename(columns={"PO": "PO No.(Full)", **dash_date_map})
+                    .rename(columns=dash_date_map)
                 )
-                lookup_table = lookup_table.merge(dash_date_min, on="PO No.(Full)", how="left")
+                lookup_table = lookup_table.merge(dash_date_min, on="_PO_KEY", how="left")
 
-            df = df.merge(lookup_table, on="PO No.(Full)", how="left")
+            df = df.merge(lookup_table, on="_PO_KEY", how="left")
+
+            # --- Ringkasan pencocokan PO SAP <-> Dashboard (untuk diagnosa) ---
+            sap_keys = set(df["_PO_KEY"].dropna())
+            dash_keys = set(df_dash["_PO_KEY"].dropna())
+            has_pair = df["_PO_KEY"].isin(dash_keys)
+            n_sap_po, n_pair_po = len(sap_keys), len(sap_keys & dash_keys)
+            qty_all = pd.to_numeric(df["Quantity"], errors="coerce").sum() if "Quantity" in df.columns else np.nan
+            qty_pair = pd.to_numeric(df.loc[has_pair, "Quantity"], errors="coerce").sum() if "Quantity" in df.columns else np.nan
+            warn(
+                f"Pencocokan PO: {n_pair_po:,} dari {n_sap_po:,} PO SAP "
+                f"({(n_pair_po / n_sap_po if n_sap_po else 0):.1%}) ada di Dashboard; "
+                f"baris SAP yang punya pasangan: {int(has_pair.sum()):,} dari {len(df):,}."
+            )
+            if pd.notna(qty_all) and qty_all:
+                warn(f"Qty SAP yang punya pasangan di Dashboard: {qty_pair:,.0f} dari {qty_all:,.0f} ({qty_pair / qty_all:.1%}).")
+            unmatched = df.loc[~has_pair, "PO No.(Full)"].drop_duplicates().head(10).tolist()
+            if unmatched:
+                warn("Contoh PO SAP yang tidak ada di Dashboard: " + ", ".join(unmatched))
+                warn("Contoh PO di Dashboard: " + ", ".join(df_dash["PO"].drop_duplicates().head(10).tolist()))
 
             # --- PO ada di Dashboard tapi tidak ada di SAP ---
-            not_in_sap_mask = ~df_dash["PO"].isin(set(df["PO No.(Full)"]) | dropped_pos)
+            dropped_keys = set(norm_po(pd.Series(sorted(dropped_pos), dtype=object))) if dropped_pos else set()
+            not_in_sap_mask = ~df_dash["_PO_KEY"].isin(sap_keys | dropped_keys)
             df_dash_only = df_dash_raw.loc[not_in_sap_mask].copy()
             po_pos = df_dash.columns.get_loc("PO")
             df_dash_only.iloc[:, po_pos] = df_dash.loc[not_in_sap_mask, "PO"].values  # PO yang sudah dikoreksi (M -> 0)
@@ -551,8 +585,8 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             # 6f2. PO multi-baris di SAP & Dashboard (subset-sum)
             # =================================================
             if qty_col_dash and "Quantity" in df.columns:
-                dash_po_counts_map = df_dash.groupby("PO").size()
-                sap_po_counts_map = df.groupby("PO No.(Full)").size()
+                dash_po_counts_map = df_dash.groupby("_PO_KEY").size()
+                sap_po_counts_map = df.groupby("_PO_KEY").size()
 
                 multi_pos = [
                     po for po, cnt in dash_po_counts_map.items()
@@ -562,10 +596,10 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                 for po in multi_pos:
                     sap_idx_qty = [
                         (si, df.at[si, "Quantity"])
-                        for si in df.index[df["PO No.(Full)"] == po]
+                        for si in df.index[df["_PO_KEY"] == po]
                     ]
 
-                    dash_sub = df_dash[df_dash["PO"] == po].copy()
+                    dash_sub = df_dash[df_dash["_PO_KEY"] == po].copy()
                     dash_sub[qty_col_dash] = pd.to_numeric(dash_sub[qty_col_dash], errors="coerce")
                     qty_map = dash_sub[qty_col_dash].dropna().to_dict()
                     crd_map = dash_sub["CRD_"].to_dict() if "CRD_" in dash_sub.columns else {}
@@ -615,7 +649,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                         if diff is None or abs(diff) > TOL:
                             chosen_qtys = [qty_map[i] for i in chosen] if chosen else []
                             qty_mismatch_report.append({
-                                "PO": po,
+                                "PO": dash_sub["PO"].iloc[0],
                                 "SAP Quantity": sap_qty,
                                 "Kombinasi Dashboard Qty Dicoba": (
                                     " + ".join(str(q) for q in chosen_qtys)
@@ -652,7 +686,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
 
                 n_split_applied = 0
                 for po in single_dash_multi_sap:
-                    sap_mask = df["PO No.(Full)"] == po
+                    sap_mask = df["_PO_KEY"] == po
                     sap_total = df.loc[sap_mask, "Quantity"].sum()
                     dash_total = df.loc[sap_mask, "Dashboard Quantity"].iloc[0]
 
@@ -685,6 +719,8 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                         )
             else:
                 warn("Kolom qty pembanding di Dashboard tidak ditemukan, qty-matching dilewati.")
+
+            df = df.drop(columns=["_PO_KEY"], errors="ignore")
 
     # ---------- 6f3. Compare Quantity ----------
     if "Dashboard Quantity" in df.columns and "Quantity" in df.columns:
