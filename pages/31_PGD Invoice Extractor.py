@@ -102,7 +102,7 @@ def search(pattern: str, text: str, group: int = 1, flags: int = re.M) -> str | 
 def header_fixes(h: dict[str, Any], text: str, parties: dict[str, str]) -> None:
     h["Consignee_Tax_ID"] = (
         search(
-            r"(?:Customer VAT nr\.|RUC:|TAX Id:|VAT(?: No\.?)?:)\s*(\w+)",
+            r"(?:Customer VAT nr\.|RUC:|CUIT\s*:|TAX Id:|VAT(?: No\.?)?:)\s*(\w+)",
             parties.get("Consignee", ""),
             flags=re.I | re.M,
         )
@@ -139,6 +139,7 @@ class Invoice:
     hts: list[dict[str, Any]] = field(default_factory=list)
     totals: dict[str, Any] = field(default_factory=dict)
     checks: list[dict[str, Any]] = field(default_factory=list)
+    raw_text: str | None = None  # hanya diisi untuk invoice REVIEW
 
     @property
     def invoice_no(self) -> str | None:
@@ -152,6 +153,28 @@ PAGE_NOISE = re.compile(
     r"^(THE LOOK \(MACAO COMMERCIAL|OFFSHORE\) COMPANY LIMITED|UNIT 1703-1704|AIA TOWER|"
     r"NOS 251A|MACAU,999999|MACAO$|Phone: 853-|Invoice Number$|PGDH\d+$|Page \d+ of \d+$)"
 )
+
+
+def fix_spaced_numbers(line: str) -> str:
+    """pdfplumber kadang memecah angka di sel sempit menjadi '0 . 0 3 6 2'. Token 1-karakter
+    (digit / '.') yang berurutan digabung HANYA bila memuat tepat satu '.' mandiri, jadi
+    deretan size seperti '4 5 6' atau '1416 51.25' tidak tersentuh."""
+    if " . " not in f" {line} ":
+        return line
+    toks, out, i = line.split(), [], 0
+    ok = set("0123456789.")
+    while i < len(toks):
+        j = i
+        while j < len(toks) and len(toks[j]) == 1 and toks[j] in ok:
+            j += 1
+        run = toks[i:j]
+        if len(run) >= 3 and run.count(".") == 1 and run[0] != "." and run[-1] != ".":
+            out.append("".join(run))
+            i = j
+        else:
+            out.append(toks[i])
+            i += 1
+    return " ".join(out)
 
 
 def strip_page_noise(page_text: str) -> str:
@@ -171,6 +194,7 @@ def read_pdf(pdf: "pdfplumber.PDF") -> tuple[str, dict[str, str]]:
         raise ValueError("PDF tanpa halaman")
     pages = [page.extract_text() or "" for page in pdf.pages]
     text = "\n".join([pages[0]] + [strip_page_noise(page) for page in pages[1:]])
+    text = "\n".join(fix_spaced_numbers(ln) for ln in text.splitlines())
     parties = _extract_parties(pdf.pages[0])
     if "Invoice Number" not in text:
         raise ValueError("Bukan invoice PGDH / PDF tanpa text layer (scan?)")
@@ -220,7 +244,7 @@ def extract_adjustment_columns(pdf: "pdfplumber.PDF") -> list[dict[str, str]]:
                     continue
                 line = [x for x in words if abs(x["top"] - w["top"]) < 2]
                 left = sorted((x for x in line if x["x1"] <= w["x0"] + 0.5), key=lambda x: x["x0"])
-                if len(left) >= 3 and any(x["text"] == "USD" for x in line):
+                if len(left) >= 3 and any(x["x0"] > w["x1"] for x in line):
                     anchors.append((w, left[-3:]))
             anchors.sort(key=lambda t: t[0]["top"])
             stops = [w["top"] for i, w in enumerate(words)
@@ -312,7 +336,7 @@ def parse_header(text: str, parties: dict[str, str]) -> dict[str, Any]:
 
 
 ADJ_RE = re.compile(
-    rf"(?P<code>Z[A-Z0-9]{{3}})\s+(?P<desc>.+?)\s+(?P<rate>-?\d+(?:\.\d+)?)\s+(?P<cur>[A-Z]{{3}})\s+"
+    rf"(?P<code>Z[A-Z0-9]{{3}})\s+(?P<desc>.+?)\s+(?P<rate>-?\d+(?:\.\d+)?)\s+(?:(?P<cur>[A-Z]{{3}})\s+)?"
     rf"(?:per\s+)?(?:Unit\s+)?(?P<qty>-?\d[\d,]*)\s+(?P<amt>-?{NUM})"
 )
 HTS_RE = re.compile(r"(?P<hts>\d{10,12})\s+(?:(?P<mat>.+?)\s+)?(?P<gender>[A-Z])\s+(?P<qty>[\d,]+)$")
@@ -356,11 +380,14 @@ def parse_item_line(ln: str) -> dict[str, Any] | None:
     cat = rest[gender_index + 1]
     retailer = rest[gender_index + 2] if gender_index + 2 < len(rest) else None
 
+    # refs terakhir = Working No. Sisanya: Market PO selalu berawalan '03' (10 digit),
+    # Sales Order berawalan lain. Kolom bisa kosong, jadi tidak boleh dipetakan menurut posisi.
     market_po = sales_order = None
-    if len(refs) >= 3:
-        market_po, sales_order = refs[-3], refs[-2]
-    elif len(refs) == 2:
-        sales_order = refs[0]
+    for r in refs[:-1]:
+        if r.startswith("03") and len(r) == 10 and market_po is None:
+            market_po = r
+        elif sales_order is None:
+            sales_order = r
 
     return {
         "PO_No": t[0],
@@ -378,7 +405,7 @@ def parse_item_line(ln: str) -> dict[str, Any] | None:
     }
 
 
-def parse_body(text: str, inv_no: str) -> tuple[list, list, list, list]:
+def parse_body(text: str, inv_no: str, default_currency: str = "USD") -> tuple[list, list, list, list]:
     """State machine per item: item -> size/qty -> adjustments -> net amount -> HTS."""
     items: list[dict] = []
     sizes: list[dict] = []
@@ -428,11 +455,12 @@ def parse_body(text: str, inv_no: str) -> tuple[list, list, list, list]:
             section, adj_buf = "adj", []
         elif section == "adj" and ln == "Net Amount":
             for m in ADJ_RE.finditer(" ".join(adj_buf)):
+                cur_code = m["cur"] or default_currency
                 adjs.append(
                     {**key(), "PO_Lines": None, "Customer_Sizes": None, "Sourcing_Sizes": None,
                      "Code": m["code"], "Description": m["desc"],
-                     "Amount_Per_Unit": f'{m["rate"]} {m["cur"]} per Unit',
-                     "Rate": to_num(m["rate"]), "Currency": m["cur"],
+                     "Amount_Per_Unit": f'{m["rate"]} {cur_code} per Unit',
+                     "Rate": to_num(m["rate"]), "Currency": cur_code,
                      "Total_Quantity": to_num(m["qty"]), "Amount_Per_Charge": to_num(m["amt"]),
                      "Item_Net_Amount": None}
                 )
@@ -470,32 +498,53 @@ def parse_totals(text: str, inv_no: str) -> dict[str, Any]:
 # Validation
 # --------------------------------------------------------------------------- #
 def validate(inv: Invoice) -> list[dict[str, Any]]:
-    def check(name: str, expected: float | None, actual: float | None, scope: str = "INVOICE") -> dict[str, Any]:
+    """Status: OK | MISMATCH (angka tidak cocok -> invoice REVIEW) | SKIP (pengecekan tidak berlaku)."""
+    def check(name: str, expected: float | None, actual: float | None, scope: str = "INVOICE", hint: str = "") -> dict[str, Any]:
         ok = expected is not None and actual is not None and abs(expected - actual) <= TOLERANCE
+        diff = round(expected - actual, 2) if expected is not None and actual is not None else None
         return {"Invoice_Number": inv.invoice_no, "Scope": scope, "Check": name,
-                "Expected": expected, "Actual": actual, "Status": "OK" if ok else "MISMATCH"}
+                "Expected": expected, "Actual": actual, "Diff": diff,
+                "Status": "OK" if ok else "MISMATCH", "Hint": "" if ok else hint}
 
     t = inv.totals
     checks: list[dict[str, Any]] = []
+    has_hts = bool(inv.hts)  # banyak invoice (tujuan non-EU) tidak punya tabel HTS
     for it in inv.items:
         scope = f"PO {it['PO_No']}-{it['PO_Line']}"
         same = lambda rows: [r for r in rows if r["PO_No"] == it["PO_No"] and r["PO_Line"] == it["PO_Line"]]  # noqa: E731
         qty = it["Total_Qty"]
+        adj_sum = round(sum(r["Amount_Per_Charge"] or 0 for r in same(inv.adjustments)), 2)
+        calc_net = round((it.get("Item_Total_Amount") or 0) + adj_sum, 2)
+        net = it.get("Item_Net_Amount")
+        if net is None:
+            net_hint = "Net Amount item tidak terbaca"
+        elif net > calc_net:
+            net_hint = f"Net lebih besar {round(net - calc_net, 2)}: kemungkinan ada baris adjustment yang tidak terbaca"
+        else:
+            net_hint = f"Net lebih kecil {round(calc_net - net, 2)}: kemungkinan adjustment terbaca ganda / salah baca"
         checks += [
-            check("Sum size qty = item qty", qty, sum(r["Qty"] or 0 for r in same(inv.sizes)), scope),
-            check("Sum HTS qty = item qty", qty, sum(r["Quantity"] or 0 for r in same(inv.hts)), scope),
+            check("Sum size qty = item qty", qty, sum(r["Qty"] or 0 for r in same(inv.sizes)), scope,
+                  "Jumlah size tidak sama dengan qty item: cek baris Customer Size / QTY"),
             check("Qty x price = item amount", it.get("Item_Total_Amount"),
-                  round((qty or 0) * (it.get("Unit_Price") or 0), 2), scope),
-            check("Item amount + adjustments = item net", it.get("Item_Net_Amount"),
-                  round((it.get("Item_Total_Amount") or 0) + sum(r["Amount_Per_Charge"] or 0 for r in same(inv.adjustments)), 2), scope),
+                  round((qty or 0) * (it.get("Unit_Price") or 0), 2), scope, "Harga satuan / amount item salah baca"),
+            check("Item amount + adjustments = item net", net, calc_net, scope, net_hint),
         ]
+        if has_hts:
+            checks.append(check("Sum HTS qty = item qty", qty, sum(r["Quantity"] or 0 for r in same(inv.hts)), scope,
+                                "Baris HTS item ini tidak terbaca"))
+    if not has_hts and inv.items:
+        checks.append({"Invoice_Number": inv.invoice_no, "Scope": "INVOICE", "Check": "Sum HTS qty = item qty",
+                       "Expected": None, "Actual": None, "Diff": None, "Status": "SKIP",
+                       "Hint": "Invoice ini tidak memuat tabel HTS (Goods Description kosong)"})
     checks += [
-        check("Sum item qty = Total Quantity", t.get("Total_Quantity"), sum(i["Total_Qty"] or 0 for i in inv.items)),
+        check("Sum item qty = Total Quantity", t.get("Total_Quantity"), sum(i["Total_Qty"] or 0 for i in inv.items),
+              hint="Ada item yang tidak terbaca / terbaca ganda"),
         check("Sum item net = Total PO Net Amount", t.get("Total_PO_Net_Amount"),
-              round(sum(i.get("Item_Net_Amount") or 0 for i in inv.items), 2)),
+              round(sum(i.get("Item_Net_Amount") or 0 for i in inv.items), 2), hint="Net Amount salah satu item tidak terbaca"),
         check("PO Net + Additional + Discount + VAT = Invoice Total", t.get("Invoice_Total"),
               round((t.get("Total_PO_Net_Amount") or 0) + (t.get("Additional_Charge") or 0)
-                    + (t.get("Agreed_Discount") or 0) + (t.get("Total_VAT") or 0), 2)),
+                    + (t.get("Agreed_Discount") or 0) + (t.get("Total_VAT") or 0), 2),
+              hint="Ada komponen total yang belum dikenali (mis. biaya/diskon baru) atau tanda diskon terbalik"),
     ]
     return checks
 
@@ -503,8 +552,11 @@ def validate(inv: Invoice) -> list[dict[str, Any]]:
 def review_reason(inv: Invoice) -> str | None:
     if not inv.items:
         return "tidak ada item terbaca"
-    bad = sum(check.get("Status") != "OK" for check in inv.checks)
-    return f"{bad} validasi gagal" if bad else None
+    bad = [c for c in inv.checks if c.get("Status") == "MISMATCH"]
+    if not bad:
+        return None
+    first = "; ".join(f'{c["Scope"]}: {c["Check"]} (selisih {c["Diff"]})' for c in bad[:3])
+    return f"{len(bad)} validasi gagal - {first}" + (" ..." if len(bad) > 3 else "")
 
 
 # --------------------------------------------------------------------------- #
@@ -518,7 +570,7 @@ def parse_invoice(path: Path) -> Invoice:
         if not inv_no:
             raise ValueError("Invoice Number tidak ditemukan")
         inv = Invoice(source_file=path.name, header=header)
-        inv.items, inv.sizes, inv.adjustments, inv.hts = parse_body(text, inv_no)
+        inv.items, inv.sizes, inv.adjustments, inv.hts = parse_body(text, inv_no, header.get("Currency") or "USD")
         cols = extract_adjustment_columns(pdf)
     if len(cols) == len(inv.adjustments) and all(c["Code"] == a["Code"] for c, a in zip(cols, inv.adjustments)):
         for c, a in zip(cols, inv.adjustments):
@@ -533,6 +585,8 @@ def parse_invoice(path: Path) -> Invoice:
     reason = review_reason(inv)
     inv.header["Status"] = "REVIEW" if reason else "OK"
     inv.header["Status_Detail"] = reason
+    if reason:
+        inv.raw_text = text
     return inv
 
 
@@ -765,13 +819,17 @@ LAYOUTS = {
     "2 sheet terpisah (Sheet 1 & Sheet 2)": LAYOUT_SEPARATE,
     "1 sheet, dua tabel berdampingan": LAYOUT_SIDE_BY_SIDE,
 }
-
+REVIEW_MODES = {
+    "Sertakan di Excel (tetap ditandai di tab Perlu dicek)": False,
+    "Jangan sertakan di Excel (hanya invoice OK)": True,
+}
 
 
 # --------------------------------------------------------------------------- #
 # Sidebar
 # --------------------------------------------------------------------------- #
-def sidebar_options() -> dict:
+def sidebar_options() -> tuple[dict, bool]:
+    """Return (opsi untuk report_excel_bytes, exclude_review)."""
     with st.sidebar:
         st.header("Pengaturan output")
         layout_label = st.radio("Format Excel", list(LAYOUTS))
@@ -786,10 +844,16 @@ def sidebar_options() -> dict:
             value=False,
             help="Header, Size_Breakdown, HTS, Totals, Validation, Issues, Adjustments_Detail.",
         )
+        review_label = st.radio(
+            "Invoice berstatus REVIEW",
+            list(REVIEW_MODES),
+            help="REVIEW = ada angka yang tidak saling cocok. Datanya mungkin salah baca.",
+        )
         st.divider()
         st.caption("Invoice dengan nomor sama hanya dihitung sekali. File rusak dilewati dan dicatat di tab Masalah. "
                    "Bila invoice lebih dari satu, sheet Summary (jumlah adjustment per invoice) ditambahkan otomatis.")
-    return {"layout": LAYOUTS[layout_label], "with_invoice_no": with_inv, "extra_sheets": extra}
+    opts = {"layout": LAYOUTS[layout_label], "with_invoice_no": with_inv, "extra_sheets": extra}
+    return opts, REVIEW_MODES[review_label]
 
 
 # --------------------------------------------------------------------------- #
@@ -820,7 +884,24 @@ def run_pipeline(uploads: list) -> None:
 # --------------------------------------------------------------------------- #
 # Results
 # --------------------------------------------------------------------------- #
-def show_results(opts: dict) -> None:
+def show_review_tab(review: list[Invoice]) -> None:
+    st.caption("Invoice di bawah ini punya angka yang tidak saling cocok. Kolom Hint menjelaskan dugaan penyebabnya. "
+               "Bandingkan dengan PDF aslinya, atau buka teks mentah di bawah untuk melihat apa yang terbaca.")
+    for inv in review:
+        with st.expander(f"{inv.invoice_no}  -  {inv.source_file}", expanded=len(review) == 1):
+            st.write(inv.header.get("Status_Detail") or "")
+            bad = pd.DataFrame([c for c in inv.checks if c["Status"] == "MISMATCH"])
+            if not bad.empty:
+                st.dataframe(bad[["Scope", "Check", "Expected", "Actual", "Diff", "Hint"]], hide_index=True)
+            if inv.raw_text:
+                st.text_area("Teks mentah hasil ekstraksi PDF", inv.raw_text, height=260,
+                             key=f"raw_{inv.invoice_no}_{inv.source_file}")
+                st.download_button("⬇️ Download teks mentah (.txt)", inv.raw_text.encode("utf-8"),
+                                   file_name=f"{inv.invoice_no}_raw.txt", mime="text/plain",
+                                   key=f"dl_{inv.invoice_no}_{inv.source_file}")
+
+
+def show_results(opts: dict, exclude_review: bool) -> None:
     res = st.session_state.get("result")
     if res is None:
         return
@@ -831,56 +912,74 @@ def show_results(opts: dict) -> None:
             st.dataframe(pd.DataFrame(issues), hide_index=True)
         return
 
-    sheet1, sheet2 = build_report_frames(invoices, opts["with_invoice_no"])
+    ok_inv = [i for i in invoices if i.header.get("Status") == "OK"]
+    review_inv = [i for i in invoices if i.header.get("Status") != "OK"]
+    export_inv = ok_inv if exclude_review else invoices
+
     checks = pd.DataFrame([c for inv in invoices for c in inv.checks])
-    bad = checks[checks["Status"] != "OK"]
+    n_bad = int((checks["Status"] == "MISMATCH").sum())
+    n_skip = int((checks["Status"] == "SKIP").sum())
     n_dup = sum(i["Type"] == "DUPLICATE" for i in issues)
     n_err = sum(i["Type"] == "ERROR" for i in issues)
-    n_rev = sum(i["Type"] == "REVIEW" for i in issues)
 
+    sheet1, sheet2 = build_report_frames(export_inv, opts["with_invoice_no"])
     c = st.columns(5)
-    c[0].metric("Invoice unik", len(invoices))
+    c[0].metric("Invoice (OK / REVIEW)", f"{len(ok_inv)} / {len(review_inv)}")
     c[1].metric("Baris PO (Sheet 1)", len(sheet1))
     c[2].metric("Baris adjustment (Sheet 2)", len(sheet2))
-    c[3].metric("Validasi tidak cocok", len(bad))
-    c[4].metric("Duplikat / error / review", f"{n_dup} / {n_err} / {n_rev}")
+    c[3].metric("Validasi tidak cocok", n_bad)
+    c[4].metric("Duplikat / error", f"{n_dup} / {n_err}")
 
-    if len(bad):
-        review = ", ".join(i["Source_File"] for i in issues if i["Type"] == "REVIEW")
-        st.warning(f"{len(bad)} pengecekan tidak cocok. Buka tab Validasi sebelum memakai angkanya."
-                   + (f" Invoice perlu dicek: {review}." if review else ""))
+    if review_inv:
+        names = ", ".join(f"{i.invoice_no}" for i in review_inv)
+        st.warning(f"{len(review_inv)} invoice perlu dicek ({names}): {n_bad} pengecekan tidak cocok. "
+                   + ("Invoice ini TIDAK ikut di Excel." if exclude_review else "Invoice ini ikut di Excel, jangan dipakai sebelum dicek.")
+                   + " Lihat tab Perlu dicek.")
     else:
-        st.success(f"Semua {len(checks)} pengecekan validasi cocok.")
+        skip_note = f" ({n_skip} pengecekan dilewati karena tidak berlaku, mis. invoice tanpa tabel HTS)" if n_skip else ""
+        st.success(f"Semua pengecekan validasi cocok{skip_note}.")
 
-    data = report_excel_bytes(invoices, issues, **opts)
-    st.download_button(
-        "⬇️ Download Excel",
-        data=data,
-        file_name=f"PGDH_Report_{datetime.now():%Y%m%d_%H%M}.xlsx",
-        mime=XLSX_MIME,
-        type="primary",
-    )
+    if export_inv:
+        data = report_excel_bytes(export_inv, issues, **opts)
+        st.download_button(
+            "⬇️ Download Excel",
+            data=data,
+            file_name=f"PGDH_Report_{datetime.now():%Y%m%d_%H%M}.xlsx",
+            mime=XLSX_MIME,
+            type="primary",
+        )
+    else:
+        st.info("Tidak ada invoice berstatus OK untuk diexport. Ubah pengaturan REVIEW di sidebar bila perlu.")
 
-    multi = len(invoices) > 1
-    labels = ["Sheet 1 - Item", "Sheet 2 - Adjustment"] + (["Summary"] if multi else []) + ["Validasi", f"Masalah ({len(issues)})"]
-    tabs = st.tabs(labels)
-    t1, t2, t3, t4 = tabs[0], tabs[1], tabs[-2], tabs[-1]
-    with t1:
+    multi = len(export_inv) > 1
+    labels = ["Sheet 1 - Item", "Sheet 2 - Adjustment"]
+    if multi:
+        labels.append("Summary")
+    if review_inv:
+        labels.append(f"Perlu dicek ({len(review_inv)})")
+    labels += ["Validasi", f"Masalah ({len(issues)})"]
+    tabs = dict(zip(labels, st.tabs(labels)))
+
+    with tabs["Sheet 1 - Item"]:
         st.dataframe(sheet1, hide_index=True)
-    with t2:
+    with tabs["Sheet 2 - Adjustment"]:
         st.dataframe(sheet2, hide_index=True)
     if multi:
-        with tabs[2]:
+        with tabs["Summary"]:
             st.caption("Jumlah adjustment per invoice. Sheet ini otomatis ada di Excel karena invoice lebih dari satu.")
-            st.dataframe(adjustment_summary_frame(invoices), hide_index=True)
-    with t3:
+            st.dataframe(adjustment_summary_frame(export_inv), hide_index=True)
+    if review_inv:
+        with tabs[f"Perlu dicek ({len(review_inv)})"]:
+            show_review_tab(review_inv)
+    with tabs["Validasi"]:
+        bad = checks[checks["Status"] == "MISMATCH"]
         if len(bad):
             st.dataframe(bad, hide_index=True)
         else:
             st.info("Tidak ada mismatch.")
-        with st.expander("Semua pengecekan"):
+        with st.expander("Semua pengecekan (OK, MISMATCH, SKIP)"):
             st.dataframe(checks, hide_index=True)
-    with t4:
+    with tabs[f"Masalah ({len(issues)})"]:
         if issues:
             st.dataframe(pd.DataFrame(issues), hide_index=True)
         else:
@@ -893,7 +992,7 @@ def show_results(opts: dict) -> None:
 def main() -> None:
     st.title("📄 PGDH Invoice Extractor")
     st.caption("Upload invoice PGDH (PDF atau ZIP berisi banyak PDF), hasilnya Excel siap pakai.")
-    opts = sidebar_options()
+    opts, exclude_review = sidebar_options()
 
     uploads = st.file_uploader(
         "Upload invoice", type=["pdf", "zip"], accept_multiple_files=True,
@@ -901,7 +1000,7 @@ def main() -> None:
     )
     if st.button("Proses", type="primary", disabled=not uploads):
         run_pipeline(uploads)
-    show_results(opts)
+    show_results(opts, exclude_review)
 
 
 main()
