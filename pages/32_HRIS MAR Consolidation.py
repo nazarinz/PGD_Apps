@@ -39,6 +39,12 @@ STATUS = {  # kode: (deskripsi, grup)
     'OFF': ('Weekend (tidak ada kode di PDF)', 'Weekend'),
     'NODATA': ('Hari kerja tanpa kode di PDF', 'No Data'),
 }
+# Koreksi manual untuk hari kerja yang kosong di PDF HRIS (sudah dikonfirmasi user).
+# Format: (NIK, 'YYYY-MM-DD'): status. Hanya berlaku jika sel di PDF memang kosong.
+MANUAL_OVERRIDES = {
+    ('AD25722', '2025-06-05'): 'DL',   # Ahmad Ilham Fauzi, hari ke-4 dinas luar (Juni 2025)
+    ('AD32820', '2025-05-22'): 'DL',   # Farhan Nandyawan Syarief, hari ke-4 dinas luar (Mei 2025)
+}
 RAW_ALIAS = {'I*': 'IR'}  # di ringkasan HRIS, I* dihitung sebagai IR
 
 # Batas koordinat (pt) untuk layout PDF ini
@@ -149,17 +155,22 @@ def transform(records):
             date = dt.date(y, m, d)
             raw = r['codes'].get(d)
             code = RAW_ALIAS.get(raw, raw)
+            source = 'PDF'
             if code is None:
-                code = 'OFF' if date.weekday() >= 5 else 'NODATA'
+                manual = MANUAL_OVERRIDES.get((r['NIK'], date.isoformat()))
+                if manual:
+                    code, source = manual, 'Manual'
+                else:
+                    code = 'OFF' if date.weekday() >= 5 else 'NODATA'
             daily.append([int(r['Period']), date, date.strftime('%a'), r['NIK'], r['Name'], raw, code,
                           STATUS.get(code, ('', 'Unknown'))[1],
                           0 if code in ('OFF', 'H', 'NODATA') else 1,
-                          r['ot'].get(d, 0.0)])
+                          r['ot'].get(d, 0.0), source])
         summ.append([int(r['Period']), r['No'], r['NIK'], r['Name']] +
                     [sv.get(c) for c in SUM_COLS] + [r['ot_total']])
 
     D = pd.DataFrame(daily, columns=['Period', 'Date', 'Day_Name', 'NIK', 'Name', 'Raw_Code', 'Status',
-                                     'Status_Group', 'Is_Workday', 'OT_Hours'])
+                                     'Status_Group', 'Is_Workday', 'OT_Hours', 'Status_Source'])
     S = pd.DataFrame(summ, columns=['Period', 'No', 'NIK', 'Name'] + SUM_COLS + ['OT_Total_Reported'])
     return D, S, issues
 
@@ -296,6 +307,7 @@ def build_workbook(D, S, removed=None):
         ('1. Hanya hari kerja yang berkode di PDF; Sabtu/Minggu tanpa kode diisi Status = OFF.', False),
         ('2. Kode I* dinormalisasi ke IR (sesuai hitungan ringkasan HRIS); kode asli di Raw_Code.', False),
         ('3. Baris angka kedua per karyawan diasumsikan jam LEMBUR (OT_Hours).', False),
+        ('3b. Koreksi manual (MANUAL_OVERRIDES di script) ditandai Status_Source = Manual; Raw_Code tetap kosong.', False),
         ('4. Hari kerja tanpa kode diberi Status NODATA (misal karyawan keluar/masuk di tengah bulan).', False),
         ('5. Kolom CHK, HD, LC, CL4, CL5, CL6, SOR tidak punya legenda di PDF; disimpan apa adanya.', False),
     ]
@@ -313,7 +325,7 @@ def build_workbook(D, S, removed=None):
     for r in range(2, nd + 1):
         ws.cell(row=r, column=2).number_format = 'yyyy-mm-dd'
         ws.cell(row=r, column=10).number_format = '0.0'
-    widths(ws, [10, 12, 10, 10, 30, 10, 9, 13, 11, 10] + ([16] if 'Team' in D.columns else []))
+    widths(ws, [10, 12, 10, 10, 30, 10, 9, 13, 11, 10, 14] + ([16] if 'Team' in D.columns else []))
     ws.auto_filter.ref = f'A1:{get_column_letter(D.shape[1])}{nd}'
 
     # Employee_Monthly (+ formula check)
@@ -363,7 +375,8 @@ def build_workbook(D, S, removed=None):
         ['Check_N = DIFF', f'=COUNTIF(Employee_Monthly!${cCN}$2:${cCN}${ns},"DIFF")', 0],
         ['Check_OT = DIFF', f'=COUNTIF(Employee_Monthly!${cCO}$2:${cCO}${ns},"DIFF")', 0],
         ['Hari kerja NODATA', f'=COUNTIF(Attendance_Daily!$G$2:$G${nd},"NODATA")', int((D.Status == 'NODATA').sum())],
-    ] + ([['Baris tanpa tim (Unmapped)', f'=COUNTIF(Attendance_Daily!$K$2:$K${nd},"Unmapped")', int((D.Team == 'Unmapped').sum())]] if 'Team' in D.columns else []):
+        ['Hari dikoreksi manual (Status_Source = Manual)', f'=COUNTIF(Attendance_Daily!$K$2:$K${nd},"Manual")', int((D.Status_Source == 'Manual').sum())],
+    ] + ([['Baris tanpa tim (Unmapped)', f'=COUNTIF(Attendance_Daily!${get_column_letter(D.columns.get_loc("Team") + 1)}$2:${get_column_letter(D.columns.get_loc("Team") + 1)}${nd},"Unmapped")', int((D.Team == 'Unmapped').sum())]] if 'Team' in D.columns else []):
         ws.append(q)
     header(ws, 3); body(ws, 3); widths(ws, [30, 14, 14])
 
@@ -489,8 +502,16 @@ def main():
         st.success('Validasi lulus: hitungan kode status dan total lembur cocok dengan ringkasan PDF.')
     nodata = D[D.Status == 'NODATA']
     if len(nodata):
-        st.warning(f'{len(nodata)} hari kerja tanpa kode (NODATA): '
-                   + ', '.join(sorted(nodata.Name.unique())))
+        rpt = (nodata.groupby(['Period', 'NIK', 'Name'])
+               .agg(Hari=('Date', 'count'),
+                    Tanggal=('Date', lambda x: ', '.join(d.strftime('%d') for d in sorted(x))))
+               .reset_index())
+        st.warning(f'LAPORAN: {len(nodata)} hari kerja kosong di PDF (NODATA) pada {rpt.NIK.nunique()} karyawan. '
+                   'Cek ke HRD; kalau sudah dikonfirmasi tambahkan ke MANUAL_OVERRIDES.')
+        st.dataframe(rpt, use_container_width=True)
+    n_manual = int((D.Status_Source == 'Manual').sum())
+    if n_manual:
+        st.caption(f'{n_manual} hari dikoreksi manual (Status_Source = Manual).')
 
     t1, t2, t3, t4, t5 = st.tabs(['Attendance_Daily', 'Employee_Monthly', 'Ringkasan status', 'Ringkasan tim', 'File terbaca'])
     with t1:
