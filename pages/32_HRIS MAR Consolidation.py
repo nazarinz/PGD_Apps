@@ -393,6 +393,13 @@ def main():
     st.title('HRIS Attendance ETL')
     st.caption('PDF Monthly Attendance Report (PT.GLOSTAR INDONESIA) -> Excel siap dashboard')
 
+    with st.sidebar:
+        st.header('Master data tim')
+        team_up = st.file_uploader('Upload master tim (kolom: NAMA, NIK, TIM) - CSV / XLSX',
+                                   type=['csv', 'xlsx', 'xls'], key='team_file')
+        st.caption('Opsional. Template berisi NAMA dan NIK dari PDF tersedia di sini setelah PDF diupload.')
+        tmpl_slot = st.container()
+
     up = st.file_uploader('Upload PDF HRIS (boleh banyak bulan sekaligus)', type='pdf', accept_multiple_files=True)
     if not up:
         st.info('Upload satu atau beberapa PDF untuk memulai.')
@@ -409,12 +416,13 @@ def main():
         st.warning('Tidak ada data karyawan yang terbaca. Pastikan format PDF sama dengan laporan HRIS.')
         return
 
-    # Mapping tim (opsional)
+    # Mapping tim (opsional) - uploader ada di sidebar
     st.subheader('Mapping tim')
     tmpl = D.drop_duplicates('NIK')[['Name', 'NIK']].rename(columns={'Name': 'NAMA'}).assign(TIM='')
-    tcol1, tcol2 = st.columns([3, 1])
-    team_up = tcol1.file_uploader('Upload file tim (kolom: NAMA, NIK, TIM) - CSV / XLSX', type=['csv', 'xlsx', 'xls'])
-    tcol2.download_button('Template tim (CSV)', tmpl.to_csv(index=False).encode('utf-8'), 'template_tim.csv', 'text/csv')
+    tmpl_slot.download_button('Download template tim (CSV)', tmpl.to_csv(index=False).encode('utf-8'),
+                              'template_tim.csv', 'text/csv')
+    if team_up is None:
+        st.info('Belum ada master tim. Upload lewat sidebar kiri (Master data tim) untuk menambahkan kolom Team.')
     team_info = None
     if team_up is not None:
         try:
