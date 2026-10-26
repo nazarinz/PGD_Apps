@@ -389,7 +389,7 @@ def run_etl(files):
 
 
 def main():
-    st.set_page_config(page_title='HRIS Attendance ETL', layout='wide')
+    st.set_page_config(page_title='HRIS Attendance ETLa', layout='wide')
     st.title('HRIS Attendance ETL')
     st.caption('PDF Monthly Attendance Report (PT.GLOSTAR INDONESIA) -> Excel siap dashboard')
 
