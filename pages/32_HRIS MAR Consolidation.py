@@ -164,10 +164,91 @@ def transform(records):
     return D, S, issues
 
 
+def read_team_file(upload):
+    """Baca file tim (CSV/XLSX) dengan kolom NAMA, NIK, TIM -> df[NIK, Team, Nama_File]."""
+    name = upload.name.lower()
+    raw = pd.read_csv(upload, dtype=str, sep=None, engine='python') if name.endswith(('.csv', '.txt')) \
+        else pd.read_excel(upload, dtype=str)
+    raw.columns = [str(c).strip().upper() for c in raw.columns]
+    alias = {'NIK': ['NIK', 'ID', 'NIP'], 'TEAM': ['TIM', 'TEAM', 'TIM KERJA'], 'NAMA': ['NAMA', 'NAME']}
+    pick = {}
+    for key, opts in alias.items():
+        pick[key] = next((c for c in raw.columns if c in opts), None)
+    if not pick['NIK'] or not pick['TEAM']:
+        raise ValueError(f'Kolom wajib NIK dan TIM tidak ditemukan. Kolom terbaca: {list(raw.columns)}')
+    t = pd.DataFrame({
+        'NIK': raw[pick['NIK']].astype(str).str.strip().str.upper(),
+        'Team': raw[pick['TEAM']].astype(str).str.strip(),
+        'Nama_File': raw[pick['NAMA']].astype(str).str.strip() if pick['NAMA'] else '',
+    })
+    t = t[(t.NIK != '') & (t.NIK != 'NAN')]
+    t['Team'] = t.Team.replace({'': 'Unmapped', 'nan': 'Unmapped', 'NaN': 'Unmapped'})
+    return t
+
+
+def apply_team(D, S, team):
+    """Tambah kolom Team ke D (paling kanan) dan S (setelah Name). NIK tanpa tim -> 'Unmapped'.
+    Return D, S, dict info (duplikat, tidak ada di PDF, tidak ada di file tim, nama beda)."""
+    dup = team[team.NIK.duplicated(keep=False)]
+    team1 = team.drop_duplicates('NIK', keep='first').set_index('NIK')
+    D = D.copy(); S = S.copy()
+    D['Team'] = D.NIK.map(team1.Team).fillna('Unmapped')
+    S.insert(S.columns.get_loc('Name') + 1, 'Team', S.NIK.map(team1.Team).fillna('Unmapped'))
+
+    pdf_nik = D.drop_duplicates('NIK').set_index('NIK').Name
+    norm = lambda x: re.sub(r'[^A-Z]', '', str(x).upper())
+    mism = []
+    for nik, nm in pdf_nik.items():
+        if nik in team1.index and team1.loc[nik, 'Nama_File'] and norm(team1.loc[nik, 'Nama_File']) != norm(nm):
+            mism.append((nik, nm, team1.loc[nik, 'Nama_File']))
+    info = dict(
+        duplicates=dup.sort_values('NIK'),
+        unmapped=pdf_nik[~pdf_nik.index.isin(team1.index)].reset_index().rename(columns={'Name': 'Name_PDF'}),
+        not_in_pdf=team1[~team1.index.isin(pdf_nik.index)].reset_index()[['NIK', 'Nama_File', 'Team']],
+        name_mismatch=pd.DataFrame(mism, columns=['NIK', 'Name_PDF', 'Nama_File_Tim']),
+    )
+    return D, S, info
+
+
+def team_summary(D):
+    """Ringkasan per Team per Period."""
+    w = D[D.Is_Workday == 1]
+    g = w.groupby(['Team', 'Period'])
+    out = pd.DataFrame({
+        'Karyawan': D.groupby(['Team', 'Period']).NIK.nunique(),
+        'Hari_Kerja': g.size(),
+        'Hadir': g.apply(lambda x: (x.Status_Group == 'Hadir').sum()),
+        'Tidak_Hadir': g.apply(lambda x: x.Status_Group.isin(['Cuti', 'Sakit', 'Izin', 'Alpa']).sum()),
+        'Terlambat': g.apply(lambda x: (x.Status == 'TL').sum()),
+        'Jam_Lembur': D.groupby(['Team', 'Period']).OT_Hours.sum(),
+    }).reset_index()
+    out['Tingkat_Hadir'] = (out.Hadir / out.Hari_Kerja).round(4)
+    return out
+
+
+def filter_inactive(D, S, max_missing=1):
+    """Hapus karyawan yang tidak ada di laporan lebih dari `max_missing` bulan.
+
+    Hitungan: dari semua periode yang diupload, berapa bulan NIK tersebut tidak muncul.
+    Jika bulan_hilang > max_missing -> seluruh barisnya dihapus dari D dan S.
+    Return (D_bersih, S_bersih, df_dihapus).
+    """
+    periods = sorted(D.Period.unique())
+    present = D.groupby('NIK').Period.nunique()
+    missing = (len(periods) - present).rename('Bulan_Tidak_Ada')
+    drop_nik = missing[missing > max_missing].index
+    info = (D[D.NIK.isin(drop_nik)].groupby(['NIK', 'Name'])
+            .agg(Periode_Ada=('Period', lambda x: ', '.join(map(str, sorted(x.unique())))))
+            .reset_index())
+    info['Bulan_Tidak_Ada'] = info.NIK.map(missing)
+    info['Alasan'] = f'Tidak ada > {max_missing} bulan dari {len(periods)} periode'
+    return D[~D.NIK.isin(drop_nik)].reset_index(drop=True), S[~S.NIK.isin(drop_nik)].reset_index(drop=True), info
+
+
 # ----------------------------------------------------------------------------
 # Load -> Excel
 # ----------------------------------------------------------------------------
-def build_workbook(D, S):
+def build_workbook(D, S, removed=None):
     F = 'Arial'
     hfont = Font(name=F, bold=True, color='FFFFFF', size=10)
     hfill = PatternFill('solid', fgColor='1F3864')
@@ -201,6 +282,8 @@ def build_workbook(D, S):
         ('Attendance_Daily : 1 baris per karyawan per tanggal (tabel fakta untuk dashboard)', False),
         ('Employee_Monthly : ringkasan per karyawan per bulan (angka PDF) + kolom cek berformula', False),
         ('Dim_Employee / Dim_Status : tabel dimensi', False),
+        ('Kolom Team (jika file tim diupload) : dipetakan dari NIK; NIK tanpa tim diberi Unmapped', False),
+        ('Removed_Employees : karyawan yang dihapus karena tidak ada > N bulan (jika filter aktif)', False),
         ('QA_Checks : rekap validasi', False),
         ('', False),
         ('Asumsi', True),
@@ -224,8 +307,8 @@ def build_workbook(D, S):
     for r in range(2, nd + 1):
         ws.cell(row=r, column=2).number_format = 'yyyy-mm-dd'
         ws.cell(row=r, column=10).number_format = '0.0'
-    widths(ws, [10, 12, 10, 10, 30, 10, 9, 13, 11, 10])
-    ws.auto_filter.ref = f'A1:J{nd}'
+    widths(ws, [10, 12, 10, 10, 30, 10, 9, 13, 11, 10] + ([16] if 'Team' in D.columns else []))
+    ws.auto_filter.ref = f'A1:{get_column_letter(D.shape[1])}{nd}'
 
     # Employee_Monthly (+ formula check)
     ws = wb.create_sheet('Employee_Monthly')
@@ -243,16 +326,17 @@ def build_workbook(D, S):
             f'=IF(ROUND({cOc}{i}-{cOT}{i},2)=0,"OK","DIFF")'])
     ns = ws.max_row
     header(ws, len(hdr)); body(ws, len(hdr))
-    widths(ws, [10, 6, 10, 30] + [6] * len(SUM_COLS) + [12, 9, 9, 9, 9])
+    widths(ws, [10, 6, 10, 30] + ([16] if 'Team' in S.columns else []) + [6] * len(SUM_COLS) + [12, 9, 9, 9, 9])
     ws.auto_filter.ref = f'A1:{get_column_letter(len(hdr))}{ns}'
     ws.row_dimensions[1].height = 30
 
     # Dim_Employee
     ws = wb.create_sheet('Dim_Employee')
-    ws.append(['NIK', 'Name', 'Periods_Count'])
-    for e in D.groupby(['NIK', 'Name']).Period.nunique().reset_index().itertuples(index=False):
+    ecols = ['NIK', 'Name'] + (['Team'] if 'Team' in D.columns else [])
+    ws.append(ecols + ['Periods_Count'])
+    for e in D.groupby(ecols).Period.nunique().reset_index().itertuples(index=False):
         ws.append(list(e))
-    header(ws, 3); body(ws, 3); widths(ws, [10, 30, 14])
+    header(ws, len(ecols) + 1); body(ws, len(ecols) + 1); widths(ws, [10, 30, 16, 14][:len(ecols) + 1] if len(ecols) == 3 else [10, 30, 14])
     ne = ws.max_row
 
     # Dim_Status
@@ -273,9 +357,16 @@ def build_workbook(D, S):
         ['Check_N = DIFF', f'=COUNTIF(Employee_Monthly!${cCN}$2:${cCN}${ns},"DIFF")', 0],
         ['Check_OT = DIFF', f'=COUNTIF(Employee_Monthly!${cCO}$2:${cCO}${ns},"DIFF")', 0],
         ['Hari kerja NODATA', f'=COUNTIF(Attendance_Daily!$G$2:$G${nd},"NODATA")', int((D.Status == 'NODATA').sum())],
-    ]:
+    ] + ([['Baris tanpa tim (Unmapped)', f'=COUNTIF(Attendance_Daily!$K$2:$K${nd},"Unmapped")', int((D.Team == 'Unmapped').sum())]] if 'Team' in D.columns else []):
         ws.append(q)
     header(ws, 3); body(ws, 3); widths(ws, [30, 14, 14])
+
+    if removed is not None and len(removed):
+        ws = wb.create_sheet('Removed_Employees')
+        ws.append(list(removed.columns))
+        for r in removed.itertuples(index=False):
+            ws.append(list(r))
+        header(ws, removed.shape[1]); body(ws, removed.shape[1]); widths(ws, [10, 30, 28, 16, 40])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -318,6 +409,51 @@ def main():
         st.warning('Tidak ada data karyawan yang terbaca. Pastikan format PDF sama dengan laporan HRIS.')
         return
 
+    # Mapping tim (opsional)
+    st.subheader('Mapping tim')
+    tmpl = D.drop_duplicates('NIK')[['Name', 'NIK']].rename(columns={'Name': 'NAMA'}).assign(TIM='')
+    tcol1, tcol2 = st.columns([3, 1])
+    team_up = tcol1.file_uploader('Upload file tim (kolom: NAMA, NIK, TIM) - CSV / XLSX', type=['csv', 'xlsx', 'xls'])
+    tcol2.download_button('Template tim (CSV)', tmpl.to_csv(index=False).encode('utf-8'), 'template_tim.csv', 'text/csv')
+    team_info = None
+    if team_up is not None:
+        try:
+            D, S, team_info = apply_team(D, S, read_team_file(team_up))
+        except Exception as e:
+            st.error(f'Gagal membaca file tim: {e}')
+            team_info = None
+        if team_info is not None:
+            n_un = len(team_info['unmapped'])
+            if n_un:
+                st.warning(f'{n_un} karyawan di PDF tidak ada di file tim (Team = Unmapped):')
+                st.dataframe(team_info['unmapped'], use_container_width=True)
+            else:
+                st.success('Semua karyawan di PDF sudah punya tim.')
+            if len(team_info['duplicates']):
+                st.warning('NIK ganda di file tim (dipakai baris pertama):')
+                st.dataframe(team_info['duplicates'], use_container_width=True)
+            if len(team_info['not_in_pdf']):
+                st.info(f"{len(team_info['not_in_pdf'])} NIK ada di file tim tapi tidak ada di PDF.")
+                with st.expander('Lihat daftar'):
+                    st.dataframe(team_info['not_in_pdf'], use_container_width=True)
+            if len(team_info['name_mismatch']):
+                st.info(f"{len(team_info['name_mismatch'])} NIK namanya berbeda antara PDF dan file tim (cek salah ketik / NIK tertukar).")
+                with st.expander('Lihat daftar'):
+                    st.dataframe(team_info['name_mismatch'], use_container_width=True)
+
+    # Filter karyawan yang tidak ada lebih dari N bulan
+    f1, f2 = st.columns([2, 1])
+    use_filter = f1.checkbox('Hapus karyawan yang tidak ada di laporan lebih dari N bulan', value=True)
+    max_missing = f2.number_input('N (bulan)', min_value=0, max_value=24, value=1, step=1)
+    removed = pd.DataFrame()
+    if use_filter and D.Period.nunique() > 1:
+        D, S, removed = filter_inactive(D, S, int(max_missing))
+        if len(removed):
+            st.warning(f'{len(removed)} karyawan dihapus (tidak ada > {int(max_missing)} bulan):')
+            st.dataframe(removed, use_container_width=True)
+        else:
+            st.caption(f'Tidak ada karyawan yang tidak ada lebih dari {int(max_missing)} bulan.')
+
     dup = pd.DataFrame(info).Period.duplicated().any()
     if dup:
         st.warning('Ada lebih dari satu file dengan periode yang sama. Data akan terduplikasi.')
@@ -342,10 +478,14 @@ def main():
         st.warning(f'{len(nodata)} hari kerja tanpa kode (NODATA): '
                    + ', '.join(sorted(nodata.Name.unique())))
 
-    t1, t2, t3, t4 = st.tabs(['Attendance_Daily', 'Employee_Monthly', 'Ringkasan status', 'File terbaca'])
+    t1, t2, t3, t4, t5 = st.tabs(['Attendance_Daily', 'Employee_Monthly', 'Ringkasan status', 'Ringkasan tim', 'File terbaca'])
     with t1:
         per = st.multiselect('Filter periode', sorted(D.Period.unique()), default=sorted(D.Period.unique()))
-        st.dataframe(D[D.Period.isin(per)], use_container_width=True, height=400)
+        view = D[D.Period.isin(per)]
+        if 'Team' in D.columns:
+            tms = st.multiselect('Filter tim', sorted(D.Team.unique()), default=sorted(D.Team.unique()))
+            view = view[view.Team.isin(tms)]
+        st.dataframe(view, use_container_width=True, height=400)
     with t2:
         st.dataframe(S, use_container_width=True, height=400)
     with t3:
@@ -354,10 +494,18 @@ def main():
         st.bar_chart(w.pivot_table(index='Period', columns='Status_Group', values='NIK',
                                    aggfunc='count', fill_value=0))
     with t4:
+        if 'Team' in D.columns:
+            ts = team_summary(D)
+            st.dataframe(ts, use_container_width=True, height=400,
+                         column_config={'Tingkat_Hadir': st.column_config.NumberColumn(format='percent')})
+            st.bar_chart(ts.pivot_table(index='Team', columns='Period', values='Tingkat_Hadir'))
+        else:
+            st.info('Upload file tim untuk melihat ringkasan per tim.')
+    with t5:
         st.dataframe(pd.DataFrame(info), use_container_width=True)
 
     st.divider()
-    xlsx = build_workbook(D, S)
+    xlsx = build_workbook(D, S, removed)
     stamp = f'{D.Period.min()}-{D.Period.max()}'
     d1, d2 = st.columns(2)
     d1.download_button('Download Excel (semua sheet)', xlsx, f'HRIS_Attendance_{stamp}.xlsx',
