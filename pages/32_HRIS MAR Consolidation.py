@@ -416,21 +416,37 @@ def main():
         st.header('Master data tim')
         team_up = st.file_uploader('Upload master tim (kolom: NAMA, NIK, TIM) - CSV / XLSX',
                                    type=['csv', 'xlsx', 'xls'], key='team_file')
-        st.caption('Opsional. Template berisi NAMA dan NIK dari PDF tersedia di sini setelah PDF diupload.')
+        st.caption('Opsional. Template berisi NAMA dan NIK dari PDF tersedia di sini setelah PDF diproses.')
         tmpl_slot = st.container()
 
     up = st.file_uploader('Upload PDF HRIS (boleh banyak bulan sekaligus)', type='pdf', accept_multiple_files=True)
     if not up:
+        st.session_state.pop('etl', None)   # reset hasil lama kalau semua file dihapus
         st.info('Upload satu atau beberapa PDF untuk memulai.')
         return
 
     files = tuple((f.name, f.getvalue()) for f in up)
-    try:
-        with st.spinner('Memproses PDF...'):
-            D, S, issues, info = run_etl(files)
-    except Exception as e:
-        st.error(f'Gagal memproses PDF: {e}')
+    sig = tuple((n, len(c)) for n, c in files)   # penanda untuk mendeteksi file berubah
+
+    # ---- Tombol proses ----
+    if st.button('Proses', type='primary'):
+        try:
+            with st.spinner('Memproses PDF...'):
+                D, S, issues, info = run_etl(files)
+            st.session_state['etl'] = dict(D=D, S=S, issues=issues, info=info, sig=sig)
+        except Exception as e:
+            st.session_state.pop('etl', None)
+            st.error(f'Gagal memproses PDF: {e}')
+            return
+
+    etl = st.session_state.get('etl')
+    if etl is None:
+        st.info('Klik tombol **Proses** untuk mulai membaca PDF.')
         return
+    if etl['sig'] != sig:
+        st.warning('Daftar file berubah sejak terakhir diproses. Klik **Proses** lagi untuk memperbarui hasil.')
+
+    D, S, issues, info = etl['D'], etl['S'], etl['issues'], etl['info']
     if D.empty:
         st.warning('Tidak ada data karyawan yang terbaca. Pastikan format PDF sama dengan laporan HRIS.')
         return
