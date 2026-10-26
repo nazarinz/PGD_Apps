@@ -227,21 +227,27 @@ def team_summary(D):
 
 
 def filter_inactive(D, S, max_missing=1):
-    """Hapus karyawan yang tidak ada di laporan lebih dari `max_missing` bulan.
+    """Hapus karyawan yang dianggap RESIGN: tidak muncul di N periode terakhir.
 
-    Hitungan: dari semua periode yang diupload, berapa bulan NIK tersebut tidak muncul.
-    Jika bulan_hilang > max_missing -> seluruh barisnya dihapus dari D dan S.
+    Dihitung dari periode terbaru yang diupload, mundur ke belakang:
+      bulan_hilang_berturut = jumlah periode terbaru yang tidak ada datanya (dihitung dari akhir).
+    - Jika karyawan masih ada di periode terbaru -> 0 -> dipertahankan (bukan resign).
+    - Jika bulan_hilang_berturut > N -> seluruh barisnya dihapus dari D dan S.
+    Bulan kosong di tengah (misal cuti panjang lalu kembali) tidak dihitung.
     Return (D_bersih, S_bersih, df_dihapus).
     """
     periods = sorted(D.Period.unique())
-    present = D.groupby('NIK').Period.nunique()
-    missing = (len(periods) - present).rename('Bulan_Tidak_Ada')
-    drop_nik = missing[missing > max_missing].index
+    pos = {p: i for i, p in enumerate(periods)}
+    last = D.groupby('NIK').Period.max().map(pos)
+    trailing = (len(periods) - 1 - last).rename('Bulan_Tidak_Ada_Terakhir')
+    drop_nik = trailing[trailing > max_missing].index
     info = (D[D.NIK.isin(drop_nik)].groupby(['NIK', 'Name'])
-            .agg(Periode_Ada=('Period', lambda x: ', '.join(map(str, sorted(x.unique())))))
+            .agg(Periode_Terakhir=('Period', 'max'),
+                 Periode_Ada=('Period', lambda x: ', '.join(map(str, sorted(x.unique())))))
             .reset_index())
-    info['Bulan_Tidak_Ada'] = info.NIK.map(missing)
-    info['Alasan'] = f'Tidak ada > {max_missing} bulan dari {len(periods)} periode'
+    info['Bulan_Tidak_Ada_Terakhir'] = info.NIK.map(trailing)
+    info['Alasan'] = f'Tidak ada di {int(max_missing) + 1}+ periode terakhir (periode terbaru {periods[-1]})'
+    info = info[['NIK', 'Name', 'Periode_Terakhir', 'Bulan_Tidak_Ada_Terakhir', 'Periode_Ada', 'Alasan']]
     return D[~D.NIK.isin(drop_nik)].reset_index(drop=True), S[~S.NIK.isin(drop_nik)].reset_index(drop=True), info
 
 
@@ -283,7 +289,7 @@ def build_workbook(D, S, removed=None):
         ('Employee_Monthly : ringkasan per karyawan per bulan (angka PDF) + kolom cek berformula', False),
         ('Dim_Employee / Dim_Status : tabel dimensi', False),
         ('Kolom Team (jika file tim diupload) : dipetakan dari NIK; NIK tanpa tim diberi Unmapped', False),
-        ('Removed_Employees : karyawan yang dihapus karena tidak ada > N bulan (jika filter aktif)', False),
+        ('Removed_Employees : karyawan yang dianggap resign (tidak ada di N periode terakhir) dan dihapus (jika filter aktif)', False),
         ('QA_Checks : rekap validasi', False),
         ('', False),
         ('Asumsi', True),
@@ -366,7 +372,7 @@ def build_workbook(D, S, removed=None):
         ws.append(list(removed.columns))
         for r in removed.itertuples(index=False):
             ws.append(list(r))
-        header(ws, removed.shape[1]); body(ws, removed.shape[1]); widths(ws, [10, 30, 28, 16, 40])
+        header(ws, removed.shape[1]); body(ws, removed.shape[1]); widths(ws, [10, 30, 16, 14, 40, 50])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -389,7 +395,7 @@ def run_etl(files):
 
 
 def main():
-    st.set_page_config(page_title='HRIS Attendance ETLa', layout='wide')
+    st.set_page_config(page_title='HRIS Attendance ETL', layout='wide')
     st.title('HRIS Attendance ETL')
     st.caption('PDF Monthly Attendance Report (PT.GLOSTAR INDONESIA) -> Excel siap dashboard')
 
@@ -451,16 +457,16 @@ def main():
 
     # Filter karyawan yang tidak ada lebih dari N bulan
     f1, f2 = st.columns([2, 1])
-    use_filter = f1.checkbox('Hapus karyawan yang tidak ada di laporan lebih dari N bulan', value=True)
+    use_filter = f1.checkbox('Hapus karyawan resign (tidak ada di N periode terakhir)', value=True)
     max_missing = f2.number_input('N (bulan)', min_value=0, max_value=24, value=1, step=1)
     removed = pd.DataFrame()
     if use_filter and D.Period.nunique() > 1:
         D, S, removed = filter_inactive(D, S, int(max_missing))
         if len(removed):
-            st.warning(f'{len(removed)} karyawan dihapus (tidak ada > {int(max_missing)} bulan):')
+            st.warning(f'{len(removed)} karyawan dihapus (tidak ada di {int(max_missing) + 1}+ periode terakhir, dianggap resign):')
             st.dataframe(removed, use_container_width=True)
         else:
-            st.caption(f'Tidak ada karyawan yang tidak ada lebih dari {int(max_missing)} bulan.')
+            st.caption(f'Semua karyawan masih ada dalam {int(max_missing) + 1} periode terakhir.')
 
     dup = pd.DataFrame(info).Period.duplicated().any()
     if dup:
