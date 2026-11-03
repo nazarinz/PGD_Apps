@@ -197,6 +197,50 @@ def norm_key(s):
     return out.where(s.notna(), np.nan)
 
 
+# ---------- DRC Production (Delay - PO PSDD Update vs Dashboard) ----------
+def _drc_part(v, width):
+    """Rapikan satu bagian kode DRC: teks, tanpa '.0', nol di depan dipertahankan."""
+    if is_empty_val(v) or str(v).strip().lower() == "null":
+        return ""
+    s = re.sub(r"\.0$", "", str(v).strip())
+    return s.zfill(width) if s.isdigit() else s
+
+
+def build_drc_prd(main, pid):
+    """Gabungkan DRC Main Prd + Delay Reason Code Production ID -> 'MM-IIII' (contoh 04-0027)."""
+    m, p = _drc_part(main, 2), _drc_part(pid, 4)
+    if not m and not p:
+        return np.nan
+    return f"{m}-{p}" if (m and p) else (m or p)
+
+
+def _drc_tokens(val):
+    """Ubah nilai DRC (bisa gabungan 'a | b') jadi set token ber-format MM-IIII."""
+    out = set()
+    for tok in str(val).split(" | "):
+        tok = tok.strip().upper()
+        if not tok or tok == "NAN" or tok == "NULL":
+            continue
+        if "-" in tok:
+            a, b = tok.split("-", 1)
+            tok = f"{_drc_part(a, 2)}-{_drc_part(b, 4)}"
+        out.add(tok)
+    return out
+
+
+def drc_compare(sap_val, dash_val, in_dash):
+    if not in_dash:
+        return "Not in Dashboard"
+    s_empty, d_empty = is_empty_val(sap_val), is_empty_val(dash_val)
+    if s_empty and d_empty:
+        return "Match"
+    if s_empty:
+        return "SAP Empty"
+    if d_empty:
+        return "Dashboard Empty"
+    return "Match" if _drc_tokens(sap_val) <= _drc_tokens(dash_val) else "Mismatch"
+
+
 def parse_model_list(text):
     """Ubah teks paste jadi list Model No unik (huruf besar).
     Pemisah: baris baru, spasi, tab, koma, titik koma - bisa campuran."""
@@ -462,11 +506,20 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             .str.strip()
         )
 
+        # DRC Production Dashboard = DRC Main Prd + "-" + Delay Reason Code Production ID
+        if "DRC Main Prd" in df_dash.columns and "Delay Reason Code Production ID" in df_dash.columns:
+            df_dash["Dashboard DRC Prd"] = [
+                build_drc_prd(m, p)
+                for m, p in zip(df_dash["DRC Main Prd"], df_dash["Delay Reason Code Production ID"])
+            ]
+        else:
+            warn("Kolom 'DRC Main Prd' / 'Delay Reason Code Production ID' tidak ada di Dashboard, compare DRC dilewati.")
+
         dash_cols_to_pull = [
             "is_SPOMA", "is_Product Prio", "ReAct", "Chase", "is_Key Franchise",
             "Elevated Check", "Campaign Name", "Bran Partner Description",
             "Responsiveness", "Purchase Order Status Desc",
-            "MDP Status Adjusted", "SDP Status Adjusted",
+            "MDP Status Adjusted", "SDP Status Adjusted", "Dashboard DRC Prd",
         ]
         missing_dash_cols = [c for c in dash_cols_to_pull if c not in df_dash.columns]
         if missing_dash_cols:
@@ -537,6 +590,12 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
                 dash_date_map["CRD_"] = "Dashboard CRD"
             else:
                 warn("Kolom 'CRD_' tidak ditemukan di Dashboard, 'Dashboard CRD' dilewati.")
+
+            # --- Dashboard PODD (kolom PODD_) -> tanggal paling awal per PO ---
+            if "PODD_" in df_dash.columns:
+                dash_date_map["PODD_"] = "Dashboard PODD"
+            else:
+                warn("Kolom 'PODD_' tidak ditemukan di Dashboard, 'Dashboard PODD' dilewati.")
 
             for c in dash_date_map:
                 df_dash[c] = pd.to_datetime(df_dash[c].apply(safe_parse_date), errors="coerce")
@@ -743,6 +802,31 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
             default="Mismatch",
         )
 
+    # ---------- 6f5. Compare PODD ----------
+    if "Dashboard PODD" in df.columns and "PODD" in df.columns:
+        df["Dashboard PODD"] = pd.to_datetime(df["Dashboard PODD"], errors="coerce")
+        df["PODD Diff"] = (
+            df["PODD"].dt.normalize() - df["Dashboard PODD"].dt.normalize()
+        ).dt.days
+        df["PODD Compare"] = np.select(
+            [df["Dashboard PODD"].isna(), df["PODD"].isna(), df["PODD Diff"] == 0],
+            ["Not in Dashboard", "PODD Empty", "Match"],
+            default="Mismatch",
+        )
+
+    # ---------- 6f6. Compare DRC Production (Delay - PO PSDD Update vs Dashboard) ----------
+    if "Dashboard DRC Prd" in df.columns and "Delay - PO PSDD Update" in df.columns:
+        if "Dashboard Quantity" in df.columns:
+            in_dash = df["Dashboard Quantity"].notna()
+        elif "Dashboard CRD" in df.columns:
+            in_dash = df["Dashboard CRD"].notna()
+        else:
+            in_dash = pd.Series(True, index=df.index)
+        df["DRC Prd Compare"] = [
+            drc_compare(s, d, i)
+            for s, d, i in zip(df["Delay - PO PSDD Update"], df["Dashboard DRC Prd"], in_dash)
+        ]
+
     # ---------- 6h. Normalisasi MDP, PDP, SDP ----------
     for col in ["MDP", "PDP", "SDP"]:
         if col in df.columns:
@@ -932,7 +1016,8 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "Gender", "Category 1", "Category 2", "Category 3", "Unit Price",
         "Classification Code", "DRC",
         "Delay/Early - Confirmation PD", "Delay/Early - Confirmation CRD",
-        "Delay - PO PSDD Update", "Delay - PO PD Update", "DRC MDP/SDP",
+        "Delay - PO PSDD Update", "Dashboard DRC Prd", "DRC Prd Compare",
+        "Delay - PO PD Update", "DRC MDP/SDP",
         "MDP", "MDP Ontime", "MDP Delay",
         "Dashboard MDP", "Dashboard MDP Delay", "GAP MDP", "Has GAP MDP",
         "PDP",
@@ -946,6 +1031,7 @@ def clean_data(df, df_dash, cpr_models, remark_df, so_attr_df, log):
         "Dashboard CRD", "CRD Diff", "CRD Compare",
         "PSDD",
         "PODD", "Day - PODD", "Month - PODD",
+        "Dashboard PODD", "PODD Diff", "PODD Compare",
         "FCR Date", "Actual PGI", "PODD vs FCR", "PODD vs Actual PGI",
         "PD", "PO Date", "Segment", "S&P LPD", "Currency",
         "Spoma", "Priority Product", "CPR", "ReAct", "Chase",
@@ -1368,7 +1454,7 @@ def for_display(d, n=500):
 # =========================================================
 st.set_page_config(page_title="ZRSD1013 Cleaner", page_icon="📦", layout="wide")
 st.title("📦 ZRSD1013 Cleaner")
-st.caption("Bersihkan export ZRSD1013, lookup Dashboard & CPR, bandingkan Qty / CRD / MDP / SDP.")
+st.caption("Bersihkan export ZRSD1013, lookup Dashboard & CPR, bandingkan Qty / CRD / PODD / DRC / MDP / SDP.")
 
 with st.sidebar:
     st.header("Upload file")
@@ -1446,6 +1532,7 @@ if "result" in st.session_state:
     with tab_data:
         view = df
         f1, f2, f3 = st.columns(3)
+        f4, f5, _ = st.columns(3)
         if "Qty Compare" in df.columns:
             sel = f1.multiselect("Qty Compare", sorted(df["Qty Compare"].dropna().unique()))
             if sel:
@@ -1460,6 +1547,14 @@ if "result" in st.session_state:
             if sel:
                 mask = view[sel].any(axis=1)
                 view = view[mask]
+        if "PODD Compare" in df.columns:
+            sel = f4.multiselect("PODD Compare", sorted(df["PODD Compare"].dropna().unique()))
+            if sel:
+                view = view[view["PODD Compare"].isin(sel)]
+        if "DRC Prd Compare" in df.columns:
+            sel = f5.multiselect("DRC Prd Compare", sorted(df["DRC Prd Compare"].dropna().unique()))
+            if sel:
+                view = view[view["DRC Prd Compare"].isin(sel)]
         st.write(f"Menampilkan {min(len(view), 500):,} dari {len(view):,} baris (preview maks 500; file Excel berisi semua).")
         st.dataframe(for_display(view), use_container_width=True, height=500)
 
@@ -1471,6 +1566,11 @@ if "result" in st.session_state:
         if "CRD Compare" in df.columns:
             s2.subheader("CRD Compare")
             s2.dataframe(df["CRD Compare"].value_counts().rename("Jumlah").to_frame(), use_container_width=True)
+        h1, h2 = st.columns(2)
+        for col_ui, name in [(h1, "PODD Compare"), (h2, "DRC Prd Compare")]:
+            if name in df.columns:
+                col_ui.subheader(name)
+                col_ui.dataframe(df[name].value_counts().rename("Jumlah").to_frame(), use_container_width=True)
         g1, g2 = st.columns(2)
         for col_ui, name in [(g1, "Has GAP MDP"), (g2, "Has GAP SDP")]:
             if name in df.columns:
