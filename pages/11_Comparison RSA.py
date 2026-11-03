@@ -359,13 +359,6 @@ def run_core_pipeline(df_sap_raw, df_infor_raw_all, *,
         'Shipment Method': 'Shipment Method',
     }
     df_infor = df_infor.rename(columns=rename_cols)
-
-    # --- Normalization: replace '--' in Customer Number with 'ZA30' ---
-    if "Customer Number" in df_infor.columns:
-        df_infor["Customer Number"] = df_infor["Customer Number"].replace("--", "ZA30")
-    if "infor Customer Number" in df_infor.columns:
-        df_infor["infor Customer Number"] = df_infor["infor Customer Number"].replace("--", "ZA30")
-
     # --- Normalization: Segment Attribute Desc -> numeric code ---
     if "Segment Attribute Desc" in df_infor.columns:
         df_infor["Segment Attribute Desc"] = normalize_segment_attr_desc(df_infor["Segment Attribute Desc"])
