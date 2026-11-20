@@ -1,13 +1,15 @@
 """Vendor Booking KPI - Streamlit app.
 
 Input : ZRSD013, Export Plan, FlexView_PGDVendorBooking
-Output: KPI detail per PO + KPI harian, dipisah sheet 3PL / Non 3PL.
+Output: KPI detail per baris ZRSD013 + KPI harian, dipisah sheet 3PL / Non 3PL.
 
 Aturan:
-  Tanggal acuan = Estimated Cargo Ready Date (ECRD) -> Ex-Plan -> PODD
-  Max Booking   = tanggal acuan - 14 hari
-  KPI           = PASS bila Issue Date <= Max Booking, selain itu FAIL
-                  (belum ada PTS: FAIL bila hari ini > Max Booking, selain itu PENDING)
+  Matching PTS -> ZRSD013 : PO + quantity. Total qty baris ZRSD013 dari PO yang
+                            tertera di PTS harus = "Total Line Quantity" FlexView.
+  Tanggal acuan           : Estimated Cargo Ready Date (ECRD) -> Ex-Plan -> PODD
+  Max Booking             : tanggal acuan - 14 hari
+  KPI                     : PASS bila Issue Date <= Max Booking, selain itu FAIL
+                            (belum ada PTS: FAIL bila hari ini > Max Booking, else PENDING)
 """
 from __future__ import annotations
 
@@ -34,18 +36,32 @@ DEFAULT_LEAD_DAYS = 14
 PLAN_DATE_OPTIONS = ["PPIC Plan", "Ex-Factory"]
 DEFAULT_3PL_KEYS = ["maersk", "dsv air & sea", "kuehne"]
 DEFAULT_EXCLUDED_STATUS = ["Rejected"]
-YEAR_ROLLOVER_DAYS = 180  # koreksi tahun untuk tanggal plan tanpa tahun
+ALWAYS_DROP_STATUS = {"canceled", "cancelled"}  # duplikat -> selalu dibuang
+YEAR_ROLLOVER_DAYS = 180   # koreksi tahun untuk tanggal plan tanpa tahun
+MAX_SUBSET_LINES = 300     # batas kandidat baris untuk pencarian kombinasi qty
 
 REMARK_3PL = "3PL"
 REMARK_NON = "Non 3PL"
 REMARK_UNKNOWN = "Unknown"
 
+# status hasil matching PTS -> baris ZRSD013
+M_EXACT = "EXACT"
+M_SUBSET = "SUBSET"
+M_AMBIG = "SUBSET - AMBIGUOUS"
+M_MISMATCH = "QTY MISMATCH"
+M_NO_LINES = "NO LINES AVAILABLE"
+M_NO_TLQ = "NO TOTAL QTY"
+M_NOT_BOOKED = "NOT BOOKED"
+M_OK = (M_EXACT, M_SUBSET)
+
 ZR_PO, ZR_QTY, ZR_PODD = "PO No.(Full)", "Quanity", "PODD"
-PLAN_PO, PLAN_FORWARDER = "PO", "Forwarder"
+ZR_SO, ZR_ITEM = "SO", "Customer PO item"
+PLAN_PO, PLAN_SO, PLAN_FORWARDER = "PO", "SO", "Forwarder"
 FV_RENAME = {
     "Plan To Ship ID": "PTS",
     "Status": "PTS Status",
     "Consolidator": "LSP",
+    "Total Line Quantity": "TLQ",
 }
 FV_REQUIRED = [
     "Plan To Ship ID",
@@ -54,11 +70,14 @@ FV_REQUIRED = [
     "Issue Date",
     "Estimated Cargo Ready Date",
     "Consolidator",
+    "Total Line Quantity",
 ]
 
 OUTPUT_COLS = [
     "Ex-Plan",
+    "SO",
     "PO",
+    "Item",
     "Qty",
     "PTS",
     "Issue Date",
@@ -69,6 +88,8 @@ OUTPUT_COLS = [
     "Vendor's Booking Ontime Qty",
     "LSP Remark",
     "LSP",
+    "Mode",
+    "Match Status",
 ]
 
 
@@ -104,7 +125,7 @@ def require_columns(df: pd.DataFrame, cols: list[str], label: str) -> None:
 
 
 def normalize_po(s: pd.Series) -> pd.Series:
-    """Samakan format PO: trim, buang '.0' hasil numerik dan leading zero."""
+    """Samakan format PO/SO: trim, buang '.0' hasil numerik dan leading zero."""
     return (
         s.astype(str)
         .str.strip()
@@ -113,28 +134,36 @@ def normalize_po(s: pd.Series) -> pd.Series:
     )
 
 
-def valid_po(s: pd.Series) -> pd.Series:
+def valid_key(s: pd.Series) -> pd.Series:
     return ~s.isin(["", "nan", "None", "NaT"])
 
 
+def clean_key(s: pd.Series) -> pd.Series:
+    """Normalisasi + kosongkan nilai tidak valid."""
+    out = normalize_po(s)
+    return out.where(valid_key(out), "")
+
+
 def prepare_zrsd013(zr: pd.DataFrame) -> pd.DataFrame:
-    """Basis: 1 baris per PO (Qty dijumlah, PODD paling awal)."""
+    """Baris ZRSD013 apa adanya (1 baris = 1 line), dengan line_id unik."""
     if "Quantity" in zr.columns and ZR_QTY not in zr.columns:
         zr = zr.rename(columns={"Quantity": ZR_QTY})
     require_columns(zr, [ZR_PO, ZR_QTY, ZR_PODD], "ZRSD013")
 
-    zr = zr.copy()
-    zr["PO_key"] = normalize_po(zr[ZR_PO])
-    zr = zr[valid_po(zr["PO_key"])]
-    zr[ZR_PODD] = pd.to_datetime(zr[ZR_PODD], errors="coerce")
-    zr[ZR_QTY] = pd.to_numeric(zr[ZR_QTY], errors="coerce").fillna(0)
-
-    base = zr.groupby("PO_key", as_index=False).agg(
-        Qty=(ZR_QTY, "sum"), PODD=(ZR_PODD, "min")
+    lines = pd.DataFrame(
+        {
+            "PO_key": clean_key(zr[ZR_PO]),
+            "SO_key": clean_key(zr[ZR_SO]) if ZR_SO in zr.columns else "",
+            "Item": zr[ZR_ITEM].astype(str) if ZR_ITEM in zr.columns else "",
+            "Qty": pd.to_numeric(zr[ZR_QTY], errors="coerce").fillna(0).astype(int),
+            "PODD": pd.to_datetime(zr[ZR_PODD], errors="coerce"),
+        }
     )
-    base["Qty"] = base["Qty"].astype(int)
-    log.info("ZRSD013: %d PO", len(base))
-    return base
+    lines = lines[lines["PO_key"] != ""].reset_index(drop=True)
+    lines["SO"] = lines["SO_key"]
+    lines.insert(0, "line_id", np.arange(len(lines)))
+    log.info("ZRSD013: %d baris, %d PO", len(lines), lines["PO_key"].nunique())
+    return lines
 
 
 def parse_plan_dates(values: pd.Series, podd: pd.Series) -> pd.Series:
@@ -158,7 +187,10 @@ def parse_plan_dates(values: pd.Series, podd: pd.Series) -> pd.Series:
     return result
 
 
-def prepare_plan(plan: pd.DataFrame, base: pd.DataFrame, cfg: KpiConfig) -> pd.DataFrame:
+def prepare_plan(
+    plan: pd.DataFrame, lines: pd.DataFrame, cfg: KpiConfig
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (ex_so, ex_po): Ex-Plan per (PO, SO) dan fallback per PO."""
     require_columns(plan, [PLAN_PO, cfg.plan_date_col], "Export Plan")
 
     plan = plan.copy()
@@ -166,45 +198,165 @@ def prepare_plan(plan: pd.DataFrame, base: pd.DataFrame, cfg: KpiConfig) -> pd.D
         plan[PLAN_FORWARDER] = pd.NA
         log.warning("Export Plan tidak punya kolom %s", PLAN_FORWARDER)
 
-    plan["PO_key"] = normalize_po(plan[PLAN_PO])
-    plan = plan[valid_po(plan["PO_key"])]
-    plan = plan.merge(base[["PO_key", "PODD"]], on="PO_key", how="left")
+    plan["PO_key"] = clean_key(plan[PLAN_PO])
+    plan["SO_key"] = clean_key(plan[PLAN_SO]) if PLAN_SO in plan.columns else ""
+    plan = plan[plan["PO_key"] != ""]
+
+    podd_po = lines.groupby("PO_key", as_index=False)["PODD"].min()
+    plan = plan.merge(podd_po, on="PO_key", how="left")
     plan["Ex-Plan"] = parse_plan_dates(plan[cfg.plan_date_col], plan["PODD"])
 
-    ex = (
-        plan.sort_values("Ex-Plan")
-        .drop_duplicates("PO_key", keep="first")[["PO_key", "Ex-Plan", PLAN_FORWARDER]]
-        .rename(columns={PLAN_FORWARDER: "Plan LSP"})
-    )
-    log.info("Export Plan: %d PO", len(ex))
-    return ex
+    plan = plan.sort_values("Ex-Plan").rename(columns={PLAN_FORWARDER: "Plan LSP"})
+    ex_po = plan.drop_duplicates("PO_key")[["PO_key", "Ex-Plan", "Plan LSP"]]
+    ex_so = plan.drop_duplicates(["PO_key", "SO_key"])[
+        ["PO_key", "SO_key", "Ex-Plan", "Plan LSP"]
+    ]
+    log.info("Export Plan: %d PO", len(ex_po))
+    return ex_so, ex_po
 
 
 def prepare_flexview(fv: pd.DataFrame, cfg: KpiConfig) -> pd.DataFrame:
+    """Return 1 baris per PTS dengan daftar PO (PO_list) dan Total Line Quantity."""
     require_columns(fv, FV_REQUIRED, "FlexView")
 
     fv = fv.rename(columns=FV_RENAME).copy()
+    if "Mode" not in fv.columns:
+        fv["Mode"] = pd.NA
+        log.warning("FlexView tidak punya kolom Mode")
+
+    # Status Canceled = duplikat -> hapus
+    canceled = fv["PTS Status"].astype(str).str.strip().str.lower().isin(ALWAYS_DROP_STATUS)
+    log.info("FlexView: %d baris Canceled dibuang", int(canceled.sum()))
+    fv = fv[~canceled].copy()
+
     fv["Issue Date"] = pd.to_datetime(fv["Issue Date"], errors="coerce")
     fv["Estimated Cargo Ready Date"] = pd.to_datetime(
         fv["Estimated Cargo Ready Date"], errors="coerce"
     )
+    fv["TLQ"] = pd.to_numeric(fv["TLQ"], errors="coerce")
     fv = fv[~fv["PTS Status"].isin(cfg.excluded_status)]
 
-    # 1 PTS bisa berisi banyak PO -> explode
-    fv["PO_key"] = fv["Po Number(s)"].astype(str).str.split(",")
-    fv = fv.explode("PO_key")
-    fv["PO_key"] = normalize_po(fv["PO_key"])
-    fv = fv[valid_po(fv["PO_key"])]
+    sort_src = fv["Create Date"] if "Create Date" in fv.columns else fv["Issue Date"]
+    fv["sort_date"] = pd.to_datetime(sort_src, errors="coerce")
+    fv["PO_raw"] = fv["Po Number(s)"]
 
-    # 1 PO dengan >1 PTS: ambil Issue Date paling awal
-    fv = (
-        fv.sort_values("Issue Date")
-        .drop_duplicates("PO_key", keep="first")[
-            ["PO_key", "PTS", "Issue Date", "Estimated Cargo Ready Date", "PTS Status", "LSP"]
+    po_series = fv["Po Number(s)"].astype(str).str.split(",").explode()
+    po_series = clean_key(po_series)
+    po_series = po_series[po_series != ""]
+    fv["PO_list"] = po_series.groupby(level=0).agg(list)
+    fv["PO_list"] = fv["PO_list"].map(lambda v: v if isinstance(v, list) else [])
+
+    pts = fv.drop_duplicates("PTS", keep="last")[
+        [
+            "PTS", "PO_raw", "PO_list", "TLQ", "Issue Date",
+            "Estimated Cargo Ready Date", "PTS Status", "LSP", "Mode", "sort_date",
         ]
+    ]
+    log.info("FlexView: %d PTS", len(pts))
+    return pts.reset_index(drop=True)
+
+
+def find_subset(qtys: list[int], target: int) -> tuple[list[int] | None, bool]:
+    """Cari subset qty yang jumlahnya = target. Return (indeks, unik?)."""
+    if target <= 0:
+        return None, False
+    reach: dict[int, tuple[int, tuple[int, ...]]] = {0: (1, ())}
+    for i, q in enumerate(qtys):
+        if q <= 0 or q > target:
+            continue
+        for s, (cnt, idx) in list(reach.items()):
+            ns = s + q
+            if ns > target:
+                continue
+            if ns in reach:
+                old_cnt, old_idx = reach[ns]
+                reach[ns] = (min(old_cnt + cnt, 2), old_idx)
+            else:
+                reach[ns] = (cnt, idx + (i,))
+    hit = reach.get(target)
+    if hit is None:
+        return None, False
+    return list(hit[1]), hit[0] == 1
+
+
+def match_pts_to_lines(
+    lines: pd.DataFrame, pts: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Alokasikan tiap PTS ke baris ZRSD013 berdasarkan PO + Total Line Quantity.
+
+    Pass 1: PTS yang total qty seluruh baris PO-nya = Total Line Quantity.
+    Pass 2: sisanya (urut Create Date) -> cari kombinasi baris yang jumlahnya
+            = Total Line Quantity dari baris yang belum teralokasi.
+    Return (line_map, report).
+    """
+    qty = lines.set_index("line_id")["Qty"]
+    by_po = lines.groupby("PO_key")["line_id"].apply(list).to_dict()
+    assigned: dict[int, str] = {}
+    status: dict[str, str] = {}
+    matched: dict[str, int] = {}
+    n_lines: dict[str, int] = {}
+
+    order = pts.sort_values(["sort_date", "PTS"], na_position="last")
+
+    def candidates(po_list: list[str]) -> list[int]:
+        ids: list[int] = []
+        for po in dict.fromkeys(po_list):
+            ids += [i for i in by_po.get(po, []) if i not in assigned]
+        return sorted(ids)
+
+    def assign(pts_id: str, ids: list[int], st_: str) -> None:
+        for i in ids:
+            assigned[i] = pts_id
+        status[pts_id] = st_
+        matched[pts_id] = int(qty.loc[ids].sum()) if ids else 0
+        n_lines[pts_id] = len(ids)
+
+    # Pass 1: cocok penuh
+    for r in order.itertuples():
+        ids = candidates(r.PO_list)
+        if ids and pd.notna(r.TLQ) and int(qty.loc[ids].sum()) == int(r.TLQ):
+            assign(r.PTS, ids, M_EXACT)
+
+    # Pass 2: sisanya
+    for r in order.itertuples():
+        if r.PTS in status:
+            continue
+        ids = candidates(r.PO_list)
+        if not ids:
+            assign(r.PTS, [], M_NO_LINES)
+            continue
+        if pd.isna(r.TLQ):
+            assign(r.PTS, ids, M_NO_TLQ)
+            continue
+        total, tlq = int(qty.loc[ids].sum()), int(r.TLQ)
+        if total == tlq:
+            assign(r.PTS, ids, M_EXACT)
+        elif total < tlq or len(ids) > MAX_SUBSET_LINES:
+            assign(r.PTS, ids, M_MISMATCH)
+        else:
+            picked, unique = find_subset([int(qty.loc[i]) for i in ids], tlq)
+            if picked is None:
+                assign(r.PTS, ids, M_MISMATCH)
+            else:
+                assign(r.PTS, [ids[k] for k in picked], M_SUBSET if unique else M_AMBIG)
+
+    line_map = pd.DataFrame(
+        {"line_id": list(assigned.keys()), "PTS": list(assigned.values())}
+    ).merge(
+        pts[["PTS", "Issue Date", "Estimated Cargo Ready Date", "PTS Status", "LSP", "Mode"]],
+        on="PTS",
+        how="left",
     )
-    log.info("FlexView: %d PO ter-booking", len(fv))
-    return fv
+    line_map["Match Status"] = line_map["PTS"].map(status)
+
+    report = pts[["PTS", "PO_raw", "TLQ", "Issue Date", "PTS Status", "LSP", "Mode"]].copy()
+    report["Matched Qty"] = report["PTS"].map(matched)
+    report["Matched Lines"] = report["PTS"].map(n_lines)
+    report["Match Status"] = report["PTS"].map(status)
+    report["Qty Diff"] = report["Matched Qty"] - report["TLQ"]
+    report = report.rename(columns={"PO_raw": "Po Number(s)", "TLQ": "Total Line Quantity"})
+    log.info("Match: %s", report["Match Status"].value_counts().to_dict())
+    return line_map, report
 
 
 def classify_lsp(lsp: pd.Series, keys: tuple[str, ...]) -> pd.Series:
@@ -218,15 +370,29 @@ def classify_lsp(lsp: pd.Series, keys: tuple[str, ...]) -> pd.Series:
 
 
 def build_kpi(
-    base: pd.DataFrame, ex: pd.DataFrame, fv: pd.DataFrame, cfg: KpiConfig
+    lines: pd.DataFrame,
+    ex_so: pd.DataFrame,
+    ex_po: pd.DataFrame,
+    line_map: pd.DataFrame,
+    cfg: KpiConfig,
 ) -> pd.DataFrame:
-    df = base.merge(ex, on="PO_key", how="left").merge(fv, on="PO_key", how="left")
+    df = lines.merge(line_map, on="line_id", how="left")
+    df = df.merge(
+        ex_so.rename(columns={"Ex-Plan": "Ex-Plan SO", "Plan LSP": "Plan LSP SO"}),
+        on=["PO_key", "SO_key"],
+        how="left",
+    ).merge(
+        ex_po.rename(columns={"Ex-Plan": "Ex-Plan PO", "Plan LSP": "Plan LSP PO"}),
+        on="PO_key",
+        how="left",
+    )
 
-    # Ex-Plan fallback -> PODD
-    df["Ex-Plan"] = df["Ex-Plan"].fillna(df["PODD"])
+    # Ex-Plan: (PO+SO) -> PO -> PODD
+    df["Ex-Plan"] = df["Ex-Plan SO"].fillna(df["Ex-Plan PO"]).fillna(df["PODD"])
     # LSP: FlexView dulu, jika belum booking pakai Forwarder export plan
-    df["LSP"] = df["LSP"].fillna(df["Plan LSP"])
+    df["LSP"] = df["LSP"].fillna(df["Plan LSP SO"]).fillna(df["Plan LSP PO"])
     df["LSP Remark"] = classify_lsp(df["LSP"], cfg.keys_3pl)
+    df["Match Status"] = df["Match Status"].fillna(M_NOT_BOOKED)
 
     # Max Booking = (ECRD -> Ex-Plan) - lead days
     ref_date = df["Estimated Cargo Ready Date"].fillna(df["Ex-Plan"])
@@ -246,7 +412,9 @@ def build_kpi(
     )
 
     df = df.rename(columns={"PO_key": "PO"})
-    return df[OUTPUT_COLS].sort_values(["Max Booking", "PO"]).reset_index(drop=True)
+    return (
+        df[OUTPUT_COLS].sort_values(["Max Booking", "PO", "SO"]).reset_index(drop=True)
+    )
 
 
 def daily_kpi(df: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
@@ -286,7 +454,9 @@ def for_display(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def to_excel_bytes(parts: dict[str, pd.DataFrame], today: pd.Timestamp) -> bytes:
+def to_excel_bytes(
+    parts: dict[str, pd.DataFrame], report: pd.DataFrame, today: pd.Timestamp
+) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(
         buf, engine="openpyxl", datetime_format="m/d/yyyy", date_format="m/d/yyyy"
@@ -296,23 +466,43 @@ def to_excel_bytes(parts: dict[str, pd.DataFrame], today: pd.Timestamp) -> bytes
             for_display(daily_kpi(part, today)).to_excel(
                 writer, sheet_name=f"Daily {remark}", index=False
             )
+        for_display(report).to_excel(writer, sheet_name="PTS Match", index=False)
     return buf.getvalue()
 
 
-def run_pipeline(zr_file, plan_file, fv_file, cfg: KpiConfig) -> pd.DataFrame:
-    zr = read_table(zr_file, dtype={ZR_PO: str})
-    plan = read_table(plan_file, dtype={PLAN_PO: str})
+def run_pipeline(
+    zr_file, plan_file, fv_file, cfg: KpiConfig
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    zr = read_table(zr_file, dtype={ZR_PO: str, ZR_SO: str})
+    plan = read_table(plan_file, dtype={PLAN_PO: str, PLAN_SO: str})
     fv = read_table(fv_file, dtype=str)
 
-    base = prepare_zrsd013(zr)
-    ex = prepare_plan(plan, base, cfg)
-    fvp = prepare_flexview(fv, cfg)
-    return build_kpi(base, ex, fvp, cfg)
+    lines = prepare_zrsd013(zr)
+    ex_so, ex_po = prepare_plan(plan, lines, cfg)
+    pts = prepare_flexview(fv, cfg)
+    line_map, report = match_pts_to_lines(lines, pts)
+    return build_kpi(lines, ex_so, ex_po, line_map, cfg), report
 
 
 # --------------------------------------------------------------------------- #
 # UI layer (hanya memanggil fungsi di atas)
 # --------------------------------------------------------------------------- #
+def render_match_summary(report: pd.DataFrame) -> None:
+    counts = report["Match Status"].value_counts()
+    bad = report[~report["Match Status"].isin(M_OK)]
+    st.caption(
+        "Matching PTS ke ZRSD013: "
+        + ", ".join(f"{k}: {v}" for k, v in counts.items())
+    )
+    if not bad.empty:
+        st.warning(
+            f"{len(bad)} PTS tidak cocok sempurna dengan qty ZRSD013 "
+            "(QTY MISMATCH / AMBIGUOUS / NO LINES). Periksa sebelum dipakai."
+        )
+        with st.expander("Lihat PTS yang perlu dicek"):
+            st.dataframe(for_display(bad), use_container_width=True, hide_index=True)
+
+
 def render_part(remark: str, part: pd.DataFrame, today: pd.Timestamp) -> None:
     daily = daily_kpi(part, today)
     total_qty = int(daily["Total_Qty"].sum()) if not daily.empty else 0
@@ -320,13 +510,13 @@ def render_part(remark: str, part: pd.DataFrame, today: pd.Timestamp) -> None:
     pct = round(ontime_qty / total_qty * 100, 1) if total_qty else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("PO jatuh tempo", f"{int(daily['PO'].sum()):,}" if not daily.empty else "0")
+    c1.metric("Baris jatuh tempo", f"{int(len(part[part['Max Booking'] <= today])):,}")
     c2.metric("Total Qty", f"{total_qty:,}")
     c3.metric("Ontime Qty", f"{ontime_qty:,}")
     c4.metric("KPI Booking", f"{pct}%")
 
     status_counts = part["Vendor's Booking KPI"].value_counts().to_dict()
-    st.caption("Jumlah PO per status: " + ", ".join(f"{k}: {v}" for k, v in status_counts.items()))
+    st.caption("Jumlah baris per status: " + ", ".join(f"{k}: {v}" for k, v in status_counts.items()))
 
     st.subheader("KPI harian (per tanggal Max Booking)")
     if daily.empty:
@@ -363,7 +553,7 @@ def main() -> None:
         )
         excluded = st.multiselect(
             "Status PTS yang dikeluarkan",
-            ["Rejected", "Cancelled", "Active", "Accepted"],
+            ["Rejected", "Active", "Accepted"],
             default=DEFAULT_EXCLUDED_STATUS,
         )
 
@@ -383,8 +573,8 @@ def main() -> None:
         )
         try:
             with st.spinner("Menghitung..."):
-                df = run_pipeline(zr_file, plan_file, fv_file, cfg)
-            st.session_state["result"] = (df, today)
+                df, report = run_pipeline(zr_file, plan_file, fv_file, cfg)
+            st.session_state["result"] = (df, report, today)
         except ValueError as exc:
             st.error(str(exc))
             st.session_state.pop("result", None)
@@ -398,19 +588,21 @@ def main() -> None:
             st.info("Upload ketiga file untuk memulai.")
         return
 
-    df, result_today = st.session_state["result"]
+    df, report, result_today = st.session_state["result"]
     parts = split_by_remark(df)
 
     st.download_button(
-        "Download Excel (sheet 3PL / Non 3PL)",
-        data=to_excel_bytes(parts, result_today),
+        "Download Excel (sheet 3PL / Non 3PL / PTS Match)",
+        data=to_excel_bytes(parts, report, result_today),
         file_name=f"Booking_KPI_{result_today:%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
+    render_match_summary(report)
+
     if REMARK_UNKNOWN in parts:
         st.warning(
-            f"{len(parts[REMARK_UNKNOWN])} PO tidak punya LSP (tidak ada di FlexView maupun "
+            f"{len(parts[REMARK_UNKNOWN])} baris tidak punya LSP (tidak ada di FlexView maupun "
             "kolom Forwarder export plan). Lihat tab Unknown."
         )
 
