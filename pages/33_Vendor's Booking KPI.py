@@ -199,9 +199,10 @@ def prepare_plan(plan: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
     plan["SO_key"] = clean_key(plan[PLAN_SO])
     plan = plan[plan["SO_key"] != ""]
 
-    podd_so = lines[lines["SO_key"] != ""].groupby("SO_key", as_index=False)["PODD"].min()
-    plan = plan.merge(podd_so, on="SO_key", how="left")
-    plan["Ex-Plan"] = parse_plan_dates(plan[PLAN_DATE_COL], plan["PODD"])
+    # PODD dari ZRSD013 (export plan sendiri punya kolom PODD, jadi jangan di-merge)
+    podd_by_so = lines[lines["SO_key"] != ""].groupby("SO_key")["PODD"].min()
+    plan["_podd"] = plan["SO_key"].map(podd_by_so)
+    plan["Ex-Plan"] = parse_plan_dates(plan[PLAN_DATE_COL], plan["_podd"])
 
     # bila SO muncul di beberapa line plan, ambil Ex-Factory paling awal
     ex = (
