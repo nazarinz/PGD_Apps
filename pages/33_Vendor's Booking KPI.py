@@ -6,6 +6,7 @@ Output: KPI detail per baris ZRSD013 + KPI harian, dipisah sheet 3PL / Non 3PL.
 Aturan:
   Matching PTS -> ZRSD013 : PO + quantity. Total qty baris ZRSD013 dari PO yang
                             tertera di PTS harus = "Total Line Quantity" FlexView.
+  Ex-Plan                 : vlookup by SO ke export plan (kolom Ex-Factory); tidak ada -> PODD
   Tanggal acuan           : Estimated Cargo Ready Date (ECRD) -> Ex-Plan -> PODD
   Max Booking             : tanggal acuan - 14 hari
   KPI                     : PASS bila Issue Date <= Max Booking, selain itu FAIL
@@ -33,7 +34,7 @@ log = logging.getLogger("booking_kpi")
 # Config
 # --------------------------------------------------------------------------- #
 DEFAULT_LEAD_DAYS = 14
-PLAN_DATE_OPTIONS = ["PPIC Plan", "Ex-Factory"]
+PLAN_DATE_COL = "Ex-Factory"
 DEFAULT_3PL_KEYS = ["maersk", "dsv air & sea", "kuehne"]
 DEFAULT_EXCLUDED_STATUS = ["Rejected"]
 ALWAYS_DROP_STATUS = {"canceled", "cancelled"}  # duplikat -> selalu dibuang
@@ -56,7 +57,7 @@ M_OK = (M_EXACT, M_SUBSET)
 
 ZR_PO, ZR_QTY, ZR_PODD = "PO No.(Full)", "Quanity", "PODD"
 ZR_SO, ZR_ITEM = "SO", "Customer PO item"
-PLAN_PO, PLAN_SO, PLAN_FORWARDER = "PO", "SO", "Forwarder"
+PLAN_SO, PLAN_FORWARDER = "SO", "Forwarder"
 FV_RENAME = {
     "Plan To Ship ID": "PTS",
     "Status": "PTS Status",
@@ -96,7 +97,6 @@ OUTPUT_COLS = [
 @dataclass(frozen=True)
 class KpiConfig:
     lead_days: int
-    plan_date_col: str
     keys_3pl: tuple[str, ...]
     excluded_status: tuple[str, ...]
     today: pd.Timestamp
@@ -187,32 +187,30 @@ def parse_plan_dates(values: pd.Series, podd: pd.Series) -> pd.Series:
     return result
 
 
-def prepare_plan(
-    plan: pd.DataFrame, lines: pd.DataFrame, cfg: KpiConfig
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (ex_so, ex_po): Ex-Plan per (PO, SO) dan fallback per PO."""
-    require_columns(plan, [PLAN_PO, cfg.plan_date_col], "Export Plan")
+def prepare_plan(plan: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
+    """Ex-Plan per SO (vlookup by SO) dari kolom Ex-Factory export plan."""
+    require_columns(plan, [PLAN_SO, PLAN_DATE_COL], "Export Plan")
 
     plan = plan.copy()
     if PLAN_FORWARDER not in plan.columns:
         plan[PLAN_FORWARDER] = pd.NA
         log.warning("Export Plan tidak punya kolom %s", PLAN_FORWARDER)
 
-    plan["PO_key"] = clean_key(plan[PLAN_PO])
-    plan["SO_key"] = clean_key(plan[PLAN_SO]) if PLAN_SO in plan.columns else ""
-    plan = plan[plan["PO_key"] != ""]
+    plan["SO_key"] = clean_key(plan[PLAN_SO])
+    plan = plan[plan["SO_key"] != ""]
 
-    podd_po = lines.groupby("PO_key", as_index=False)["PODD"].min()
-    plan = plan.merge(podd_po, on="PO_key", how="left")
-    plan["Ex-Plan"] = parse_plan_dates(plan[cfg.plan_date_col], plan["PODD"])
+    podd_so = lines[lines["SO_key"] != ""].groupby("SO_key", as_index=False)["PODD"].min()
+    plan = plan.merge(podd_so, on="SO_key", how="left")
+    plan["Ex-Plan"] = parse_plan_dates(plan[PLAN_DATE_COL], plan["PODD"])
 
-    plan = plan.sort_values("Ex-Plan").rename(columns={PLAN_FORWARDER: "Plan LSP"})
-    ex_po = plan.drop_duplicates("PO_key")[["PO_key", "Ex-Plan", "Plan LSP"]]
-    ex_so = plan.drop_duplicates(["PO_key", "SO_key"])[
-        ["PO_key", "SO_key", "Ex-Plan", "Plan LSP"]
-    ]
-    log.info("Export Plan: %d PO", len(ex_po))
-    return ex_so, ex_po
+    # bila SO muncul di beberapa line plan, ambil Ex-Factory paling awal
+    ex = (
+        plan.sort_values("Ex-Plan")
+        .drop_duplicates("SO_key")[["SO_key", "Ex-Plan", PLAN_FORWARDER]]
+        .rename(columns={PLAN_FORWARDER: "Plan LSP"})
+    )
+    log.info("Export Plan: %d SO", len(ex))
+    return ex
 
 
 def prepare_flexview(fv: pd.DataFrame, cfg: KpiConfig) -> pd.DataFrame:
@@ -371,26 +369,21 @@ def classify_lsp(lsp: pd.Series, keys: tuple[str, ...]) -> pd.Series:
 
 def build_kpi(
     lines: pd.DataFrame,
-    ex_so: pd.DataFrame,
-    ex_po: pd.DataFrame,
+    ex: pd.DataFrame,
     line_map: pd.DataFrame,
     cfg: KpiConfig,
 ) -> pd.DataFrame:
     df = lines.merge(line_map, on="line_id", how="left")
     df = df.merge(
-        ex_so.rename(columns={"Ex-Plan": "Ex-Plan SO", "Plan LSP": "Plan LSP SO"}),
-        on=["PO_key", "SO_key"],
-        how="left",
-    ).merge(
-        ex_po.rename(columns={"Ex-Plan": "Ex-Plan PO", "Plan LSP": "Plan LSP PO"}),
-        on="PO_key",
+        ex.rename(columns={"Ex-Plan": "Ex-Plan SO", "Plan LSP": "Plan LSP SO"}),
+        on="SO_key",
         how="left",
     )
 
-    # Ex-Plan: (PO+SO) -> PO -> PODD
-    df["Ex-Plan"] = df["Ex-Plan SO"].fillna(df["Ex-Plan PO"]).fillna(df["PODD"])
+    # Ex-Plan: by SO -> PODD
+    df["Ex-Plan"] = df["Ex-Plan SO"].fillna(df["PODD"])
     # LSP: FlexView dulu, jika belum booking pakai Forwarder export plan
-    df["LSP"] = df["LSP"].fillna(df["Plan LSP SO"]).fillna(df["Plan LSP PO"])
+    df["LSP"] = df["LSP"].fillna(df["Plan LSP SO"])
     df["LSP Remark"] = classify_lsp(df["LSP"], cfg.keys_3pl)
     df["Match Status"] = df["Match Status"].fillna(M_NOT_BOOKED)
 
@@ -474,14 +467,14 @@ def run_pipeline(
     zr_file, plan_file, fv_file, cfg: KpiConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     zr = read_table(zr_file, dtype={ZR_PO: str, ZR_SO: str})
-    plan = read_table(plan_file, dtype={PLAN_PO: str, PLAN_SO: str})
+    plan = read_table(plan_file, dtype={PLAN_SO: str})
     fv = read_table(fv_file, dtype=str)
 
     lines = prepare_zrsd013(zr)
-    ex_so, ex_po = prepare_plan(plan, lines, cfg)
+    ex = prepare_plan(plan, lines)
     pts = prepare_flexview(fv, cfg)
     line_map, report = match_pts_to_lines(lines, pts)
-    return build_kpi(lines, ex_so, ex_po, line_map, cfg), report
+    return build_kpi(lines, ex, line_map, cfg), report
 
 
 # --------------------------------------------------------------------------- #
@@ -547,7 +540,6 @@ def main() -> None:
         lead_days = st.number_input(
             "Max Booking = ECRD minus (hari)", min_value=0, value=DEFAULT_LEAD_DAYS
         )
-        plan_col = st.selectbox("Kolom Ex-Plan di export plan", PLAN_DATE_OPTIONS)
         keys_text = st.text_area(
             "Kata kunci LSP 3PL (satu per baris)", value="\n".join(DEFAULT_3PL_KEYS)
         )
@@ -566,7 +558,6 @@ def main() -> None:
     if st.button("Hitung KPI", type="primary", disabled=not ready):
         cfg = KpiConfig(
             lead_days=int(lead_days),
-            plan_date_col=plan_col,
             keys_3pl=tuple(k.strip() for k in keys_text.splitlines() if k.strip()),
             excluded_status=tuple(excluded),
             today=today,
