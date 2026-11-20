@@ -9,7 +9,7 @@ Aturan:
   Ex-Plan                 : vlookup by SO ke export plan (kolom Ex-Factory); tidak ada -> PODD
   Tanggal acuan           : Estimated Cargo Ready Date (ECRD) -> Ex-Plan -> PODD
   Max Booking             : tanggal acuan - 14 hari
-  KPI                     : PASS bila Issue Date <= Max Booking, selain itu FAIL
+  KPI                     : ONTIME bila Issue Date <= Max Booking, selain itu FAIL
                             (belum ada PTS: FAIL bila hari ini > Max Booking, else PENDING)
 """
 from __future__ import annotations
@@ -74,12 +74,9 @@ FV_REQUIRED = [
     "Total Line Quantity",
 ]
 
-OUTPUT_COLS = [
+# kolom hasil hitung, ditaruh setelah semua kolom asli ZRSD013 (urutan sesuai permintaan)
+COMPUTED_COLS = [
     "Ex-Plan",
-    "SO",
-    "PO",
-    "Item",
-    "Qty",
     "PTS",
     "Issue Date",
     "Estimated Cargo Ready Date",
@@ -89,9 +86,10 @@ OUTPUT_COLS = [
     "Vendor's Booking Ontime Qty",
     "LSP Remark",
     "LSP",
-    "Mode",
-    "Match Status",
+    "Mode",          # tambahan dari FlexView
+    "Match Status",  # tambahan: status matching PTS -> ZRSD013
 ]
+KPI_ONTIME = "ONTIME"
 
 
 @dataclass(frozen=True)
@@ -138,14 +136,20 @@ def valid_key(s: pd.Series) -> pd.Series:
     return ~s.isin(["", "nan", "None", "NaT"])
 
 
+def clean_text(s: pd.Series) -> pd.Series:
+    """Teks bersih: buang '.0' hasil float dan nilai kosong (1.0 -> 1)."""
+    out = s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    return out.where(~out.isin(["nan", "None", "NaT"]), "")
+
+
 def clean_key(s: pd.Series) -> pd.Series:
     """Normalisasi + kosongkan nilai tidak valid."""
     out = normalize_po(s)
     return out.where(valid_key(out), "")
 
 
-def prepare_zrsd013(zr: pd.DataFrame) -> pd.DataFrame:
-    """Baris ZRSD013 apa adanya (1 baris = 1 line), dengan line_id unik."""
+def prepare_zrsd013(zr: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (lines, raw). raw = kolom asli ZRSD013; lines = kolom kerja, line_id = indeks raw."""
     if "Quantity" in zr.columns and ZR_QTY not in zr.columns:
         zr = zr.rename(columns={"Quantity": ZR_QTY})
     require_columns(zr, [ZR_PO, ZR_QTY, ZR_PODD], "ZRSD013")
@@ -154,16 +158,19 @@ def prepare_zrsd013(zr: pd.DataFrame) -> pd.DataFrame:
         {
             "PO_key": clean_key(zr[ZR_PO]),
             "SO_key": clean_key(zr[ZR_SO]) if ZR_SO in zr.columns else "",
-            "Item": zr[ZR_ITEM].astype(str) if ZR_ITEM in zr.columns else "",
+            "Item": clean_text(zr[ZR_ITEM]) if ZR_ITEM in zr.columns else "",
             "Qty": pd.to_numeric(zr[ZR_QTY], errors="coerce").fillna(0).astype(int),
             "PODD": pd.to_datetime(zr[ZR_PODD], errors="coerce"),
         }
     )
-    lines = lines[lines["PO_key"] != ""].reset_index(drop=True)
-    lines["SO"] = lines["SO_key"]
+    keep = (lines["PO_key"] != "").to_numpy()
+    lines = lines[keep].reset_index(drop=True)
     lines.insert(0, "line_id", np.arange(len(lines)))
+
+    raw = zr[keep].reset_index(drop=True).copy()
+    raw[ZR_QTY] = lines["Qty"]   # qty numerik, kolom lain apa adanya
     log.info("ZRSD013: %d baris, %d PO", len(lines), lines["PO_key"].nunique())
-    return lines
+    return lines, raw
 
 
 def parse_plan_dates(values: pd.Series, podd: pd.Series) -> pd.Series:
@@ -370,6 +377,7 @@ def classify_lsp(lsp: pd.Series, keys: tuple[str, ...]) -> pd.Series:
 
 def build_kpi(
     lines: pd.DataFrame,
+    raw: pd.DataFrame,
     ex: pd.DataFrame,
     line_map: pd.DataFrame,
     cfg: KpiConfig,
@@ -398,17 +406,16 @@ def build_kpi(
     overdue = df["Max Booking"] < cfg.today
     df["Vendor's Booking KPI"] = np.select(
         [~has_deadline, booked & on_time, booked & ~on_time, ~booked & overdue],
-        ["NO DATE", "PASS", "FAIL", "FAIL"],
+        ["NO DATE", KPI_ONTIME, "FAIL", "FAIL"],
         default="PENDING",
     )
     df["Vendor's Booking Ontime Qty"] = df["Qty"].where(
-        df["Vendor's Booking KPI"] == "PASS", 0
+        df["Vendor's Booking KPI"] == KPI_ONTIME, 0
     )
 
-    df = df.rename(columns={"PO_key": "PO"})
-    return (
-        df[OUTPUT_COLS].sort_values(["Max Booking", "PO", "SO"]).reset_index(drop=True)
-    )
+    # semua kolom asli ZRSD013 (urutan asli) + kolom hasil hitung
+    assert len(df) == len(raw) and (df["line_id"].to_numpy() == raw.index.to_numpy()).all()
+    return pd.concat([raw, df[COMPUTED_COLS].reset_index(drop=True)], axis=1)
 
 
 def daily_kpi(df: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
@@ -417,8 +424,8 @@ def daily_kpi(df: pd.DataFrame, today: pd.Timestamp) -> pd.DataFrame:
     daily = (
         due.groupby("Max Booking")
         .agg(
-            PO=("PO", "nunique"),
-            Total_Qty=("Qty", "sum"),
+            PO=(ZR_PO, "nunique"),
+            Total_Qty=(ZR_QTY, "sum"),
             Ontime_Qty=("Vendor's Booking Ontime Qty", "sum"),
         )
         .reset_index()
@@ -448,15 +455,164 @@ def for_display(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+@dataclass
+class ZrStyle:
+    """Format file ZRSD013 asli (header, format kolom, lebar, freeze, filter)."""
+
+    headers: dict[str, dict]
+    cols: dict[str, dict]
+    widths: dict[str, float]
+    freeze: tuple[int, int] | None
+    autofilter: bool
+    header_height: float | None
+    date_fmt: str
+
+
+DEFAULT_DATE_FMT = "m/d/yyyy"
+DATE_COMPUTED_COLS = {"Ex-Plan", "Issue Date", "Estimated Cargo Ready Date", "Max Booking"}
+_BORDER = {"thin": 1, "medium": 2, "dashed": 3, "dotted": 4, "thick": 5, "double": 6, "hair": 7}
+
+
+def _rgb(color) -> str | None:
+    try:
+        if color is not None and color.type == "rgb" and isinstance(color.rgb, str):
+            return "#" + color.rgb[-6:]
+    except Exception:  # noqa: BLE001 - warna tema/indexed diabaikan
+        pass
+    return None
+
+
+def _cell_fmt(cell) -> dict:
+    """Ubah style sel openpyxl menjadi dict format xlsxwriter."""
+    f: dict = {"num_format": cell.number_format or "General"}
+    font = cell.font
+    if font is not None:
+        if font.name:
+            f["font_name"] = font.name
+        if font.size:
+            f["font_size"] = font.size
+        if font.bold:
+            f["bold"] = True
+        if font.italic:
+            f["italic"] = True
+        if _rgb(font.color):
+            f["font_color"] = _rgb(font.color)
+    if cell.fill is not None and cell.fill.fill_type == "solid" and _rgb(cell.fill.fgColor):
+        f["bg_color"] = _rgb(cell.fill.fgColor)
+    al = cell.alignment
+    if al is not None:
+        if al.horizontal in ("left", "center", "right", "fill", "justify"):
+            f["align"] = al.horizontal
+        if al.vertical:
+            f["valign"] = {"center": "vcenter"}.get(al.vertical, al.vertical)
+        if al.wrap_text:
+            f["text_wrap"] = True
+    for side in ("left", "right", "top", "bottom"):
+        st_ = getattr(cell.border, side).style if cell.border else None
+        if st_:
+            f[side] = _BORDER.get(st_, 1)
+    return f
+
+
+def extract_zr_style(file) -> ZrStyle | None:
+    """Baca format file ZRSD013 asli. None bila csv / gagal dibaca."""
+    if getattr(file, "name", "").lower().endswith(".csv"):
+        return None
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
+
+        ws = load_workbook(io.BytesIO(file.getvalue())).worksheets[0]
+        names = {
+            c.column: str(c.value).strip() for c in ws[1] if c.value is not None
+        }
+        headers = {n: _cell_fmt(ws.cell(1, i)) for i, n in names.items()}
+        cols = (
+            {n: _cell_fmt(ws.cell(2, i)) for i, n in names.items()}
+            if ws.max_row >= 2
+            else {}
+        )
+
+        widths: dict[str, float] = {}
+        for dim in ws.column_dimensions.values():
+            if not dim.width:
+                continue
+            lo = dim.min or column_index_from_string(dim.index)
+            hi = dim.max or lo
+            for idx in range(lo, hi + 1):
+                if idx in names:
+                    widths[names[idx]] = dim.width
+
+        freeze = None
+        if ws.freeze_panes:
+            col_letter, row = coordinate_from_string(ws.freeze_panes)
+            freeze = (row - 1, column_index_from_string(col_letter) - 1)
+
+        podd_fmt = cols.get(ZR_PODD, {}).get("num_format", "General")
+        date_fmt = podd_fmt if re.search(r"[ymd]", podd_fmt.lower()) else DEFAULT_DATE_FMT
+        height = ws.row_dimensions[1].height
+        return ZrStyle(headers, cols, widths, freeze, bool(ws.auto_filter.ref), height, date_fmt)
+    except Exception:  # noqa: BLE001 - styling opsional, jangan gagalkan proses
+        log.exception("Format file ZRSD013 gagal dibaca, pakai format default")
+        return None
+
+
+def write_detail_sheet(
+    writer: pd.ExcelWriter, name: str, df: pd.DataFrame, style: ZrStyle | None
+) -> None:
+    out = for_display(df)
+    if style is None:
+        out.to_excel(writer, sheet_name=name, index=False)
+        return
+
+    out.to_excel(writer, sheet_name=name, index=False, header=False, startrow=1)
+    book, ws = writer.book, writer.sheets[name]
+    cache: dict[str, object] = {}
+
+    def fmt(d: dict):
+        key = repr(sorted(d.items()))
+        if key not in cache:
+            cache[key] = book.add_format(d)
+        return cache[key]
+
+    orig_cols = [c for c in out.columns if c in style.headers]
+    last_orig = orig_cols[-1] if orig_cols else None
+    header_default = style.headers.get(last_orig, {"bold": True})
+    data_default = dict(style.cols.get(ZR_PODD) or style.cols.get(last_orig) or {})
+
+    for i, col in enumerate(out.columns):
+        ws.write(0, i, col, fmt(style.headers.get(col, header_default)))
+        if col in style.cols:
+            col_fmt = style.cols[col]
+        else:  # kolom hasil hitung: gaya kolom terakhir, format tanggal sesuai file asli
+            col_fmt = {
+                **data_default,
+                "num_format": style.date_fmt if col in DATE_COMPUTED_COLS else "General",
+            }
+        width = style.widths.get(col, 18 if col not in style.headers else 12)
+        ws.set_column(i, i, width, fmt(col_fmt))
+
+    if style.header_height:
+        ws.set_row(0, style.header_height)
+    if style.freeze:
+        ws.freeze_panes(*style.freeze)
+    if style.autofilter:
+        ws.autofilter(0, 0, max(len(out), 1), len(out.columns) - 1)
+
+
 def to_excel_bytes(
-    parts: dict[str, pd.DataFrame], report: pd.DataFrame, today: pd.Timestamp
+    parts: dict[str, pd.DataFrame],
+    report: pd.DataFrame,
+    today: pd.Timestamp,
+    style: ZrStyle | None = None,
 ) -> bytes:
+    date_fmt = style.date_fmt if style else DEFAULT_DATE_FMT
     buf = io.BytesIO()
     with pd.ExcelWriter(
-        buf, engine="openpyxl", datetime_format="m/d/yyyy", date_format="m/d/yyyy"
+        buf, engine="xlsxwriter", datetime_format=date_fmt, date_format=date_fmt
     ) as writer:
         for remark, part in parts.items():
-            for_display(part).to_excel(writer, sheet_name=f"Detail {remark}", index=False)
+            write_detail_sheet(writer, f"Detail {remark}", part, style)
             for_display(daily_kpi(part, today)).to_excel(
                 writer, sheet_name=f"Daily {remark}", index=False
             )
@@ -467,15 +623,15 @@ def to_excel_bytes(
 def run_pipeline(
     zr_file, plan_file, fv_file, cfg: KpiConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    zr = read_table(zr_file, dtype={ZR_PO: str, ZR_SO: str})
+    zr = read_table(zr_file, dtype={ZR_PO: str, ZR_SO: str, ZR_ITEM: str})
     plan = read_table(plan_file, dtype={PLAN_SO: str})
     fv = read_table(fv_file, dtype=str)
 
-    lines = prepare_zrsd013(zr)
+    lines, raw = prepare_zrsd013(zr)
     ex = prepare_plan(plan, lines)
     pts = prepare_flexview(fv, cfg)
     line_map, report = match_pts_to_lines(lines, pts)
-    return build_kpi(lines, ex, line_map, cfg), report
+    return build_kpi(lines, raw, ex, line_map, cfg), report
 
 
 # --------------------------------------------------------------------------- #
@@ -566,7 +722,7 @@ def main() -> None:
         try:
             with st.spinner("Menghitung..."):
                 df, report = run_pipeline(zr_file, plan_file, fv_file, cfg)
-            st.session_state["result"] = (df, report, today)
+            st.session_state["result"] = (df, report, today, extract_zr_style(zr_file))
         except ValueError as exc:
             st.error(str(exc))
             st.session_state.pop("result", None)
@@ -580,12 +736,12 @@ def main() -> None:
             st.info("Upload ketiga file untuk memulai.")
         return
 
-    df, report, result_today = st.session_state["result"]
+    df, report, result_today, zr_style = st.session_state["result"]
     parts = split_by_remark(df)
 
     st.download_button(
         "Download Excel (sheet 3PL / Non 3PL / PTS Match)",
-        data=to_excel_bytes(parts, report, result_today),
+        data=to_excel_bytes(parts, report, result_today, zr_style),
         file_name=f"Booking_KPI_{result_today:%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
